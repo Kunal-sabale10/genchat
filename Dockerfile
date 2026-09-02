@@ -30,6 +30,7 @@ ENV CGO_CFLAGS="-I/app/crypto/genchat-crypto-ffi"
 RUN go build -o /bin/authd ./services/auth/cmd/authd
 RUN go build -o /bin/gatewayd ./services/gateway/cmd/gatewayd
 RUN go build -o /bin/ledgerd ./services/msgledger/cmd/ledgerd
+RUN go build -o /bin/mediad ./services/media/cmd/mediad
 
 FROM debian:bookworm-slim AS auth
 COPY --from=builder /app/crypto/genchat-crypto-ffi/target/release/libgenchat_crypto_ffi.so /usr/local/lib/
@@ -48,3 +49,9 @@ COPY --from=builder /app/crypto/genchat-crypto-ffi/target/release/libgenchat_cry
 COPY --from=builder /bin/ledgerd /usr/local/bin/
 RUN ldconfig
 CMD ["ledgerd"]
+
+FROM debian:bookworm-slim AS media
+COPY --from=builder /app/crypto/genchat-crypto-ffi/target/release/libgenchat_crypto_ffi.so /usr/local/lib/
+COPY --from=builder /bin/mediad /usr/local/bin/
+RUN ldconfig
+CMD ["mediad"]

@@ -4,6 +4,7 @@ use (
 	./gen
 	./services/auth
 	./services/gateway
+	./services/media
 	./services/msgledger
 	./tests/e2e
 )

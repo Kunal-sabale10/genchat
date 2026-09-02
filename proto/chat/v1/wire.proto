@@ -37,7 +37,37 @@ message ClientAction {
     SendGroupMessageAction send_group_message_action = 13;
     MlsCommitAction mls_commit_action = 14;
     PresenceUpdateAction presence_update_action = 15;
+    CallOfferAction call_offer_action = 16;
+    CallAnswerAction call_answer_action = 17;
+    IceCandidateAction ice_candidate_action = 18;
+    CallStatusAction call_status_action = 19;
   }
+}
+
+message CallOfferAction {
+  string call_id = 1;
+  string target_user_id = 2;
+  string sdp_offer = 3;
+  bytes sframe_public_key = 4;
+}
+
+message CallAnswerAction {
+  string call_id = 1;
+  string target_user_id = 2;
+  string sdp_answer = 3;
+  bytes sframe_public_key = 4;
+}
+
+message IceCandidateAction {
+  string call_id = 1;
+  string target_user_id = 2;
+  string candidate = 3;
+}
+
+message CallStatusAction {
+  string call_id = 1;
+  string target_user_id = 2;
+  string state = 3; // "ringing", "answered", "rejected", "ended"
 }
 
 message SendMessageAction {

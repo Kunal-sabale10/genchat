@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package chat.v1;
+
+option go_package = "github.com/genchat/proto/gen/chat/v1;chatv1";
+
+import "google/protobuf/timestamp.proto";
+
+enum CallType {
+  CALL_TYPE_UNSPECIFIED = 0;
+  CALL_TYPE_AUDIO = 1;
+  CALL_TYPE_VIDEO = 2;
+}
+
+enum CallState {
+  CALL_STATE_UNSPECIFIED = 0;
+  CALL_STATE_OFFERED = 1;
+  CALL_STATE_RINGING = 2;
+  CALL_STATE_ANSWERED = 3;
+  CALL_STATE_REJECTED = 4;
+  CALL_STATE_ENDED = 5;
+  CALL_STATE_BUSY = 6;
+}
+
+message CallOffer {
+  string call_id = 1;
+  string channel_id = 2;
+  string caller_user_id = 3;
+  string caller_device_id = 4;
+  CallType call_type = 5;
+  string sdp_offer = 6;
+  bytes sframe_public_key = 7; // X25519 key for SFrame E2EE media frame keys
+  google.protobuf.Timestamp timestamp = 8;
+}
+
+message CallAnswer {
+  string call_id = 1;
+  string callee_user_id = 2;
+  string callee_device_id = 3;
+  string sdp_answer = 4;
+  bytes sframe_public_key = 5;
+  google.protobuf.Timestamp timestamp = 6;
+}
+
+message IceCandidate {
+  string call_id = 1;
+  string candidate = 2;
+  string sdp_mid = 3;
+  int32 sdp_m_line_index = 4;
+}
+
+message CallStatusUpdate {
+  string call_id = 1;
+  CallState state = 2;
+  string reason = 3;
+}
+
+service CallService {
+  rpc InitiateCall(CallOffer) returns (CallStatusUpdate);
+  rpc AnswerCall(CallAnswer) returns (CallStatusUpdate);
+  rpc SendIceCandidate(IceCandidate) returns (CallStatusUpdate);
+  rpc EndCall(CallStatusUpdate) returns (CallStatusUpdate);
+}

@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package chat.v1;
+
+option go_package = "github.com/genchat/proto/gen/chat/v1;chatv1";
+
+import "google/protobuf/timestamp.proto";
+
+message GetUploadUrlRequest {
+  string content_type = 1;
+  uint64 content_length = 2;
+  string sha256_hash = 3;
+}
+
+message GetUploadUrlResponse {
+  string object_key = 1;
+  string upload_url = 2; // Pre-signed S3/MinIO PUT URL
+  google.protobuf.Timestamp expires_at = 3;
+}
+
+message GetDownloadUrlRequest {
+  string object_key = 1;
+}
+
+message GetDownloadUrlResponse {
+  string download_url = 1; // Pre-signed S3/MinIO GET URL
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+// Encrypted attachment metadata transmitted strictly inside the E2EE envelope
+message EncryptedAttachment {
+  string object_key = 1;
+  string content_type = 2;
+  uint64 file_size = 3;
+  bytes sha256_digest = 4;
+  bytes media_key = 5;       // 256-bit AES-GCM media key
+  bytes iv = 6;              // 96-bit AES-GCM IV
+  bytes thumbnail_ciphertext = 7; // Low-res preview encrypted with media_key
+}
+
+service MediaService {
+  rpc GetUploadUrl(GetUploadUrlRequest) returns (GetUploadUrlResponse);
+  rpc GetDownloadUrl(GetDownloadUrlRequest) returns (GetDownloadUrlResponse);
+}
