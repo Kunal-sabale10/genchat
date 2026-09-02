@@ -26,8 +26,7 @@ func TestAliceToBobWebSocketEcho(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Logf("Alice WebSocket connection test on :8081: %v (gateway container may not be started yet)", err)
-		return
+		t.Fatalf("Alice failed to connect to Gateway: %v", err)
 	}
 	defer aliceConn.Close(websocket.StatusNormalClosure, "alice disconnected")
 
@@ -38,20 +37,16 @@ func TestAliceToBobWebSocketEcho(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Logf("Bob WebSocket connection test on :8081: %v", err)
-		return
+		t.Fatalf("Bob failed to connect to Gateway: %v", err)
 	}
 	defer bobConn.Close(websocket.StatusNormalClosure, "bob disconnected")
 
-	// 3. Alice sends an encrypted envelope frame
+	// 3. Alice sends an envelope packet
 	msg := WSMessage{
 		Type:    "chat.v1.Envelope",
-		Payload: "base64-encoded-pqxdh-ciphertext",
+		Payload: "base64-pqxdh-ciphertext-envelope",
 	}
-	rawBytes, err := json.Marshal(msg)
-	if err != nil {
-		t.Fatalf("failed to marshal message: %v", err)
-	}
+	rawBytes, _ := json.Marshal(msg)
 
 	err = aliceConn.Write(ctx, websocket.MessageText, rawBytes)
 	if err != nil {
