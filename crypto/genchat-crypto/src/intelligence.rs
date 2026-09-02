@@ -31,17 +31,56 @@ impl LocalIntelligence {
     /// Extract action items, tasks, meetings, and deadlines from decrypted text locally
     pub fn extract_action_items(text: &str) -> Vec<ActionItem> {
         let mut items = Vec::new();
-        let lines: Vec<&str> = text.lines().flat_map(|l| l.split(&['.', '!', '?'][..])).collect();
 
-        for raw_line in lines {
-            let line = raw_line.trim();
-            if line.is_empty() {
-                continue;
-            }
+        // Split sentences safely without splitting inside URLs (http:// or https://)
+        // Split on standard punctuation delimiters: '.', '!', '?', '\n', ';'
+        let sentences: Vec<&str> = text
+            .split('\n')
+            .flat_map(|line| {
+                // Split on period only when followed by space or end of string
+                line.split(|c| c == '!' || c == '?' || c == ';')
+                    .flat_map(|part| part.split(". "))
+            })
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        for line in sentences {
             let lower = line.to_lowercase();
 
-            // 1. Deadline detection
-            let is_deadline = lower.contains("deadline")
+            // 1. TODO / Task detection
+            if lower.contains("todo:")
+                || lower.starts_with("todo")
+                || lower.starts_with("task:")
+                || lower.starts_with("- [ ]")
+                || lower.contains("please make sure to")
+                || lower.contains("need to")
+            {
+                items.push(ActionItem {
+                    action_type: ActionType::Todo,
+                    text: line.to_string(),
+                    context: line.to_string(),
+                    confidence: 0.95,
+                });
+            }
+
+            // 2. Meeting detection
+            if lower.contains("meet")
+                || lower.contains("meeting")
+                || lower.contains("sync")
+                || lower.contains("call at")
+                || lower.contains("huddle")
+            {
+                items.push(ActionItem {
+                    action_type: ActionType::Meeting,
+                    text: line.to_string(),
+                    context: line.to_string(),
+                    confidence: 0.90,
+                });
+            }
+
+            // 3. Deadline detection
+            if lower.contains("deadline")
                 || lower.contains("due ")
                 || lower.contains("due:")
                 || lower.contains("due by")
@@ -51,9 +90,8 @@ impl LocalIntelligence {
                 || lower.contains("by monday")
                 || lower.contains("by end of day")
                 || lower.contains("by eod")
-                || (lower.contains("by ") && (lower.contains("pm") || lower.contains("am")));
-
-            if is_deadline {
+                || (lower.contains("by ") && (lower.contains("pm") || lower.contains("am")))
+            {
                 items.push(ActionItem {
                     action_type: ActionType::Deadline,
                     text: line.to_string(),
@@ -62,42 +100,7 @@ impl LocalIntelligence {
                 });
             }
 
-            // 2. TODO / Task detection
-            let is_todo = lower.starts_with("todo:")
-                || lower.starts_with("task:")
-                || lower.starts_with("- [ ]")
-                || lower.contains("please make sure to")
-                || lower.contains("need to")
-                || lower.contains("action item:")
-                || lower.contains("will implement");
-
-            if is_todo {
-                items.push(ActionItem {
-                    action_type: ActionType::Todo,
-                    text: line.to_string(),
-                    context: line.to_string(),
-                    confidence: 0.95,
-                });
-            }
-
-            // 3. Meeting / Call detection
-            let is_meeting = lower.contains("let's meet")
-                || lower.contains("meeting at")
-                || lower.contains("sync at")
-                || lower.contains("call at")
-                || lower.contains("schedule a call")
-                || lower.contains("jump on a call");
-
-            if is_meeting {
-                items.push(ActionItem {
-                    action_type: ActionType::Meeting,
-                    text: line.to_string(),
-                    context: line.to_string(),
-                    confidence: 0.90,
-                });
-            }
-
-            // 4. URL / Link detection
+            // 4. Link detection
             if lower.contains("http://") || lower.contains("https://") {
                 items.push(ActionItem {
                     action_type: ActionType::Link,
@@ -108,6 +111,8 @@ impl LocalIntelligence {
             }
         }
 
+        // De-duplicate multiple detections of the exact same action_type if needed
+        items.dedup_by(|a, b| a.action_type == b.action_type && a.text == b.text);
         items
     }
 
