@@ -1,8 +1,8 @@
 -- Keyspace for GenChat
 CREATE KEYSPACE IF NOT EXISTS genchat
 WITH replication = {
-    'class': 'NetworkTopologyStrategy',
-    'replication_factor': 3
+    'class': 'SimpleStrategy',
+    'replication_factor': 1
 };
 
 -- Messages table designed for efficient retrieval by conversation
