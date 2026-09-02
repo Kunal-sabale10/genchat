@@ -46,6 +46,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if strings.HasPrefix(authHeader, "Bearer ") {
 			token = strings.TrimPrefix(authHeader, "Bearer ")
+		} else if customUserID := r.Header.Get("X-User-ID"); customUserID != "" {
+			token = customUserID
 		}
 	}
 
@@ -101,8 +103,8 @@ func (h *Handler) readPump(ctx context.Context, conn *Conn, wsConn *websocket.Co
 			break
 		}
 
-		if msgType != websocket.MessageBinary {
-			slog.Warn("ignoring non-binary message")
+		if msgType != websocket.MessageBinary && msgType != websocket.MessageText {
+			slog.Warn("ignoring unsupported message type")
 			continue
 		}
 
