@@ -1,0 +1,83 @@
+global:
+  environment: production
+  domain: genchat.app
+  imageRegistry: "ghcr.io/kunal-sabale10/genchat"
+  imageTag: "v1.0.0"
+  imagePullPolicy: IfNotPresent
+
+gateway:
+  replicaCount: 3
+  port: 8081
+  resources:
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetAverageConnections: 10000
+
+auth:
+  replicaCount: 2
+  port: 50051
+  resources:
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+
+ledger:
+  replicaCount: 3
+  port: 50052
+  resources:
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+
+media:
+  replicaCount: 2
+  port: 8082
+  resources:
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+
+envoy:
+  replicaCount: 3
+  httpPort: 80
+  httpsPort: 443
+
+databases:
+  postgres:
+    host: "postgres-cluster.database.svc.cluster.local"
+    port: 5432
+    database: "genchat"
+    user: "genchat_app"
+  scylladb:
+    hosts: "scylla-cluster-client.database.svc.cluster.local"
+    port: 9042
+    keyspace: "genchat"
+  redis:
+    host: "redis-cluster.database.svc.cluster.local"
+    port: 6379
+  minio:
+    endpoint: "s3.genchat.app"
+    bucket: "genchat-media"
+    useSSL: true
+
+monitoring:
+  enabled: true
+  prometheusScrape: true
+  otlpEndpoint: "otel-collector.monitoring.svc.cluster.local:4317"

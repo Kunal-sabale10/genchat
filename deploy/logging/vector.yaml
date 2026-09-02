@@ -1,0 +1,62 @@
+# Vector Log Sanitization Pipeline
+# Enforces Zero-Knowledge Log Redaction at the Edge Container Source
+
+sources:
+  kubernetes_logs:
+    type: kubernetes_logs
+
+transforms:
+  sanitize_security_fields:
+    type: remap
+    inputs:
+      - kubernetes_logs
+    source: |
+      # 1. Parse JSON log payload if present
+      parsed, err = parse_json(.message)
+      if err == null {
+        # Strip authorization / session tokens
+        if exists(parsed.authorization) {
+          parsed.authorization = "[REDACTED_BEARER_TOKEN]"
+        }
+        if exists(parsed.refresh_token) {
+          parsed.refresh_token = "[REDACTED_REFRESH_TOKEN]"
+        }
+        if exists(parsed.session_data) {
+          parsed.session_data = "[REDACTED_SESSION_DATA]"
+        }
+
+        # Strip cryptographic keys & ciphertexts
+        if exists(parsed.media_key) {
+          parsed.media_key = "[REDACTED_MEDIA_KEY]"
+        }
+        if exists(parsed.pq_ciphertext) {
+          parsed.pq_ciphertext = "[REDACTED_PQ_CIPHERTEXT]"
+        }
+        if exists(parsed.encrypted_payload) {
+          parsed.encrypted_payload = "[REDACTED_ENCRYPTED_PAYLOAD]"
+        }
+        if exists(parsed.sframe_key) {
+          parsed.sframe_key = "[REDACTED_SFRAME_KEY]"
+        }
+        if exists(parsed.identity_key) {
+          parsed.identity_key = "[REDACTED_IDENTITY_KEY]"
+        }
+
+        .message = encode_json(parsed)
+      } else {
+        # 2. String-level regex masking for unparsed raw logs
+        .message = replace(.message, r'Bearer\s+[A-Za-z0-9\-_\.]+', "Bearer [REDACTED_TOKEN]")
+        .message = replace(.message, r'(?i)(password|secret|key)=([^&\s]+)', "$1=[REDACTED]")
+      }
+
+sinks:
+  loki_storage:
+    type: loki
+    inputs:
+      - sanitize_security_fields
+    endpoint: "http://loki.monitoring.svc.cluster.local:3100"
+    encoding:
+      codec: json
+    labels:
+      app: "{{ kubernetes.pod_labels.app }}"
+      namespace: "{{ kubernetes.pod_namespace }}"

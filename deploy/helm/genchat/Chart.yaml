@@ -1,0 +1,9 @@
+apiVersion: v2
+name: genchat
+description: Production Helm chart for GenChat Post-Quantum Encrypted Communication Platform
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+maintainers:
+  - name: GenChat Team
+    email: security@genchat.internal

@@ -27,6 +27,7 @@
  */
 typedef struct GenChatCPreKeyBundle {
   uint8_t identity_key[32];
+  uint8_t identity_key_x25519[32];
   uint32_t signed_pre_key_id;
   uint8_t signed_pre_key[32];
   uint8_t signed_pre_key_sig[64];
@@ -44,6 +45,7 @@ typedef struct GenChatCPreKeyBundle {
  */
 typedef struct GenChatCInitMessage {
   uint8_t sender_identity_key[32];
+  uint8_t sender_identity_key_x25519[32];
   uint8_t ephemeral_key[32];
   uint8_t *pq_ciphertext;
   size_t pq_ciphertext_len;
@@ -117,6 +119,38 @@ int genchat_session_decrypt(GenChatGenChatSession *session,
                             size_t *outLen);
 
 void genchat_session_free(GenChatGenChatSession *session);
+
+/**
+ * Create a new MLS group with creator as first member.
+ */
+GenChatMlsGroup *genchat_mls_group_create(const char *groupId,
+                                          const char *userId,
+                                          const char *deviceId,
+                                          const GenChatIdentityKeyPair *identity,
+                                          const GenChatX25519KeyPair *hpkeKp);
+
+/**
+ * Encrypt an application message for an MLS group.
+ */
+int genchat_mls_group_encrypt(GenChatMlsGroup *group,
+                              const uint8_t *plaintext,
+                              size_t plaintextLen,
+                              uint8_t **outCiphertext,
+                              size_t *outLen);
+
+/**
+ * Decrypt an MLS group message.
+ */
+int genchat_mls_group_decrypt(const GenChatMlsGroup *group,
+                              const uint8_t *ciphertextJson,
+                              size_t ciphertextLen,
+                              uint8_t **outPlaintext,
+                              size_t *outLen);
+
+/**
+ * Free an MLS group state.
+ */
+void genchat_mls_group_free(GenChatMlsGroup *group);
 
 /**
  * Free memory allocated by genchat FFI functions.

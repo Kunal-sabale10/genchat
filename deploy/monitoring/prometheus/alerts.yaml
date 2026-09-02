@@ -1,0 +1,38 @@
+groups:
+  - name: genchat_critical_alerts
+    rules:
+      - alert: HighWebSocketDropRate
+        expr: rate(websocket_disconnect_errors_total[2m]) / rate(websocket_total_connections[2m]) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Abnormal WebSocket disconnect rate > 5% on Gateway pods"
+          description: "Gateway instance {{ $labels.instance }} is experiencing elevated connection drop rates."
+
+      - alert: HighgRPCLatency
+        expr: histogram_quantile(0.99, sum(rate(grpc_server_handling_seconds_bucket[5m])) by (le, grpc_service)) > 0.15
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "gRPC p99 latency exceeds 150ms"
+          description: "Service {{ $labels.grpc_service }} p99 response time is {{ $value }}s."
+
+      - alert: ScyllaDBWriteLag
+        expr: scylla_storage_proxy_coordinator_write_latency_count > 50000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ScyllaDB write queue backup"
+          description: "ScyllaDB coordinator write latency backlog has exceeded 50k queued queries."
+
+      - alert: RedisMemorySaturation
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis memory utilization > 85%"
+          description: "Redis instance {{ $labels.instance }} memory usage is at {{ $value | humanizePercentage }}."
