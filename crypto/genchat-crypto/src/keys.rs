@@ -107,13 +107,11 @@ impl PqKeyPair {
     }
 
     pub fn encapsulate_with(encapsulation_key_bytes: &[u8]) -> Result<(Vec<u8>, [u8; 32]), CryptoError> {
-        if encapsulation_key_bytes.len() != 1184 {
-            return Err(CryptoError::InvalidKeyLength {
+        let array = Array::try_from(encapsulation_key_bytes)
+            .map_err(|_| CryptoError::InvalidKeyLength {
                 expected: 1184,
                 got: encapsulation_key_bytes.len(),
-            });
-        }
-        let array = Array::clone_from_slice(encapsulation_key_bytes);
+            })?;
         let ek = MlKem768EncapsulationKey::from_bytes(&array);
         let (ct, ss) = ek.encapsulate(&mut OsRng)
             .map_err(|_| CryptoError::KemEncapsulationFailed)?;
@@ -122,19 +120,15 @@ impl PqKeyPair {
     }
 
     pub fn decapsulate(&self, ciphertext: &[u8]) -> Result<[u8; 32], CryptoError> {
-        if self.decapsulation_key_bytes.len() != 2400 {
-            return Err(CryptoError::KemDecapsulationFailed);
-        }
-        let dk_array = Array::clone_from_slice(&self.decapsulation_key_bytes);
+        let dk_array = Array::try_from(self.decapsulation_key_bytes.as_slice())
+            .map_err(|_| CryptoError::KemDecapsulationFailed)?;
         let dk = MlKem768DecapsulationKey::from_bytes(&dk_array);
 
-        if ciphertext.len() != 1088 {
-            return Err(CryptoError::InvalidKeyLength {
+        let ct_array: MlKem768Ciphertext = Array::try_from(ciphertext)
+            .map_err(|_| CryptoError::InvalidKeyLength {
                 expected: 1088,
                 got: ciphertext.len(),
-            });
-        }
-        let ct_array: MlKem768Ciphertext = Array::clone_from_slice(ciphertext);
+            })?;
         let ss = dk.decapsulate(&ct_array)
             .map_err(|_| CryptoError::KemDecapsulationFailed)?;
 

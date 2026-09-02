@@ -3,11 +3,14 @@ use libc::{c_int, size_t};
 /// Error codes returned by FFI functions
 pub const GENCHAT_OK: c_int = 0;
 pub const GENCHAT_ERR_NULL_PTR: c_int = -1;
+#[allow(dead_code)]
 pub const GENCHAT_ERR_INVALID_ARG: c_int = -2;
 pub const GENCHAT_ERR_CRYPTO: c_int = -3;
+#[allow(dead_code)]
 pub const GENCHAT_ERR_ALLOC: c_int = -4;
 
 /// C-compatible pre-key bundle for PQXDH
+#[allow(dead_code)]
 #[repr(C)]
 pub struct CPreKeyBundle {
     pub identity_key: [u8; 32],
@@ -24,6 +27,7 @@ pub struct CPreKeyBundle {
 }
 
 /// C-compatible PQXDH init message output
+#[allow(dead_code)]
 #[repr(C)]
 pub struct CInitMessage {
     pub sender_identity_key: [u8; 32],
@@ -37,6 +41,7 @@ pub struct CInitMessage {
 }
 
 /// C-compatible encrypted envelope
+#[allow(dead_code)]
 #[repr(C)]
 pub struct CEncryptedEnvelope {
     pub message_type: u8,

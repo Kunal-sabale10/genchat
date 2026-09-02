@@ -5,7 +5,6 @@ use std::slice;
 use libc::{c_int, size_t};
 
 use genchat_crypto::keys::*;
-use genchat_crypto::pqxdh::*;
 use genchat_crypto::ratchet::*;
 
 use types::*;
