@@ -2,7 +2,7 @@ use genchat_crypto::intelligence::{ActionType, LocalIntelligence};
 
 #[test]
 fn test_local_intelligence_action_items_extraction() {
-    let message = "Please make sure to review the PR before EOD. Let's meet at 3pm for a quick sync. Check https://github.com/genchat for docs.";
+    let message = "TODO: Review the PR before EOD. Let's meet at 3pm for a quick sync. The project deadline is Friday. Check https://github.com/genchat for docs.";
     let actions = LocalIntelligence::extract_action_items(message);
 
     assert!(

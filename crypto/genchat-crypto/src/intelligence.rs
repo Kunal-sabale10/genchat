@@ -40,45 +40,20 @@ impl LocalIntelligence {
             }
             let lower = line.to_lowercase();
 
-            // 1. TODO / Task detection
-            if lower.starts_with("todo:")
-                || lower.starts_with("task:")
-                || lower.starts_with("- [ ]")
-                || lower.contains("please make sure to")
-                || lower.contains("need to")
-                || lower.contains("action item:")
-                || lower.contains("will implement")
-            {
-                items.push(ActionItem {
-                    action_type: ActionType::Todo,
-                    text: line.to_string(),
-                    context: line.to_string(),
-                    confidence: 0.95,
-                });
-            }
-            // 2. Meeting / Call detection
-            else if lower.contains("let's meet")
-                || lower.contains("meeting at")
-                || lower.contains("sync at")
-                || lower.contains("call at")
-                || lower.contains("schedule a call")
-                || lower.contains("jump on a call")
-            {
-                items.push(ActionItem {
-                    action_type: ActionType::Meeting,
-                    text: line.to_string(),
-                    context: line.to_string(),
-                    confidence: 0.90,
-                });
-            }
-            // 3. Deadline detection
-            else if lower.contains("deadline is")
+            // 1. Deadline detection
+            let is_deadline = lower.contains("deadline")
+                || lower.contains("due ")
+                || lower.contains("due:")
                 || lower.contains("due by")
                 || lower.contains("before eod")
-                || lower.contains("by friday")
                 || lower.contains("by tomorrow")
+                || lower.contains("by friday")
                 || lower.contains("by monday")
-            {
+                || lower.contains("by end of day")
+                || lower.contains("by eod")
+                || (lower.contains("by ") && (lower.contains("pm") || lower.contains("am")));
+
+            if is_deadline {
                 items.push(ActionItem {
                     action_type: ActionType::Deadline,
                     text: line.to_string(),
@@ -86,8 +61,44 @@ impl LocalIntelligence {
                     confidence: 0.92,
                 });
             }
+
+            // 2. TODO / Task detection
+            let is_todo = lower.starts_with("todo:")
+                || lower.starts_with("task:")
+                || lower.starts_with("- [ ]")
+                || lower.contains("please make sure to")
+                || lower.contains("need to")
+                || lower.contains("action item:")
+                || lower.contains("will implement");
+
+            if is_todo && !is_deadline {
+                items.push(ActionItem {
+                    action_type: ActionType::Todo,
+                    text: line.to_string(),
+                    context: line.to_string(),
+                    confidence: 0.95,
+                });
+            }
+
+            // 3. Meeting / Call detection
+            let is_meeting = lower.contains("let's meet")
+                || lower.contains("meeting at")
+                || lower.contains("sync at")
+                || lower.contains("call at")
+                || lower.contains("schedule a call")
+                || lower.contains("jump on a call");
+
+            if is_meeting {
+                items.push(ActionItem {
+                    action_type: ActionType::Meeting,
+                    text: line.to_string(),
+                    context: line.to_string(),
+                    confidence: 0.90,
+                });
+            }
+
             // 4. URL / Link detection
-            else if lower.contains("http://") || lower.contains("https://") {
+            if lower.contains("http://") || lower.contains("https://") {
                 items.push(ActionItem {
                     action_type: ActionType::Link,
                     text: line.to_string(),
