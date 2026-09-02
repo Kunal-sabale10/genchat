@@ -14,6 +14,7 @@ pub const GENCHAT_ERR_ALLOC: c_int = -4;
 #[repr(C)]
 pub struct CPreKeyBundle {
     pub identity_key: [u8; 32],
+    pub identity_key_x25519: [u8; 32],
     pub signed_pre_key_id: u32,
     pub signed_pre_key: [u8; 32],
     pub signed_pre_key_sig: [u8; 64],
@@ -31,6 +32,7 @@ pub struct CPreKeyBundle {
 #[repr(C)]
 pub struct CInitMessage {
     pub sender_identity_key: [u8; 32],
+    pub sender_identity_key_x25519: [u8; 32],
     pub ephemeral_key: [u8; 32],
     pub pq_ciphertext: *mut u8,    // Heap-allocated, caller must free via genchat_free
     pub pq_ciphertext_len: size_t,

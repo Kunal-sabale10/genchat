@@ -19,6 +19,7 @@ fn test_alice_bob_pqxdh_handshake_and_ratchet_messaging() {
 
     let bob_bundle = PreKeyBundle {
         identity_key: bob_identity.public_key_bytes(),
+        identity_key_x25519: bob_x25519_identity.public_key_bytes(),
         signed_pre_key: SignedPreKey {
             key_id: 1,
             public_key: bob_spk.public_key_bytes(),

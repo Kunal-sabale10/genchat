@@ -20,9 +20,10 @@ pub struct PqxdhInitResult {
 /// The initial message Alice sends to Bob
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PqxdhInitMessage {
-    pub sender_identity_key: [u8; 32],
-    pub ephemeral_key: [u8; 32],
-    pub pq_ciphertext: Vec<u8>,        // ML-KEM-768 ciphertext (1088 bytes)
+    pub sender_identity_key: [u8; 32],         // Ed25519 verifying key
+    pub sender_identity_key_x25519: [u8; 32],  // X25519 public key (Alice's IK_A)
+    pub ephemeral_key: [u8; 32],               // X25519 ephemeral key (Alice's EK_A)
+    pub pq_ciphertext: Vec<u8>,                // ML-KEM-768 ciphertext (1088 bytes)
     pub used_signed_pre_key_id: u32,
     pub used_pq_pre_key_id: u32,
     pub used_one_time_key_id: Option<u32>,
@@ -56,12 +57,7 @@ pub fn initiate_pqxdh(
     let dh1 = alice_x25519_identity.diffie_hellman(&bob_spk_x25519);
 
     // 5. Compute DH2 = X25519(EK_A, IK_B_x25519)
-    // Here we assume bob's identity_key could be mapped, but for this impl we'd need bob's x25519 identity key.
-    // The spec requires Bob's X25519 Identity Key. Let's assume we have it or can map it. 
-    // For simplicity here, since Bob's bundle only has Ed25519 IK, we'll need a birational mapping in practice.
-    // We will just use the Ed25519 key bytes as X25519 bytes for this stub, but in real life it should be mapped properly.
-    let bob_ik_x25519_bytes = bob_bundle.identity_key; // NOTE: birational mapping needed here
-    let bob_ik_x25519 = X25519PublicKey::from(bob_ik_x25519_bytes);
+    let bob_ik_x25519 = X25519PublicKey::from(bob_bundle.identity_key_x25519);
     let dh2 = ephemeral_key_pair.diffie_hellman(&bob_ik_x25519);
 
     // 6. Compute DH3 = X25519(EK_A, SPK_B)
@@ -96,6 +92,7 @@ pub fn initiate_pqxdh(
         associated_data,
         init_message: PqxdhInitMessage {
             sender_identity_key: alice_identity.public_key_bytes(),
+            sender_identity_key_x25519: alice_x25519_identity.public_key_bytes(),
             ephemeral_key: ephemeral_key_pair.public_key_bytes(),
             pq_ciphertext,
             used_signed_pre_key_id: bob_bundle.signed_pre_key.key_id,
@@ -116,8 +113,7 @@ pub fn respond_pqxdh(
 ) -> Result<PqxdhRespondResult, CryptoError> {
     
     // 1. DH1 = X25519(SPK_B, IK_A_x25519)
-    // Note: birational mapping needed from sender_identity_key to X25519.
-    let alice_ik_x25519 = X25519PublicKey::from(init_msg.sender_identity_key);
+    let alice_ik_x25519 = X25519PublicKey::from(init_msg.sender_identity_key_x25519);
     let dh1 = bob_signed_pre_key.diffie_hellman(&alice_ik_x25519);
 
     // 2. DH2 = X25519(IK_B_x25519, EK_A)

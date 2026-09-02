@@ -175,6 +175,7 @@ pub struct OneTimePreKey {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PreKeyBundle {
     pub identity_key: [u8; 32],          // Ed25519 verifying key
+    pub identity_key_x25519: [u8; 32],   // X25519 public key (Bob's IK_B for DH)
     pub signed_pre_key: SignedPreKey,
     pub pq_pre_key: PqPreKey,
     pub one_time_pre_key: Option<OneTimePreKey>,
