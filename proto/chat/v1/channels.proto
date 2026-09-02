@@ -1,0 +1,94 @@
+syntax = "proto3";
+
+package chat.v1;
+
+option go_package = "github.com/genchat/proto/gen/chat/v1;chatv1";
+
+import "google/protobuf/timestamp.proto";
+
+enum ChannelType {
+  CHANNEL_TYPE_UNSPECIFIED = 0;
+  CHANNEL_TYPE_DM = 1;
+  CHANNEL_TYPE_GROUP = 2;
+  CHANNEL_TYPE_BROADCAST = 3;
+}
+
+enum ChannelRole {
+  CHANNEL_ROLE_UNSPECIFIED = 0;
+  CHANNEL_ROLE_OWNER = 1;
+  CHANNEL_ROLE_ADMIN = 2;
+  CHANNEL_ROLE_MEMBER = 3;
+}
+
+message Channel {
+  string id = 1;
+  ChannelType type = 2;
+  string name = 3;
+  string creator_id = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+message ChannelMember {
+  string channel_id = 1;
+  string user_id = 2;
+  ChannelRole role = 3;
+  google.protobuf.Timestamp joined_at = 4;
+  uint64 last_read_seq = 5;
+}
+
+message CreateChannelRequest {
+  ChannelType type = 1;
+  string name = 2;
+  repeated string member_user_ids = 3;
+}
+
+message CreateChannelResponse {
+  Channel channel = 1;
+  repeated ChannelMember members = 2;
+}
+
+message JoinChannelRequest {
+  string channel_id = 1;
+  bytes key_package = 2; // MLS KeyPackage
+}
+
+message JoinChannelResponse {
+  bool success = 1;
+  ChannelMember member = 2;
+  bytes mls_welcome = 3; // MLS Welcome message
+}
+
+message LeaveChannelRequest {
+  string channel_id = 1;
+}
+
+message LeaveChannelResponse {
+  bool success = 1;
+}
+
+message ListChannelsRequest {
+  uint32 limit = 1;
+  string page_token = 2;
+}
+
+message ListChannelsResponse {
+  repeated Channel channels = 1;
+  string next_page_token = 2;
+}
+
+message GetChannelMembersRequest {
+  string channel_id = 1;
+}
+
+message GetChannelMembersResponse {
+  repeated ChannelMember members = 1;
+}
+
+service ChannelService {
+  rpc CreateChannel(CreateChannelRequest) returns (CreateChannelResponse);
+  rpc JoinChannel(JoinChannelRequest) returns (JoinChannelResponse);
+  rpc LeaveChannel(LeaveChannelRequest) returns (LeaveChannelResponse);
+  rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse);
+  rpc GetChannelMembers(GetChannelMembersRequest) returns (GetChannelMembersResponse);
+}

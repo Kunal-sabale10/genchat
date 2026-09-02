@@ -22,6 +22,15 @@ pub enum CryptoError {
     
     #[error("decryption failed: {0}")]
     DecryptionFailed(String),
+
+    #[error("encryption failed: {0}")]
+    EncryptionFailed(String),
+
+    #[error("invalid MLS epoch: expected {expected}, got {got}")]
+    InvalidEpoch { expected: u64, got: u64 },
+
+    #[error("group member not found: {0}")]
+    MemberNotFound(String),
     
     #[error("serialization error: {0}")]
     SerializationError(String),

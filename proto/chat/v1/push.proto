@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package chat.v1;
+
+option go_package = "github.com/genchat/proto/gen/chat/v1;chatv1";
+
+enum PushPlatform {
+  PUSH_PLATFORM_UNSPECIFIED = 0;
+  PUSH_PLATFORM_APNS = 1;
+  PUSH_PLATFORM_FCM = 2;
+  PUSH_PLATFORM_WEBPUSH = 3;
+}
+
+message RegisterPushTokenRequest {
+  string device_id = 1;
+  PushPlatform platform = 2;
+  string token = 3;
+  string endpoint = 4;
+  bytes p256dh = 5;
+  bytes auth = 6;
+}
+
+message RegisterPushTokenResponse {
+  bool success = 1;
+}
+
+message UnregisterPushTokenRequest {
+  string device_id = 1;
+}
+
+message UnregisterPushTokenResponse {
+  bool success = 1;
+}
+
+service PushService {
+  rpc RegisterPushToken(RegisterPushTokenRequest) returns (RegisterPushTokenResponse);
+  rpc UnregisterPushToken(UnregisterPushTokenRequest) returns (UnregisterPushTokenResponse);
+}

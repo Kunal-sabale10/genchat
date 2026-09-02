@@ -5,6 +5,7 @@ use std::slice;
 use libc::{c_int, size_t};
 
 use genchat_crypto::keys::*;
+use genchat_crypto::mls::*;
 use genchat_crypto::ratchet::*;
 
 use types::*;
@@ -230,6 +231,110 @@ pub extern "C" fn genchat_session_decrypt(
 pub extern "C" fn genchat_session_free(session: *mut GenChatSession) {
     if !session.is_null() {
         unsafe { drop(Box::from_raw(session)); }
+    }
+}
+
+// ============================================================
+// MLS Group Encryption (RFC 9420)
+// ============================================================
+
+/// Create a new MLS group with creator as first member.
+#[no_mangle]
+pub extern "C" fn genchat_mls_group_create(
+    group_id: *const libc::c_char,
+    user_id: *const libc::c_char,
+    device_id: *const libc::c_char,
+    identity: *const IdentityKeyPair,
+    hpke_kp: *const X25519KeyPair,
+) -> *mut MlsGroup {
+    if group_id.is_null() || user_id.is_null() || device_id.is_null() || identity.is_null() || hpke_kp.is_null() {
+        return ptr::null_mut();
+    }
+    let gid = unsafe { std::ffi::CStr::from_ptr(group_id).to_string_lossy().into_owned() };
+    let uid = unsafe { std::ffi::CStr::from_ptr(user_id).to_string_lossy().into_owned() };
+    let did = unsafe { std::ffi::CStr::from_ptr(device_id).to_string_lossy().into_owned() };
+    let id_kp = unsafe { &*identity };
+    let hpke = unsafe { &*hpke_kp };
+
+    let group = MlsGroup::create(
+        gid,
+        uid,
+        did,
+        IdentityKeyPair::from_bytes(&id_kp.secret_key_bytes()).unwrap(),
+        X25519KeyPair::from_secret_bytes(hpke.secret_bytes()),
+    );
+    Box::into_raw(Box::new(group))
+}
+
+/// Encrypt an application message for an MLS group.
+#[no_mangle]
+pub extern "C" fn genchat_mls_group_encrypt(
+    group: *mut MlsGroup,
+    plaintext: *const u8,
+    plaintext_len: size_t,
+    out_ciphertext: *mut *mut u8,
+    out_len: *mut size_t,
+) -> c_int {
+    if group.is_null() || plaintext.is_null() || out_ciphertext.is_null() || out_len.is_null() {
+        return GENCHAT_ERR_NULL_PTR;
+    }
+    let group = unsafe { &mut *group };
+    let pt = unsafe { slice::from_raw_parts(plaintext, plaintext_len) };
+
+    match group.encrypt_message(pt) {
+        Ok(ct) => {
+            let serialized = serde_json::to_vec(&ct).map_err(|_| ()).unwrap();
+            let mut boxed = serialized.into_boxed_slice();
+            unsafe {
+                *out_len = boxed.len();
+                *out_ciphertext = boxed.as_mut_ptr();
+            }
+            std::mem::forget(boxed);
+            GENCHAT_OK
+        }
+        Err(_) => GENCHAT_ERR_CRYPTO,
+    }
+}
+
+/// Decrypt an MLS group message.
+#[no_mangle]
+pub extern "C" fn genchat_mls_group_decrypt(
+    group: *const MlsGroup,
+    ciphertext_json: *const u8,
+    ciphertext_len: size_t,
+    out_plaintext: *mut *mut u8,
+    out_len: *mut size_t,
+) -> c_int {
+    if group.is_null() || ciphertext_json.is_null() || out_plaintext.is_null() || out_len.is_null() {
+        return GENCHAT_ERR_NULL_PTR;
+    }
+    let group = unsafe { &*group };
+    let raw = unsafe { slice::from_raw_parts(ciphertext_json, ciphertext_len) };
+
+    let ct: MlsCiphertext = match serde_json::from_slice(raw) {
+        Ok(c) => c,
+        Err(_) => return GENCHAT_ERR_CRYPTO,
+    };
+
+    match group.decrypt_message(&ct) {
+        Ok(pt) => {
+            let mut boxed = pt.into_boxed_slice();
+            unsafe {
+                *out_len = boxed.len();
+                *out_plaintext = boxed.as_mut_ptr();
+            }
+            std::mem::forget(boxed);
+            GENCHAT_OK
+        }
+        Err(_) => GENCHAT_ERR_CRYPTO,
+    }
+}
+
+/// Free an MLS group state.
+#[no_mangle]
+pub extern "C" fn genchat_mls_group_free(group: *mut MlsGroup) {
+    if !group.is_null() {
+        unsafe { drop(Box::from_raw(group)); }
     }
 }
 

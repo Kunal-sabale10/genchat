@@ -273,3 +273,144 @@ func (s *PostgresStore) DeleteCeremony(ctx context.Context, sessionID string) er
 	_, err := s.pool.Exec(ctx, `DELETE FROM webauthn_ceremonies WHERE session_id = $1`, sessionID)
 	return err
 }
+
+// ============================================================
+// Channel & Push Token Management (Phase 2)
+// ============================================================
+
+type Channel struct {
+	ID          uuid.UUID
+	ChannelType string
+	Name        string
+	CreatorID   *uuid.UUID
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type ChannelMember struct {
+	ChannelID   uuid.UUID
+	UserID      uuid.UUID
+	Role        string
+	JoinedAt    time.Time
+	LastReadSeq int64
+}
+
+type PushToken struct {
+	DeviceID  uuid.UUID
+	UserID    uuid.UUID
+	Platform  string
+	Token     string
+	Endpoint  string
+	P256dh    []byte
+	Auth      []byte
+	UpdatedAt time.Time
+}
+
+func (s *PostgresStore) CreateChannel(ctx context.Context, channelType, name string, creatorID *uuid.UUID, memberIDs []uuid.UUID) (*Channel, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	ch := &Channel{
+		ID:          uuid.New(),
+		ChannelType: channelType,
+		Name:        name,
+		CreatorID:   creatorID,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	_, err = tx.Exec(ctx,
+		`INSERT INTO channels (id, channel_type, name, creator_id, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		ch.ID, ch.ChannelType, ch.Name, ch.CreatorID, ch.CreatedAt, ch.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, uid := range memberIDs {
+		role := "member"
+		if creatorID != nil && uid == *creatorID {
+			role = "owner"
+		}
+		_, err = tx.Exec(ctx,
+			`INSERT INTO channel_members (channel_id, user_id, role, joined_at, last_read_seq)
+			 VALUES ($1, $2, $3, $4, 0)
+			 ON CONFLICT (channel_id, user_id) DO NOTHING`,
+			ch.ID, uid, role, time.Now())
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return ch, nil
+}
+
+func (s *PostgresStore) GetChannelMembers(ctx context.Context, channelID uuid.UUID) ([]ChannelMember, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT channel_id, user_id, role, joined_at, last_read_seq
+		 FROM channel_members
+		 WHERE channel_id = $1 AND left_at IS NULL`, channelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var members []ChannelMember
+	for rows.Next() {
+		var m ChannelMember
+		if err := rows.Scan(&m.ChannelID, &m.UserID, &m.Role, &m.JoinedAt, &m.LastReadSeq); err != nil {
+			return nil, err
+		}
+		members = append(members, m)
+	}
+	return members, nil
+}
+
+func (s *PostgresStore) GetRemainingOneTimeKeyCount(ctx context.Context, deviceID uuid.UUID) (int, error) {
+	var count int
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM device_one_time_keys
+		 WHERE device_id = $1 AND NOT is_consumed`, deviceID).Scan(&count)
+	return count, err
+}
+
+func (s *PostgresStore) RegisterPushToken(ctx context.Context, pt *PushToken) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO device_push_tokens (device_id, user_id, platform, token, endpoint, p256dh, auth, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		 ON CONFLICT (device_id) DO UPDATE SET
+		   platform = EXCLUDED.platform,
+		   token = EXCLUDED.token,
+		   endpoint = EXCLUDED.endpoint,
+		   p256dh = EXCLUDED.p256dh,
+		   auth = EXCLUDED.auth,
+		   updated_at = EXCLUDED.updated_at`,
+		pt.DeviceID, pt.UserID, pt.Platform, pt.Token, pt.Endpoint, pt.P256dh, pt.Auth, time.Now())
+	return err
+}
+
+func (s *PostgresStore) GetPushTokensForUser(ctx context.Context, userID uuid.UUID) ([]PushToken, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT device_id, user_id, platform, token, endpoint, p256dh, auth, updated_at
+		 FROM device_push_tokens WHERE user_id = $1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tokens []PushToken
+	for rows.Next() {
+		var t PushToken
+		if err := rows.Scan(&t.DeviceID, &t.UserID, &t.Platform, &t.Token, &t.Endpoint, &t.P256dh, &t.Auth, &t.UpdatedAt); err != nil {
+			return nil, err
+		}
+		tokens = append(tokens, t)
+	}
+	return tokens, nil
+}

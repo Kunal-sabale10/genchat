@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package chat.v1;
+
+option go_package = "github.com/genchat/proto/gen/chat/v1;chatv1";
+
+import "google/protobuf/timestamp.proto";
+
+enum PresenceStatus {
+  PRESENCE_STATUS_UNSPECIFIED = 0;
+  PRESENCE_STATUS_OFFLINE = 1;
+  PRESENCE_STATUS_ONLINE = 2;
+  PRESENCE_STATUS_AWAY = 3;
+  PRESENCE_STATUS_BUSY = 4;
+}
+
+message PresenceUpdate {
+  string user_id = 1;
+  PresenceStatus status = 2;
+  string custom_status = 3;
+  google.protobuf.Timestamp last_seen_at = 4;
+}
+
+message PresenceQueryRequest {
+  repeated string user_ids = 1;
+}
+
+message PresenceQueryResponse {
+  repeated PresenceUpdate statuses = 1;
+}
+
+message TypingEvent {
+  string channel_id = 1;
+  string user_id = 2;
+  bool is_typing = 3;
+}
+
+service PresenceService {
+  rpc UpdatePresence(PresenceUpdate) returns (PresenceUpdate);
+  rpc QueryPresence(PresenceQueryRequest) returns (PresenceQueryResponse);
+}

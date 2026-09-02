@@ -109,6 +109,21 @@ func (h *Hub) SendToDevice(userID, deviceID string, payload []byte) {
 	}
 }
 
+func (h *Hub) BroadcastToUsers(userIDs []string, payload []byte) {
+	for _, uid := range userIDs {
+		h.SendToUser(uid, payload)
+	}
+}
+
+func (h *Hub) GetActiveDeviceCount(userID string) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if conns, ok := h.connections[userID]; ok {
+		return len(conns)
+	}
+	return 0
+}
+
 func (h *Hub) IsOnline(userID string) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

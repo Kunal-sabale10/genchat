@@ -77,6 +77,12 @@ impl X25519KeyPair {
         Self { secret, public }
     }
 
+    pub fn from_secret_bytes(secret_bytes: [u8; 32]) -> Self {
+        let secret = StaticSecret::from(secret_bytes);
+        let public = X25519PublicKey::from(&secret);
+        Self { secret, public }
+    }
+
     pub fn diffie_hellman(&self, their_public: &X25519PublicKey) -> [u8; 32] {
         let shared = self.secret.diffie_hellman(their_public);
         shared.to_bytes()
@@ -88,6 +94,14 @@ impl X25519KeyPair {
 
     pub fn public_key(&self) -> &X25519PublicKey {
         &self.public
+    }
+
+    pub fn secret_bytes(&self) -> [u8; 32] {
+        self.secret.to_bytes()
+    }
+
+    pub fn clone_secret(&self) -> StaticSecret {
+        StaticSecret::from(self.secret_bytes())
     }
 }
 

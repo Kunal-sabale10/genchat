@@ -34,6 +34,9 @@ message ClientAction {
     SendMessageAction send_message_action = 10;
     AckReceiptAction ack_receipt_action = 11;
     TypingIndicatorAction typing_indicator_action = 12;
+    SendGroupMessageAction send_group_message_action = 13;
+    MlsCommitAction mls_commit_action = 14;
+    PresenceUpdateAction presence_update_action = 15;
   }
 }
 
@@ -44,6 +47,25 @@ message SendMessageAction {
   bytes sender_ratchet_key = 4;
   uint32 message_index = 5;
   string reply_to_message_id = 20;
+}
+
+message SendGroupMessageAction {
+  string channel_id = 1;
+  string client_msg_id = 2;
+  uint64 epoch = 3;
+  bytes encrypted_payload = 4; // MLS application ciphertext
+  uint32 generation = 5;
+}
+
+message MlsCommitAction {
+  string channel_id = 1;
+  uint64 epoch = 2;
+  bytes commit_payload = 3; // Serialized MLS Commit
+}
+
+message PresenceUpdateAction {
+  string status = 1; // "online", "away", "offline"
+  string custom_status = 2;
 }
 
 message AckReceiptAction {
@@ -69,7 +91,34 @@ message ServerEvent {
     ReceiptUpdatedEvent receipt_updated = 11;
     TypingBroadcastEvent typing_broadcast = 12;
     ActionAckEvent action_ack = 13;
+    GroupMessageDeliveredEvent group_message_delivered = 14;
+    MlsCommitDeliveredEvent mls_commit_delivered = 15;
+    ReplenishPreKeysEvent replenish_pre_keys = 16;
   }
+}
+
+message GroupMessageDeliveredEvent {
+  string channel_id = 1;
+  string message_id = 2;
+  string sender_user_id = 3;
+  string sender_device_id = 4;
+  uint64 epoch = 5;
+  uint64 sequence_number = 6;
+  bytes encrypted_payload = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message MlsCommitDeliveredEvent {
+  string channel_id = 1;
+  uint64 epoch = 2;
+  string sender_user_id = 3;
+  bytes commit_payload = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message ReplenishPreKeysEvent {
+  uint32 remaining_count = 1;
+  uint32 target_count = 2;
 }
 
 message MessageDeliveredEvent {
