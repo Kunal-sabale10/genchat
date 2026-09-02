@@ -39,8 +39,7 @@ type OneTimeKey struct {
 	ID         uuid.UUID
 	DeviceID   uuid.UUID
 	KeyID      uint32
-	KeyData    []byte
-	Signature  []byte
+	PublicKey  []byte
 	IsConsumed bool
 	CreatedAt  time.Time
 }
@@ -56,7 +55,6 @@ type PreKeyBundle struct {
 	PQPKID       uint32
 	OneTimeKeyID *uint32
 	OneTimeKey   []byte
-	OneTimeKeySig []byte
 }
 
 type AuthSession struct {
@@ -111,14 +109,14 @@ func (s *PostgresStore) CreateDevice(ctx context.Context, userID uuid.UUID, iden
 	var id uuid.UUID
 	now := time.Now()
 	err := s.pool.QueryRow(ctx, 
-		`INSERT INTO user_devices (id, user_id, identity_key, label, webauthn_cred, last_seen_at, created_at) 
+		`INSERT INTO user_devices (id, user_id, identity_key, device_label, webauthn_cred, last_seen_at, created_at) 
 		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`, 
 		uuid.New(), userID, identityKey, label, webauthnCred, now, now).Scan(&id)
 	return id, err
 }
 
 func (s *PostgresStore) GetDevicesByUser(ctx context.Context, userID uuid.UUID) ([]*Device, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, user_id, identity_key, label, webauthn_cred, last_seen_at, created_at FROM user_devices WHERE user_id = $1`, userID)
+	rows, err := s.pool.Query(ctx, `SELECT id, user_id, identity_key, device_label, webauthn_cred, last_seen_at, created_at FROM user_devices WHERE user_id = $1`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get devices failed: %w", err)
 	}
@@ -142,28 +140,27 @@ func (s *PostgresStore) UpdateDeviceLastSeen(ctx context.Context, deviceID uuid.
 
 func (s *PostgresStore) UploadPreKeyBundle(ctx context.Context, deviceID uuid.UUID, spk, spkSig []byte, spkID uint32, pqpk, pqpkSig []byte, pqpkID uint32) error {
 	_, err := s.pool.Exec(ctx, 
-		`INSERT INTO device_pre_keys (device_id, spk, spk_sig, spk_id, pqpk, pqpk_sig, pqpk_id, updated_at) 
+		`INSERT INTO device_pre_keys (device_id, signed_pre_key, signed_pre_key_sig, signed_pre_key_id, pq_pre_key, pq_pre_key_sig, pq_pre_key_id, uploaded_at) 
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		 ON CONFLICT (device_id) DO UPDATE SET 
-		 spk = EXCLUDED.spk, spk_sig = EXCLUDED.spk_sig, spk_id = EXCLUDED.spk_id,
-		 pqpk = EXCLUDED.pqpk, pqpk_sig = EXCLUDED.pqpk_sig, pqpk_id = EXCLUDED.pqpk_id,
-		 updated_at = EXCLUDED.updated_at`,
+		 ON CONFLICT (device_id, signed_pre_key_id) DO UPDATE SET 
+		 signed_pre_key = EXCLUDED.signed_pre_key, signed_pre_key_sig = EXCLUDED.signed_pre_key_sig,
+		 pq_pre_key = EXCLUDED.pq_pre_key, pq_pre_key_sig = EXCLUDED.pq_pre_key_sig, pq_pre_key_id = EXCLUDED.pq_pre_key_id,
+		 uploaded_at = EXCLUDED.uploaded_at`,
 		deviceID, spk, spkSig, spkID, pqpk, pqpkSig, pqpkID, time.Now())
 	return err
 }
 
 type OTK struct {
-	KeyID uint32
-	Key   []byte
-	Sig   []byte
+	KeyID     uint32
+	PublicKey []byte
 }
 
 func (s *PostgresStore) UploadOneTimeKeys(ctx context.Context, deviceID uuid.UUID, keys []OTK) error {
 	batch := &pgx.Batch{}
 	now := time.Now()
 	for _, k := range keys {
-		batch.Queue(`INSERT INTO device_one_time_keys (id, device_id, key_id, key_data, signature, is_consumed, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-			uuid.New(), deviceID, k.KeyID, k.Key, k.Sig, false, now)
+		batch.Queue(`INSERT INTO device_one_time_keys (id, device_id, key_id, public_key, is_consumed, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
+			uuid.New(), deviceID, k.KeyID, k.PublicKey, false, now)
 	}
 	br := s.pool.SendBatch(ctx, batch)
 	defer br.Close()
@@ -190,14 +187,14 @@ func (s *PostgresStore) FetchPreKeyBundle(ctx context.Context, userID, deviceID 
 		return nil, fmt.Errorf("failed to get identity key: %w", err)
 	}
 
-	err = tx.QueryRow(ctx, `SELECT spk, spk_sig, spk_id, pqpk, pqpk_sig, pqpk_id FROM device_pre_keys WHERE device_id = $1`, deviceID).
+	err = tx.QueryRow(ctx, `SELECT signed_pre_key, signed_pre_key_sig, signed_pre_key_id, pq_pre_key, pq_pre_key_sig, pq_pre_key_id FROM device_pre_keys WHERE device_id = $1`, deviceID).
 		Scan(&bundle.SPK, &bundle.SPKSig, &bundle.SPKID, &bundle.PQPK, &bundle.PQPKSig, &bundle.PQPKID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pre keys: %w", err)
 	}
 
 	var otkID uint32
-	var otkData, otkSig []byte
+	var otkData []byte
 	err = tx.QueryRow(ctx, `
 		UPDATE device_one_time_keys 
 		SET is_consumed = true 
@@ -205,12 +202,11 @@ func (s *PostgresStore) FetchPreKeyBundle(ctx context.Context, userID, deviceID 
 			SELECT id FROM device_one_time_keys 
 			WHERE device_id = $1 AND is_consumed = false 
 			LIMIT 1 FOR UPDATE SKIP LOCKED
-		) RETURNING key_id, key_data, signature`, deviceID).Scan(&otkID, &otkData, &otkSig)
+		) RETURNING key_id, public_key`, deviceID).Scan(&otkID, &otkData)
 	
 	if err == nil {
 		bundle.OneTimeKeyID = &otkID
 		bundle.OneTimeKey = otkData
-		bundle.OneTimeKeySig = otkSig
 	} else if err != pgx.ErrNoRows {
 		return nil, fmt.Errorf("failed to fetch and consume otk: %w", err)
 	}
@@ -255,7 +251,7 @@ func (s *PostgresStore) RevokeAuthSession(ctx context.Context, sessionID uuid.UU
 
 func (s *PostgresStore) SaveCeremony(ctx context.Context, sessionID, ceremonyType string, sessionData, userID []byte, displayName string, expiresAt time.Time) error {
 	_, err := s.pool.Exec(ctx, 
-		`INSERT INTO ceremonies (session_id, ceremony_type, session_data, user_id, display_name, expires_at) 
+		`INSERT INTO webauthn_ceremonies (session_id, ceremony_type, session_data, user_id, display_name, expires_at) 
 		 VALUES ($1, $2, $3, $4, $5, $6)`, 
 		sessionID, ceremonyType, sessionData, userID, displayName, expiresAt)
 	return err
@@ -265,7 +261,7 @@ func (s *PostgresStore) GetCeremony(ctx context.Context, sessionID string) (*Cer
 	c := &Ceremony{}
 	err := s.pool.QueryRow(ctx, 
 		`SELECT session_id, ceremony_type, session_data, user_id, display_name, expires_at 
-		 FROM ceremonies WHERE session_id = $1`, sessionID).
+		 FROM webauthn_ceremonies WHERE session_id = $1`, sessionID).
 		Scan(&c.SessionID, &c.CeremonyType, &c.SessionData, &c.UserID, &c.DisplayName, &c.ExpiresAt)
 	if err != nil {
 		return nil, err
@@ -274,6 +270,6 @@ func (s *PostgresStore) GetCeremony(ctx context.Context, sessionID string) (*Cer
 }
 
 func (s *PostgresStore) DeleteCeremony(ctx context.Context, sessionID string) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM ceremonies WHERE session_id = $1`, sessionID)
+	_, err := s.pool.Exec(ctx, `DELETE FROM webauthn_ceremonies WHERE session_id = $1`, sessionID)
 	return err
 }

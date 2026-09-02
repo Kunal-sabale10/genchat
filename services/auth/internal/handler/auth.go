@@ -69,7 +69,7 @@ func (h *AuthHandler) BeginRegistration(ctx context.Context, displayName string,
 	}
 
 	sessionID := uuid.New().String()
-	err = h.store.SaveCeremony(ctx, sessionID, "register", sessionJSON, nil, displayName, time.Now().Add(5*time.Minute))
+	err = h.store.SaveCeremony(ctx, sessionID, "registration", sessionJSON, nil, displayName, time.Now().Add(5*time.Minute))
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to save ceremony: %w", err)
 	}
@@ -92,7 +92,7 @@ func (h *AuthHandler) FinishRegistration(ctx context.Context, sessionID string, 
 		return nil, fmt.Errorf("failed to get ceremony: %w", err)
 	}
 
-	if ceremony.CeremonyType != "register" {
+	if ceremony.CeremonyType != "registration" {
 		return nil, fmt.Errorf("invalid ceremony type")
 	}
 

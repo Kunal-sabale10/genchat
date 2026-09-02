@@ -146,14 +146,14 @@ func (s *ScyllaStore) UpsertReceipt(ctx context.Context, conversationID, userID 
 	if deliveredID != nil {
 		gocqlDeliveredID, err = gocql.ParseUUID(deliveredID.String())
 		if err != nil { return err }
-		q = `UPDATE genchat.receipts SET last_delivered_id = ?, last_delivered_seq = ?, updated_at = ? WHERE conversation_id = ? AND user_id = ?`
+		q = `UPDATE genchat.message_receipts SET last_delivered_id = ?, last_delivered_seq = ?, updated_at = ? WHERE conversation_id = ? AND user_id = ?`
 		return s.session.Query(q, gocqlDeliveredID, deliveredSeq, time.Now(), conversationID, userID).WithContext(ctx).Exec()
 	}
 	
 	if readID != nil {
 		gocqlReadID, err = gocql.ParseUUID(readID.String())
 		if err != nil { return err }
-		q = `UPDATE genchat.receipts SET last_read_id = ?, last_read_seq = ?, updated_at = ? WHERE conversation_id = ? AND user_id = ?`
+		q = `UPDATE genchat.message_receipts SET last_read_id = ?, last_read_seq = ?, updated_at = ? WHERE conversation_id = ? AND user_id = ?`
 		return s.session.Query(q, gocqlReadID, readSeq, time.Now(), conversationID, userID).WithContext(ctx).Exec()
 	}
 	
@@ -161,7 +161,7 @@ func (s *ScyllaStore) UpsertReceipt(ctx context.Context, conversationID, userID 
 }
 
 func (s *ScyllaStore) GetReceipts(ctx context.Context, conversationID string) ([]*Receipt, error) {
-	iter := s.session.Query(`SELECT user_id, last_delivered_id, last_delivered_seq, last_read_id, last_read_seq, updated_at FROM genchat.receipts WHERE conversation_id = ?`, conversationID).WithContext(ctx).Iter()
+	iter := s.session.Query(`SELECT user_id, last_delivered_id, last_delivered_seq, last_read_id, last_read_seq, updated_at FROM genchat.message_receipts WHERE conversation_id = ?`, conversationID).WithContext(ctx).Iter()
 	
 	var receipts []*Receipt
 	var userID string

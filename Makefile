@@ -1,14 +1,21 @@
-.PHONY: all proto build-rust build-go test lint clean docker-up docker-down migrate
+.PHONY: all proto install-tools build-rust build-go test lint clean docker-up docker-down migrate
 
 PROTO_DIR := proto
 GEN_DIR := gen
 RUST_CRYPTO_DIR := crypto/genchat-crypto
 RUST_FFI_DIR := crypto/genchat-crypto-ffi
 
+# Install required Go tools for code generation
+install-tools:
+	@echo "Installing protobuf Go plugins..."
+	go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.32.0
+	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.3.0
+
 # Generate Go code from proto files  
-proto:
+proto: install-tools
 	@echo "Generating protobuf code..."
 	mkdir -p $(GEN_DIR)/chat/v1
+	@test -f $(GEN_DIR)/go.mod || printf 'module github.com/genchat/proto/gen\n\ngo 1.24\n\nrequire (\n\tgoogle.golang.org/grpc v1.69.4\n\tgoogle.golang.org/protobuf v1.36.3\n)\n' > $(GEN_DIR)/go.mod
 	protoc --proto_path=$(PROTO_DIR) \
 		--go_out=$(GEN_DIR) --go_opt=paths=source_relative \
 		--go-grpc_out=$(GEN_DIR) --go-grpc_opt=paths=source_relative \
