@@ -71,7 +71,7 @@ impl LocalIntelligence {
                 || lower.contains("action item:")
                 || lower.contains("will implement");
 
-            if is_todo && !is_deadline {
+            if is_todo {
                 items.push(ActionItem {
                     action_type: ActionType::Todo,
                     text: line.to_string(),
