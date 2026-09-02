@@ -42,7 +42,7 @@ fn test_mls_3party_group_lifecycle_and_messaging() {
     // -------------------------------------------------------------
     // 3. Alice adds Bob to the group (Epoch 1)
     // -------------------------------------------------------------
-    let (welcome_bob, commit_1) = alice_group.add_member(&bob_kp)
+    let (welcome_bob, _commit_1) = alice_group.add_member(&bob_kp)
         .expect("Alice failed to add Bob");
     assert_eq!(alice_group.epoch, 1);
 
