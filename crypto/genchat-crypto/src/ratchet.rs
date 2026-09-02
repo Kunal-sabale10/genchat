@@ -25,7 +25,11 @@ impl GenChatAccount {
     }
 
     pub fn one_time_keys(&self) -> HashMap<String, Curve25519PublicKey> {
-        self.account.one_time_keys()
+        self.account
+            .one_time_keys()
+            .into_iter()
+            .map(|(id, key)| (id.to_string(), key))
+            .collect()
     }
 
     pub fn mark_keys_as_published(&mut self) {
@@ -52,14 +56,16 @@ impl GenChatAccount {
         Ok((GenChatSession { session: result.session }, result.plaintext))
     }
 
-    pub fn pickle(&self) -> String {
-        self.account.pickle().to_string()
+    pub fn pickle(&self, pickle_key: &[u8; 32]) -> Result<String, CryptoError> {
+        let pickle = self.account.pickle().encrypt(pickle_key);
+        serde_json::to_string(&pickle).map_err(|e| CryptoError::SerializationError(e.to_string()))
     }
 
-    pub fn unpickle(data: &str) -> Result<Self, CryptoError> {
-        let pickle = AccountPickle::from_string(data)
+    pub fn unpickle(data: &str, pickle_key: &[u8; 32]) -> Result<Self, CryptoError> {
+        let pickle: AccountPickle = serde_json::from_str(data)
             .map_err(|e| CryptoError::SerializationError(e.to_string()))?;
-        let account = Account::from_pickle(pickle);
+        let account = Account::from_pickle(pickle, pickle_key)
+            .map_err(|e| CryptoError::SerializationError(e.to_string()))?;
         Ok(Self { account })
     }
 }
@@ -103,14 +109,16 @@ impl GenChatSession {
         self.session.session_id()
     }
 
-    pub fn pickle(&self) -> String {
-        self.session.pickle().to_string()
+    pub fn pickle(&self, pickle_key: &[u8; 32]) -> Result<String, CryptoError> {
+        let pickle = self.session.pickle().encrypt(pickle_key);
+        serde_json::to_string(&pickle).map_err(|e| CryptoError::SerializationError(e.to_string()))
     }
 
-    pub fn unpickle(data: &str) -> Result<Self, CryptoError> {
-        let pickle = SessionPickle::from_string(data)
+    pub fn unpickle(data: &str, pickle_key: &[u8; 32]) -> Result<Self, CryptoError> {
+        let pickle: SessionPickle = serde_json::from_str(data)
             .map_err(|e| CryptoError::SerializationError(e.to_string()))?;
-        let session = Session::from_pickle(pickle);
+        let session = Session::from_pickle(pickle, pickle_key)
+            .map_err(|e| CryptoError::SerializationError(e.to_string()))?;
         Ok(Self { session })
     }
 }

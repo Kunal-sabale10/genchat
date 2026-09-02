@@ -1,14 +1,22 @@
 use ed25519_dalek::{SigningKey, VerifyingKey, Signer, Verifier, Signature};
 use x25519_dalek::{StaticSecret, PublicKey as X25519PublicKey};
-use ml_kem::MlKem768;
-use ml_kem::kem::{Encapsulate, Decapsulate};
-use ml_kem::{KemCore, Encoded};
+use ml_kem::{
+    kem::{DecapsulationKey, EncapsulationKey},
+    hybrid_array::Array,
+    EncodedSizeUser,
+    KemCore,
+    MlKem768,
+    MlKem768Params,
+};
 use rand::rngs::OsRng;
 use zeroize::Zeroize;
 use serde::{Serialize, Deserialize};
-use std::convert::TryInto;
 
 use crate::error::CryptoError;
+
+pub type MlKem768EncapsulationKey = EncapsulationKey<MlKem768Params>;
+pub type MlKem768DecapsulationKey = DecapsulationKey<MlKem768Params>;
+pub type MlKem768Ciphertext = ml_kem::Ciphertext<MlKem768>;
 
 /// Ed25519 identity key pair for a user/device
 pub struct IdentityKeyPair {
@@ -93,44 +101,43 @@ impl PqKeyPair {
     pub fn generate() -> Self {
         let (dk, ek) = MlKem768::generate(&mut OsRng);
         Self {
-            encapsulation_key_bytes: ek.as_bytes().to_vec(),
-            decapsulation_key_bytes: dk.as_bytes().to_vec(),
+            encapsulation_key_bytes: ek.as_bytes().as_slice().to_vec(),
+            decapsulation_key_bytes: dk.as_bytes().as_slice().to_vec(),
         }
     }
 
     pub fn encapsulate_with(encapsulation_key_bytes: &[u8]) -> Result<(Vec<u8>, [u8; 32]), CryptoError> {
-        let mut ek_bytes = Encoded::<MlKem768::EncapsulationKey>::default();
-        if encapsulation_key_bytes.len() != ek_bytes.len() {
-            return Err(CryptoError::InvalidKeyLength { expected: ek_bytes.len(), got: encapsulation_key_bytes.len() });
+        if encapsulation_key_bytes.len() != 1184 {
+            return Err(CryptoError::InvalidKeyLength {
+                expected: 1184,
+                got: encapsulation_key_bytes.len(),
+            });
         }
-        ek_bytes.copy_from_slice(encapsulation_key_bytes);
-        
-        let ek = ml_kem::EncapsulationKey::<MlKem768>::from_bytes(&ek_bytes);
+        let array = Array::clone_from_slice(encapsulation_key_bytes);
+        let ek = MlKem768EncapsulationKey::from_bytes(&array);
         let (ct, ss) = ek.encapsulate(&mut OsRng)
             .map_err(|_| CryptoError::KemEncapsulationFailed)?;
-            
-        Ok((ct.as_bytes().to_vec(), ss.into()))
+
+        Ok((ct.as_slice().to_vec(), ss.into()))
     }
 
     pub fn decapsulate(&self, ciphertext: &[u8]) -> Result<[u8; 32], CryptoError> {
-        let mut dk_bytes = Encoded::<MlKem768::DecapsulationKey>::default();
-        if self.decapsulation_key_bytes.len() != dk_bytes.len() {
+        if self.decapsulation_key_bytes.len() != 2400 {
             return Err(CryptoError::KemDecapsulationFailed);
         }
-        dk_bytes.copy_from_slice(&self.decapsulation_key_bytes);
-        let dk = ml_kem::DecapsulationKey::<MlKem768>::from_bytes(&dk_bytes);
+        let dk_array = Array::clone_from_slice(&self.decapsulation_key_bytes);
+        let dk = MlKem768DecapsulationKey::from_bytes(&dk_array);
 
-        let mut ct_bytes = Encoded::<MlKem768::Ciphertext>::default();
-        if ciphertext.len() != ct_bytes.len() {
-            return Err(CryptoError::InvalidKeyLength { expected: ct_bytes.len(), got: ciphertext.len() });
+        if ciphertext.len() != 1088 {
+            return Err(CryptoError::InvalidKeyLength {
+                expected: 1088,
+                got: ciphertext.len(),
+            });
         }
-        ct_bytes.copy_from_slice(ciphertext);
-        
-        let ct = ml_kem::Ciphertext::<MlKem768>::from_bytes(&ct_bytes);
-        
-        let ss = dk.decapsulate(&ct)
+        let ct_array: MlKem768Ciphertext = Array::clone_from_slice(ciphertext);
+        let ss = dk.decapsulate(&ct_array)
             .map_err(|_| CryptoError::KemDecapsulationFailed)?;
-            
+
         Ok(ss.into())
     }
 }

@@ -1,0 +1,15 @@
+FROM golang:1.24-bookworm
+
+RUN apt-get update && apt-get install -y \
+    curl build-essential protobuf-compiler \
+    libprotobuf-dev pkg-config clang && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Pin protoc-gen-go-grpc to a release compatible with Go 1.24
+RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2 && \
+    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+
+WORKDIR /workspace
