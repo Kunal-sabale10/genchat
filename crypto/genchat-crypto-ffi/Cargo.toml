@@ -1,0 +1,15 @@
+[package]
+name = "genchat-crypto-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "C FFI bindings for genchat-crypto"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+genchat-crypto = { path = "../genchat-crypto" }
+libc = "0.2"
+
+[build-dependencies]
+cbindgen = "0.27"

@@ -1,0 +1,8 @@
+go 1.24
+
+use (
+	./gen
+	./services/auth
+	./services/gateway
+	./services/msgledger
+)

@@ -1,0 +1,93 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_DB: genchat
+      POSTGRES_USER: genchat
+      POSTGRES_PASSWORD: dev_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U genchat"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  scylladb:
+    image: scylladb/scylla:6.2
+    ports: ["9042:9042", "19042:19042"]
+    command: --smp 2 --memory 1G --overprovisioned 1 --developer-mode 1
+    volumes:
+      - scylladata:/var/lib/scylla
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster'"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Envoy edge proxy  
+  envoy:
+    image: envoyproxy/envoy:v1.32-latest
+    ports:
+      - "8443:443"
+      - "8080:80"
+    volumes:
+      - ./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./certs:/etc/envoy/certs:ro
+    depends_on:
+      - postgres
+      - scylladb
+      - redis
+
+  auth:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: auth
+    ports:
+      - "50051:50051"
+    environment:
+      - POSTGRES_URL=postgres://genchat:dev_password@postgres:5432/genchat?sslmode=disable
+    depends_on:
+      - postgres
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: gateway
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+
+  ledger:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: ledger
+    ports:
+      - "50052:50052"
+    environment:
+      - SCYLLA_HOSTS=scylladb
+      - REDIS_ADDR=redis:6379
+    depends_on:
+      - scylladb
+      - redis
+
+volumes:
+  pgdata:
+  scylladata:

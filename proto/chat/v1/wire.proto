@@ -1,0 +1,108 @@
+syntax = "proto3";
+
+package chat.v1;
+
+option go_package = "github.com/genchat/proto/gen/chat/v1;chatv1";
+
+import "google/protobuf/timestamp.proto";
+
+enum ReceiptType {
+  RECEIPT_TYPE_UNSPECIFIED = 0;
+  RECEIPT_TYPE_DELIVERED = 1;
+  RECEIPT_TYPE_READ = 2;
+}
+
+message Packet {
+  string trace_id = 1;
+  google.protobuf.Timestamp sent_at = 2;
+
+  oneof payload {
+    ClientAction client_action = 10;
+    ServerEvent server_event = 11;
+    Heartbeat heartbeat = 12;
+  }
+}
+
+message Heartbeat {
+  uint64 sequence_number = 1;
+}
+
+message ClientAction {
+  string request_id = 1;
+
+  oneof action {
+    SendMessageAction send_message_action = 10;
+    AckReceiptAction ack_receipt_action = 11;
+    TypingIndicatorAction typing_indicator_action = 12;
+  }
+}
+
+message SendMessageAction {
+  string conversation_id = 1;
+  string client_msg_id = 2;
+  bytes encrypted_payload = 3;
+  bytes sender_ratchet_key = 4;
+  uint32 message_index = 5;
+  string reply_to_message_id = 20;
+}
+
+message AckReceiptAction {
+  string conversation_id = 1;
+  ReceiptType type = 2;
+
+  oneof target {
+    string message_id = 3;
+    uint64 up_to_seq = 4;
+  }
+}
+
+message TypingIndicatorAction {
+  string conversation_id = 1;
+  bool is_typing = 2;
+}
+
+message ServerEvent {
+  uint64 global_sequence = 1;
+
+  oneof event {
+    MessageDeliveredEvent message_delivered = 10;
+    ReceiptUpdatedEvent receipt_updated = 11;
+    TypingBroadcastEvent typing_broadcast = 12;
+    ActionAckEvent action_ack = 13;
+  }
+}
+
+message MessageDeliveredEvent {
+  string conversation_id = 1;
+  string message_id = 2;
+  string client_msg_id = 3;
+  string sender_user_id = 4;
+  uint64 sequence_number = 5;
+  google.protobuf.Timestamp created_at = 6;
+  bytes encrypted_payload = 7;
+  bytes sender_ratchet_key = 8;
+  uint32 message_index = 9;
+  string reply_to_message_id = 10;
+}
+
+message ReceiptUpdatedEvent {
+  string conversation_id = 1;
+  string user_id = 2;
+  ReceiptType type = 3;
+  string message_id = 4;
+  uint64 up_to_seq = 5;
+  google.protobuf.Timestamp timestamp = 6;
+}
+
+message TypingBroadcastEvent {
+  string conversation_id = 1;
+  string user_id = 2;
+  bool is_typing = 3;
+}
+
+message ActionAckEvent {
+  string request_id = 1;
+  bool success = 2;
+  string error_code = 3;
+  string error_msg = 4;
+}

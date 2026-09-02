@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package chat.v1;
+
+option go_package = "github.com/genchat/proto/gen/chat/v1;chatv1";
+
+service KeyService {
+  rpc UploadPreKeyBundle(UploadPreKeyBundleRequest) returns (UploadPreKeyBundleResponse);
+  rpc FetchPreKeyBundle(FetchPreKeyBundleRequest) returns (FetchPreKeyBundleResponse);
+  rpc GetKeyCount(GetKeyCountRequest) returns (GetKeyCountResponse);
+  rpc UploadOneTimeKeys(UploadOneTimeKeysRequest) returns (UploadOneTimeKeysResponse);
+}
+
+message PreKeyBundle {
+  bytes identity_key = 1;
+  SignedPreKey signed_pre_key = 2;
+  PqPreKey pq_pre_key = 3;
+  OneTimePreKey one_time_pre_key = 4;
+}
+
+message SignedPreKey {
+  uint32 key_id = 1;
+  bytes public_key = 2;
+  bytes signature = 3;
+}
+
+message PqPreKey {
+  uint32 key_id = 1;
+  // ML-KEM-768: 1184 byte public key
+  bytes public_key = 2;
+  bytes signature = 3;
+}
+
+message OneTimePreKey {
+  uint32 key_id = 1;
+  bytes public_key = 2;
+}
+
+message UploadPreKeyBundleRequest {
+  string device_id = 1;
+  SignedPreKey signed_pre_key = 2;
+  PqPreKey pq_pre_key = 3;
+  repeated OneTimePreKey one_time_pre_keys = 4;
+}
+
+message UploadPreKeyBundleResponse {
+}
+
+message FetchPreKeyBundleRequest {
+  string user_id = 1;
+  string device_id = 2;
+}
+
+message FetchPreKeyBundleResponse {
+  PreKeyBundle bundle = 1;
+}
+
+message GetKeyCountRequest {
+  string device_id = 1;
+}
+
+message GetKeyCountResponse {
+  uint32 one_time_key_count = 1;
+}
+
+message UploadOneTimeKeysRequest {
+  string device_id = 1;
+  repeated OneTimePreKey keys = 2;
+}
+
+message UploadOneTimeKeysResponse {
+}
