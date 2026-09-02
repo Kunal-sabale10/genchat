@@ -79,9 +79,9 @@ fn test_mls_3party_group_lifecycle_and_messaging() {
     assert_eq!(alice_group.epoch, 2);
 
     // Bob processes Commit 2 to advance to Epoch 2
-    bob_group.process_commit(&commit_2)
-        .expect("Bob failed to process Commit 2");
-    assert_eq!(bob_group.epoch, 2);
+    bob_group.apply_commit(&commit_2)
+        .expect("Bob failed to apply Commit 2");
+    assert_eq!(bob_group.epoch(), 2);
 
     // Charlie joins from Welcome
     let mut charlie_group = MlsGroup::from_welcome(
@@ -89,7 +89,12 @@ fn test_mls_3party_group_lifecycle_and_messaging() {
         charlie_identity,
         charlie_hpke.clone_secret(),
     ).expect("Charlie failed to join from Welcome");
-    assert_eq!(charlie_group.epoch, 2);
+    assert_eq!(charlie_group.epoch(), 2);
+
+    // Verify all 3 members are synchronized on Epoch 2
+    assert_eq!(alice_group.epoch(), 2);
+    assert_eq!(bob_group.epoch(), 2);
+    assert_eq!(charlie_group.epoch(), 2);
 
     // -------------------------------------------------------------
     // 6. Charlie sends message in Epoch 2 -> Alice and Bob both decrypt

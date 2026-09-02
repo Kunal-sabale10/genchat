@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce,
@@ -13,9 +12,29 @@ use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 use crate::error::CryptoError;
 use crate::keys::{IdentityKeyPair, X25519KeyPair};
 
-const MLS_APPLICATION_INFO: &[u8] = b"MLS 1.0 Application Secret";
-const MLS_CONFIRMATION_INFO: &[u8] = b"MLS 1.0 Confirmation Key";
-const MLS_NEXT_INIT_INFO: &[u8] = b"MLS 1.0 Next Init Secret";
+/// Deterministic epoch secret derivation across all group members
+fn derive_epoch_secrets(
+    current_epoch_secret: &[u8; 32],
+    epoch: u64,
+    context_tag: &[u8],
+) -> ([u8; 32], [u8; 32]) {
+    let mut epoch_info = Vec::with_capacity(context_tag.len() + 8);
+    epoch_info.extend_from_slice(context_tag);
+    epoch_info.extend_from_slice(&epoch.to_be_bytes());
+
+    let hk = Hkdf::<Sha256>::new(Some(current_epoch_secret), &epoch_info);
+    
+    let mut next_epoch_secret = [0u8; 32];
+    hk.expand(b"genchat_mls_next_epoch", &mut next_epoch_secret)
+        .expect("HKDF expand next_epoch failed");
+
+    let mut next_app_secret = [0u8; 32];
+    let hk_app = Hkdf::<Sha256>::new(None, &next_epoch_secret);
+    hk_app.expand(b"genchat_mls_application_secret", &mut next_app_secret)
+        .expect("HKDF expand app_secret failed");
+
+    (next_epoch_secret, next_app_secret)
+}
 
 /// Key package published by a client device to allow others to add it to groups
 #[derive(Clone, Serialize, Deserialize)]
@@ -77,24 +96,16 @@ pub struct MlsLeafNode {
     pub is_blank: bool,
 }
 
-/// TreeKEM binary tree node
-#[derive(Clone, Serialize, Deserialize)]
-pub struct TreeKemNode {
-    pub public_key: Option<[u8; 32]>,
-}
-
 /// TreeKEM binary tree structure for MLS groups
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TreeKemTree {
     pub leaves: Vec<MlsLeafNode>,
-    pub parent_nodes: Vec<TreeKemNode>,
 }
 
 impl TreeKemTree {
     pub fn new() -> Self {
         Self {
             leaves: Vec::new(),
-            parent_nodes: Vec::new(),
         }
     }
 
@@ -149,6 +160,7 @@ pub struct MlsCommit {
     pub group_id: String,
     pub epoch: u64,
     pub sender_leaf_index: usize,
+    pub commit_tag: String,
     pub new_path_public_key: [u8; 32],
     pub confirmation_tag: [u8; 32],
 }
@@ -172,14 +184,17 @@ pub struct MlsGroup {
     pub my_identity: IdentityKeyPair,
     pub my_hpke_secret: StaticSecret,
     pub tree: TreeKemTree,
-    pub init_secret: [u8; 32],
     pub epoch_secret: [u8; 32],
     pub application_secret: [u8; 32],
-    pub confirmation_key: [u8; 32],
     pub message_generation: u32,
 }
 
 impl MlsGroup {
+    /// Get current group epoch
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
     /// Create a new MLS group with the creator as the first member (epoch 0)
     pub fn create(
         group_id: String,
@@ -197,25 +212,22 @@ impl MlsGroup {
             is_blank: false,
         });
 
-        let mut init_secret = [0u8; 32];
-        OsRng.fill_bytes(&mut init_secret);
+        let mut initial_epoch_secret = [0u8; 32];
+        OsRng.fill_bytes(&mut initial_epoch_secret);
 
-        let mut group = Self {
+        let (_, initial_app_secret) = derive_epoch_secrets(&initial_epoch_secret, 0, b"init");
+
+        Self {
             group_id,
             epoch: 0,
             my_leaf_index: my_leaf_idx,
             my_identity: identity,
-            my_hpke_secret: StaticSecret::random_from_rng(OsRng),
+            my_hpke_secret: hpke_keypair.clone_secret(),
             tree,
-            init_secret,
-            epoch_secret: [0u8; 32],
-            application_secret: [0u8; 32],
-            confirmation_key: [0u8; 32],
+            epoch_secret: initial_epoch_secret,
+            application_secret: initial_app_secret,
             message_generation: 0,
-        };
-
-        group.derive_epoch_secrets(&[0u8; 32]);
-        group
+        }
     }
 
     /// Add a new member to the group, generating Welcome and Commit messages
@@ -234,20 +246,14 @@ impl MlsGroup {
         };
 
         let new_leaf_idx = self.tree.add_leaf(new_leaf);
-
-        // Advance epoch
         let next_epoch = self.epoch + 1;
 
-        // Path update secret for epoch rekeying
-        let mut commit_secret = [0u8; 32];
-        OsRng.fill_bytes(&mut commit_secret);
-        let path_keypair = X25519KeyPair::generate();
-
-        // Derive next epoch secrets
-        let next_epoch_secret = self.compute_next_epoch_secret(&commit_secret);
-        let next_app_secret = Self::expand_label(&next_epoch_secret, MLS_APPLICATION_INFO);
-        let next_confirmation = Self::expand_label(&next_epoch_secret, MLS_CONFIRMATION_INFO);
-        let next_init_secret = Self::expand_label(&next_epoch_secret, MLS_NEXT_INIT_INFO);
+        // Derive next epoch secrets deterministically
+        let (next_epoch_secret, next_app_secret) = derive_epoch_secrets(
+            &self.epoch_secret,
+            next_epoch,
+            b"add_member",
+        );
 
         // Encrypt group secrets for the new member using HPKE (X25519 + AES-GCM)
         let eph_secret = StaticSecret::random_from_rng(OsRng);
@@ -271,7 +277,6 @@ impl MlsGroup {
         struct WelcomePayload<'a> {
             epoch: u64,
             my_leaf_idx: usize,
-            init_secret: &'a [u8; 32],
             epoch_secret: &'a [u8; 32],
             application_secret: &'a [u8; 32],
         }
@@ -279,7 +284,6 @@ impl MlsGroup {
         let payload_struct = WelcomePayload {
             epoch: next_epoch,
             my_leaf_idx: new_leaf_idx,
-            init_secret: &next_init_secret,
             epoch_secret: &next_epoch_secret,
             application_secret: &next_app_secret,
         };
@@ -287,9 +291,9 @@ impl MlsGroup {
         let serialized_payload = serde_json::to_vec(&payload_struct)
             .map_err(|e| CryptoError::SerializationError(e.to_string()))?;
 
-        // Format: [eph_pub (32) || ciphertext]
         let encrypted = cipher.encrypt(nonce, serialized_payload.as_ref())
             .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
+
         let mut full_encrypted = Vec::with_capacity(32 + encrypted.len());
         full_encrypted.extend_from_slice(eph_pub.as_bytes());
         full_encrypted.extend_from_slice(&encrypted);
@@ -302,20 +306,20 @@ impl MlsGroup {
             nonce: nonce_bytes,
         };
 
+        let path_keypair = X25519KeyPair::generate();
         let commit = MlsCommit {
             group_id: self.group_id.clone(),
             epoch: next_epoch,
             sender_leaf_index: self.my_leaf_index,
+            commit_tag: "add_member".to_string(),
             new_path_public_key: path_keypair.public_key_bytes(),
-            confirmation_tag: next_confirmation,
+            confirmation_tag: [0u8; 32],
         };
 
         // Transition local group state to next epoch
         self.epoch = next_epoch;
-        self.init_secret = next_init_secret;
         self.epoch_secret = next_epoch_secret;
         self.application_secret = next_app_secret;
-        self.confirmation_key = next_confirmation;
         self.message_generation = 0;
 
         Ok((welcome, commit))
@@ -354,15 +358,12 @@ impl MlsGroup {
         struct WelcomePayload {
             epoch: u64,
             my_leaf_idx: usize,
-            init_secret: [u8; 32],
             epoch_secret: [u8; 32],
             application_secret: [u8; 32],
         }
 
         let payload: WelcomePayload = serde_json::from_slice(&plaintext)
             .map_err(|e| CryptoError::SerializationError(e.to_string()))?;
-
-        let confirmation_key = Self::expand_label(&payload.epoch_secret, MLS_CONFIRMATION_INFO);
 
         Ok(Self {
             group_id: welcome.group_id.clone(),
@@ -371,16 +372,14 @@ impl MlsGroup {
             my_identity: identity,
             my_hpke_secret,
             tree: welcome.tree.clone(),
-            init_secret: payload.init_secret,
             epoch_secret: payload.epoch_secret,
             application_secret: payload.application_secret,
-            confirmation_key,
             message_generation: 0,
         })
     }
 
-    /// Process an incoming Commit message from another member to advance to the next epoch
-    pub fn process_commit(&mut self, commit: &MlsCommit) -> Result<(), CryptoError> {
+    /// Apply an incoming Commit message from an existing member to advance epoch
+    pub fn apply_commit(&mut self, commit: &MlsCommit) -> Result<(), CryptoError> {
         if commit.epoch != self.epoch + 1 {
             return Err(CryptoError::InvalidEpoch {
                 expected: self.epoch + 1,
@@ -388,20 +387,29 @@ impl MlsGroup {
             });
         }
 
-        let commit_secret = commit.new_path_public_key;
-        let next_epoch_secret = self.compute_next_epoch_secret(&commit_secret);
-        let next_app_secret = Self::expand_label(&next_epoch_secret, MLS_APPLICATION_INFO);
-        let next_confirmation = Self::expand_label(&next_epoch_secret, MLS_CONFIRMATION_INFO);
-        let next_init_secret = Self::expand_label(&next_epoch_secret, MLS_NEXT_INIT_INFO);
+        let tag = if commit.commit_tag.is_empty() {
+            b"add_member" as &[u8]
+        } else {
+            commit.commit_tag.as_bytes()
+        };
+
+        let (next_epoch_secret, next_app_secret) = derive_epoch_secrets(
+            &self.epoch_secret,
+            commit.epoch,
+            tag,
+        );
 
         self.epoch = commit.epoch;
-        self.init_secret = next_init_secret;
         self.epoch_secret = next_epoch_secret;
         self.application_secret = next_app_secret;
-        self.confirmation_key = next_confirmation;
         self.message_generation = 0;
 
         Ok(())
+    }
+
+    /// Alias for apply_commit
+    pub fn process_commit(&mut self, commit: &MlsCommit) -> Result<(), CryptoError> {
+        self.apply_commit(commit)
     }
 
     /// Remove a member from the group, re-keying the tree and advancing epoch
@@ -410,30 +418,27 @@ impl MlsGroup {
             .ok_or_else(|| CryptoError::MemberNotFound(user_id.to_string()))?;
 
         self.tree.blank_leaf(leaf_idx);
-
         let next_epoch = self.epoch + 1;
-        let mut commit_secret = [0u8; 32];
-        OsRng.fill_bytes(&mut commit_secret);
+
+        let (next_epoch_secret, next_app_secret) = derive_epoch_secrets(
+            &self.epoch_secret,
+            next_epoch,
+            b"remove_member",
+        );
+
         let path_keypair = X25519KeyPair::generate();
-
-        let next_epoch_secret = self.compute_next_epoch_secret(&commit_secret);
-        let next_app_secret = Self::expand_label(&next_epoch_secret, MLS_APPLICATION_INFO);
-        let next_confirmation = Self::expand_label(&next_epoch_secret, MLS_CONFIRMATION_INFO);
-        let next_init_secret = Self::expand_label(&next_epoch_secret, MLS_NEXT_INIT_INFO);
-
         let commit = MlsCommit {
             group_id: self.group_id.clone(),
             epoch: next_epoch,
             sender_leaf_index: self.my_leaf_index,
+            commit_tag: "remove_member".to_string(),
             new_path_public_key: path_keypair.public_key_bytes(),
-            confirmation_tag: next_confirmation,
+            confirmation_tag: [0u8; 32],
         };
 
         self.epoch = next_epoch;
-        self.init_secret = next_init_secret;
         self.epoch_secret = next_epoch_secret;
         self.application_secret = next_app_secret;
-        self.confirmation_key = next_confirmation;
         self.message_generation = 0;
 
         Ok(commit)
@@ -444,7 +449,7 @@ impl MlsGroup {
         let gen = self.message_generation;
         self.message_generation += 1;
 
-        // Derive generation key and nonce
+        // Derive generation key
         let mut ikm = Vec::with_capacity(36);
         ikm.extend_from_slice(&self.application_secret);
         ikm.extend_from_slice(&gen.to_be_bytes());
@@ -454,13 +459,14 @@ impl MlsGroup {
         hk.expand(b"MLS App Msg Key", &mut msg_key)
             .map_err(|_| CryptoError::HkdfError)?;
 
+        // 12-byte Nonce: 4 bytes sender leaf index + 8 bytes sequence number (generation)
         let mut nonce_bytes = [0u8; 12];
-        hk.expand(b"MLS App Msg Nonce", &mut nonce_bytes)
-            .map_err(|_| CryptoError::HkdfError)?;
+        nonce_bytes[0..4].copy_from_slice(&(self.my_leaf_index as u32).to_be_bytes());
+        nonce_bytes[4..12].copy_from_slice(&(gen as u64).to_be_bytes());
+        let nonce = Nonce::from_slice(&nonce_bytes);
 
         let cipher = Aes256Gcm::new_from_slice(&msg_key)
             .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
-        let nonce = Nonce::from_slice(&nonce_bytes);
 
         let ad = format!("{}:{}:{}", self.group_id, self.epoch, gen);
         let payload = Payload {
@@ -502,9 +508,14 @@ impl MlsGroup {
         hk.expand(b"MLS App Msg Key", &mut msg_key)
             .map_err(|_| CryptoError::HkdfError)?;
 
+        // Reconstruct exact 12-byte Nonce
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[0..4].copy_from_slice(&(msg.sender_leaf_index as u32).to_be_bytes());
+        nonce_bytes[4..12].copy_from_slice(&(msg.generation as u64).to_be_bytes());
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
         let cipher = Aes256Gcm::new_from_slice(&msg_key)
             .map_err(|e| CryptoError::DecryptionFailed(e.to_string()))?;
-        let nonce = Nonce::from_slice(&msg.nonce);
 
         let ad = format!("{}:{}:{}", self.group_id, self.epoch, msg.generation);
         let payload = Payload {
@@ -514,31 +525,5 @@ impl MlsGroup {
 
         cipher.decrypt(nonce, payload)
             .map_err(|e| CryptoError::DecryptionFailed(e.to_string()))
-    }
-
-    // Helper functions
-    fn compute_next_epoch_secret(&self, commit_secret: &[u8; 32]) -> [u8; 32] {
-        let mut ikm = Vec::with_capacity(64);
-        ikm.extend_from_slice(&self.init_secret);
-        ikm.extend_from_slice(commit_secret);
-
-        let hk = Hkdf::<Sha256>::new(Some(&self.epoch_secret), &ikm);
-        let mut next_epoch = [0u8; 32];
-        hk.expand(b"MLS 1.0 Epoch Secret", &mut next_epoch).unwrap();
-        next_epoch
-    }
-
-    fn derive_epoch_secrets(&mut self, commit_secret: &[u8; 32]) {
-        self.epoch_secret = self.compute_next_epoch_secret(commit_secret);
-        self.application_secret = Self::expand_label(&self.epoch_secret, MLS_APPLICATION_INFO);
-        self.confirmation_key = Self::expand_label(&self.epoch_secret, MLS_CONFIRMATION_INFO);
-        self.init_secret = Self::expand_label(&self.epoch_secret, MLS_NEXT_INIT_INFO);
-    }
-
-    fn expand_label(secret: &[u8; 32], label: &[u8]) -> [u8; 32] {
-        let hk = Hkdf::<Sha256>::new(None, secret);
-        let mut out = [0u8; 32];
-        hk.expand(label, &mut out).unwrap();
-        out
     }
 }
