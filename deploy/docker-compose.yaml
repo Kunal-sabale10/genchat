@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:17-alpine
@@ -10,6 +8,7 @@ services:
       POSTGRES_PASSWORD: dev_password
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ../schema/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U genchat"]
       interval: 5s
@@ -27,6 +26,16 @@ services:
       interval: 10s
       timeout: 10s
       retries: 10
+
+  scylla-init:
+    image: scylladb/scylla:6.2
+    volumes:
+      - ../schema/scylla/001_messages.cql:/schema/001_messages.cql:ro
+    entrypoint: ["cqlsh", "scylladb", "9042", "-f", "/schema/001_messages.cql"]
+    depends_on:
+      scylladb:
+        condition: service_healthy
+    restart: "no"
 
   redis:
     image: redis:7-alpine
@@ -48,9 +57,12 @@ services:
       - ./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
       - ./certs:/etc/envoy/certs:ro
     depends_on:
-      - postgres
-      - scylladb
-      - redis
+      postgres:
+        condition: service_healthy
+      scylladb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   auth:
     build:
@@ -62,7 +74,8 @@ services:
     environment:
       - POSTGRES_URL=postgres://genchat:dev_password@postgres:5432/genchat?sslmode=disable
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
 
   gateway:
     build:
@@ -72,7 +85,8 @@ services:
     ports:
       - "8081:8081"
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
 
   ledger:
     build:
@@ -85,8 +99,10 @@ services:
       - SCYLLA_HOSTS=scylladb
       - REDIS_ADDR=redis:6379
     depends_on:
-      - scylladb
-      - redis
+      scylla-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
 
 volumes:
   pgdata:
