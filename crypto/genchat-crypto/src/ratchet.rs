@@ -28,7 +28,7 @@ impl GenChatAccount {
         self.account
             .one_time_keys()
             .into_iter()
-            .map(|(id, key)| (id.to_string(), key))
+            .map(|(id, key)| (format!("{:?}", id), key))
             .collect()
     }
 
@@ -56,17 +56,25 @@ impl GenChatAccount {
         Ok((GenChatSession { session: result.session }, result.plaintext))
     }
 
-    pub fn pickle(&self, pickle_key: &[u8; 32]) -> Result<String, CryptoError> {
-        let pickle = self.account.pickle().encrypt(pickle_key);
-        serde_json::to_string(&pickle).map_err(|e| CryptoError::SerializationError(e.to_string()))
+    pub fn pickle(&self, pickle_key: &[u8; 32]) -> String {
+        self.account.pickle().encrypt(pickle_key)
+    }
+
+    pub fn from_pickle(data: &str, pickle_key: &[u8; 32]) -> Result<Self, CryptoError> {
+        use vodozemac::olm::AccountPickle;
+
+        // 1. Decrypt the serialized string into the pickle struct
+        let pickle = AccountPickle::from_encrypted(data, pickle_key)
+            .map_err(|e| CryptoError::SerializationError(format!("{:?}", e)))?;
+
+        // 2. Load the Account struct directly (infallible, takes 1 arg)
+        let account = Account::from_pickle(pickle);
+
+        Ok(Self { account })
     }
 
     pub fn unpickle(data: &str, pickle_key: &[u8; 32]) -> Result<Self, CryptoError> {
-        let pickle: AccountPickle = serde_json::from_str(data)
-            .map_err(|e| CryptoError::SerializationError(e.to_string()))?;
-        let account = Account::from_pickle(pickle, pickle_key)
-            .map_err(|e| CryptoError::SerializationError(e.to_string()))?;
-        Ok(Self { account })
+        Self::from_pickle(data, pickle_key)
     }
 }
 
@@ -109,17 +117,25 @@ impl GenChatSession {
         self.session.session_id()
     }
 
-    pub fn pickle(&self, pickle_key: &[u8; 32]) -> Result<String, CryptoError> {
-        let pickle = self.session.pickle().encrypt(pickle_key);
-        serde_json::to_string(&pickle).map_err(|e| CryptoError::SerializationError(e.to_string()))
+    pub fn pickle(&self, pickle_key: &[u8; 32]) -> String {
+        self.session.pickle().encrypt(pickle_key)
+    }
+
+    pub fn from_pickle(data: &str, pickle_key: &[u8; 32]) -> Result<Self, CryptoError> {
+        use vodozemac::olm::SessionPickle;
+
+        // 1. Decrypt the serialized string into the pickle struct
+        let pickle = SessionPickle::from_encrypted(data, pickle_key)
+            .map_err(|e| CryptoError::SerializationError(format!("{:?}", e)))?;
+
+        // 2. Load the Session struct directly (infallible, takes 1 arg)
+        let session = Session::from_pickle(pickle);
+
+        Ok(Self { session })
     }
 
     pub fn unpickle(data: &str, pickle_key: &[u8; 32]) -> Result<Self, CryptoError> {
-        let pickle: SessionPickle = serde_json::from_str(data)
-            .map_err(|e| CryptoError::SerializationError(e.to_string()))?;
-        let session = Session::from_pickle(pickle, pickle_key)
-            .map_err(|e| CryptoError::SerializationError(e.to_string()))?;
-        Ok(Self { session })
+        Self::from_pickle(data, pickle_key)
     }
 }
 
