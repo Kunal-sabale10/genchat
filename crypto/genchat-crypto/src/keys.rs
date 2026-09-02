@@ -1,8 +1,8 @@
 use ed25519_dalek::{SigningKey, VerifyingKey, Signer, Verifier, Signature};
 use x25519_dalek::{StaticSecret, PublicKey as X25519PublicKey};
+use hybrid_array::Array;
 use ml_kem::{
     kem::{Decapsulate, DecapsulationKey, Encapsulate, EncapsulationKey},
-    hybrid_array::Array,
     EncodedSizeUser,
     KemCore,
     MlKem768,

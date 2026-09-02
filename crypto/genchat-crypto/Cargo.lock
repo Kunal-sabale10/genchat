@@ -251,6 +251,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "hkdf",
+ "hybrid-array",
  "ml-kem",
  "rand",
  "rand_core",

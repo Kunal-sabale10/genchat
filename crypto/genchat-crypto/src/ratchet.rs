@@ -1,6 +1,6 @@
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
-use vodozemac::olm::{Account, Session, OlmMessage, SessionConfig, AccountPickle, SessionPickle};
+use vodozemac::olm::{Account, Session, OlmMessage, SessionConfig};
 use vodozemac::{Curve25519PublicKey, Ed25519PublicKey};
 
 use crate::error::CryptoError;
