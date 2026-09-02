@@ -32,19 +32,19 @@ RUN go build -o /bin/gatewayd ./services/gateway/cmd/gatewayd
 RUN go build -o /bin/ledgerd ./services/msgledger/cmd/ledgerd
 
 FROM debian:bookworm-slim AS auth
-COPY --from=builder /app/crypto/genchat-crypto-ffi/target/release/libgenchat_crypto_ffi.* /usr/local/lib/ || true
+COPY --from=builder /app/crypto/genchat-crypto-ffi/target/release/libgenchat_crypto_ffi.so /usr/local/lib/
 COPY --from=builder /bin/authd /usr/local/bin/
-RUN ldconfig || true
+RUN ldconfig
 CMD ["authd"]
 
 FROM debian:bookworm-slim AS gateway
-COPY --from=builder /app/crypto/genchat-crypto-ffi/target/release/libgenchat_crypto_ffi.* /usr/local/lib/ || true
+COPY --from=builder /app/crypto/genchat-crypto-ffi/target/release/libgenchat_crypto_ffi.so /usr/local/lib/
 COPY --from=builder /bin/gatewayd /usr/local/bin/
-RUN ldconfig || true
+RUN ldconfig
 CMD ["gatewayd"]
 
 FROM debian:bookworm-slim AS ledger
-COPY --from=builder /app/crypto/genchat-crypto-ffi/target/release/libgenchat_crypto_ffi.* /usr/local/lib/ || true
+COPY --from=builder /app/crypto/genchat-crypto-ffi/target/release/libgenchat_crypto_ffi.so /usr/local/lib/
 COPY --from=builder /bin/ledgerd /usr/local/bin/
-RUN ldconfig || true
+RUN ldconfig
 CMD ["ledgerd"]
