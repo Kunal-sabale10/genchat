@@ -48,7 +48,7 @@ func TestAliceToBobWebSocketEcho(t *testing.T) {
 	}
 	rawBytes, _ := json.Marshal(msg)
 
-	err = aliceConn.Write(ctx, websocket.MessageText, rawBytes)
+	err = aliceConn.Write(ctx, websocket.MessageBinary, rawBytes)
 	if err != nil {
 		t.Fatalf("Alice failed to write frame: %v", err)
 	}
