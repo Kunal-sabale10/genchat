@@ -4,6 +4,7 @@ PROTO_DIR := proto
 GEN_DIR := gen
 RUST_CRYPTO_DIR := crypto/genchat-crypto
 RUST_FFI_DIR := crypto/genchat-crypto-ffi
+RUST_WASM_DIR := crypto/genchat-crypto-wasm
 
 # Install required Go tools for code generation
 install-tools:
@@ -26,6 +27,12 @@ build-rust:
 	@echo "Building Rust crypto core..."
 	cd $(RUST_CRYPTO_DIR) && cargo build --release
 	cd $(RUST_FFI_DIR) && cargo build --release
+
+# Build WebAssembly crypto core
+build-wasm:
+	@echo "Building Rust WebAssembly crypto core..."
+	cd $(RUST_WASM_DIR) && wasm-pack build --target web --out-dir ../../packages/client-crypto/wasm
+
 
 # Build Go services
 build-go: proto

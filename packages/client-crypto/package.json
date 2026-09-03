@@ -1,0 +1,19 @@
+{
+  "name": "@genchat/client-crypto",
+  "version": "1.0.0",
+  "description": "GenChat Post-Quantum Cryptographic Client SDK with WebAssembly and WebCrypto Key Storage",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test dist/test/crypto.test.js"
+  },
+  "dependencies": {
+    "localforage": "^1.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.3"
+  },
+  "license": "Apache-2.0"
+}
