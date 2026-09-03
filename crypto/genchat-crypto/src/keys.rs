@@ -120,6 +120,21 @@ impl PqKeyPair {
         }
     }
 
+    pub fn public_key_bytes(&self) -> Vec<u8> {
+        self.encapsulation_key_bytes.clone()
+    }
+
+    pub fn secret_bytes(&self) -> Vec<u8> {
+        self.decapsulation_key_bytes.clone()
+    }
+
+    pub fn from_bytes(encapsulation_key_bytes: Vec<u8>, decapsulation_key_bytes: Vec<u8>) -> Self {
+        Self {
+            encapsulation_key_bytes,
+            decapsulation_key_bytes,
+        }
+    }
+
     pub fn encapsulate_with(encapsulation_key_bytes: &[u8]) -> Result<(Vec<u8>, [u8; 32]), CryptoError> {
         let array = Array::try_from(encapsulation_key_bytes)
             .map_err(|_| CryptoError::InvalidKeyLength {

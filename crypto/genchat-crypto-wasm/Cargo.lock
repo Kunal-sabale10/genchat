@@ -321,6 +321,7 @@ dependencies = [
 name = "genchat-crypto-wasm"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "genchat-crypto",
  "getrandom",
  "hex",

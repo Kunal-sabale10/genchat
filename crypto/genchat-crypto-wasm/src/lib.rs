@@ -1,8 +1,8 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use wasm_bindgen::prelude::*;
 
-use genchat_crypto::keys::{IdentityKeyPair, SignedPreKey, X25519KeyPair};
-use genchat_crypto::pqxdh::{initiate_pqxdh, receive_pqxdh, PqxdhInitMessage, PreKeyBundle};
+use genchat_crypto::keys::{IdentityKeyPair, OneTimePreKey, PqKeyPair, PqPreKey, PreKeyBundle, SignedPreKey, X25519KeyPair};
+use genchat_crypto::pqxdh::{initiate_pqxdh, respond_pqxdh, PqxdhInitMessage};
 use genchat_crypto::ratchet::{EncryptedEnvelope, GenChatAccount, GenChatSession};
 use genchat_crypto::sframe::SFrameTransformer;
 
@@ -33,12 +33,22 @@ pub fn generate_pqxdh_keys(one_time_keys_count: usize) -> Result<JsValue, JsValu
     let identity_x25519 = X25519KeyPair::generate();
 
     // 2. Signed Pre-Key (X25519)
-    let spk = SignedPreKey::generate(1, &identity);
+    let spk_keypair = X25519KeyPair::generate();
+    let spk_sig = identity.sign(&spk_keypair.public_key_bytes());
+    let spk = SignedPreKey {
+        key_id: 1,
+        public_key: spk_keypair.public_key_bytes(),
+        signature: spk_sig.clone(),
+    };
 
     // 3. Post-Quantum Pre-Key (ML-KEM-768)
-    let (pq_encaps, pq_decaps) = genchat_crypto::keys::generate_ml_kem_768_keypair();
-    let pq_public_bytes = pq_encaps.as_bytes().to_vec();
-    let pq_sig = identity.sign(&pq_public_bytes);
+    let pq_keypair = PqKeyPair::generate();
+    let pq_sig = identity.sign(&pq_keypair.public_key_bytes());
+    let pq_pre_key = PqPreKey {
+        key_id: 1,
+        public_key: pq_keypair.public_key_bytes(),
+        signature: pq_sig.clone(),
+    };
 
     // 4. One-Time Pre-Keys
     let mut wasm_otks = Vec::with_capacity(one_time_keys_count);
@@ -58,34 +68,34 @@ pub fn generate_pqxdh_keys(one_time_keys_count: usize) -> Result<JsValue, JsValu
     }
 
     let identity_bundle = WasmIdentityBundle {
-        identity_key_ed25519_pub_hex: hex::encode(identity.verifying_key_bytes()),
-        identity_key_ed25519_priv_hex: hex::encode(identity.signing_key_bytes()),
+        identity_key_ed25519_pub_hex: hex::encode(identity.public_key_bytes()),
+        identity_key_ed25519_priv_hex: hex::encode(identity.secret_key_bytes()),
         identity_key_x25519_pub_hex: hex::encode(identity_x25519.public_key_bytes()),
         identity_key_x25519_priv_hex: hex::encode(identity_x25519.secret_bytes()),
         signed_pre_key: WasmSignedPreKey {
-            key_id: spk.id,
-            public_key_hex: hex::encode(spk.public_key),
-            private_key_hex: hex::encode(spk.keypair.secret_bytes()),
-            signature_hex: hex::encode(spk.signature),
+            key_id: spk.key_id,
+            public_key_hex: hex::encode(spk_keypair.public_key_bytes()),
+            private_key_hex: hex::encode(spk_keypair.secret_bytes()),
+            signature_hex: hex::encode(&spk.signature),
         },
         pq_pre_key: WasmPqPreKey {
-            key_id: 1,
-            public_key_hex: hex::encode(&pq_public_bytes),
-            decapsulation_key_hex: hex::encode(pq_decaps.as_bytes()),
-            signature_hex: hex::encode(pq_sig.to_bytes()),
+            key_id: pq_pre_key.key_id,
+            public_key_hex: hex::encode(pq_keypair.public_key_bytes()),
+            decapsulation_key_hex: hex::encode(pq_keypair.secret_bytes()),
+            signature_hex: hex::encode(&pq_pre_key.signature),
         },
         one_time_pre_keys: wasm_otks,
     };
 
     let public_bundle = WasmPublicPreKeyBundle {
-        identity_key_hex: hex::encode(identity.verifying_key_bytes()),
+        identity_key_hex: hex::encode(identity.public_key_bytes()),
         identity_key_x25519_hex: hex::encode(identity_x25519.public_key_bytes()),
-        signed_pre_key_id: spk.id,
-        signed_pre_key_public_hex: hex::encode(spk.public_key),
-        signed_pre_key_signature_hex: hex::encode(spk.signature),
-        pq_pre_key_id: 1,
-        pq_pre_key_public_hex: hex::encode(&pq_public_bytes),
-        pq_pre_key_signature_hex: hex::encode(pq_sig.to_bytes()),
+        signed_pre_key_id: spk.key_id,
+        signed_pre_key_public_hex: hex::encode(spk_keypair.public_key_bytes()),
+        signed_pre_key_signature_hex: hex::encode(&spk.signature),
+        pq_pre_key_id: pq_pre_key.key_id,
+        pq_pre_key_public_hex: hex::encode(pq_keypair.public_key_bytes()),
+        pq_pre_key_signature_hex: hex::encode(&pq_pre_key.signature),
         one_time_pre_keys: wasm_otk_pubs,
     };
 
@@ -101,7 +111,7 @@ pub fn generate_pqxdh_keys(one_time_keys_count: usize) -> Result<JsValue, JsValu
     }).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
-/// 2. Initiate PQXDH Handshake (Alice $\to$ Bob)
+/// 2. Initiate PQXDH Handshake (Alice -> Bob)
 #[wasm_bindgen]
 pub fn initiate_pqxdh_handshake(
     alice_identity_bundle: JsValue,
@@ -112,31 +122,25 @@ pub fn initiate_pqxdh_handshake(
     let bob: WasmPublicPreKeyBundle = serde_wasm_bindgen::from_value(bob_public_bundle)
         .map_err(|e| JsValue::from_str(&format!("invalid bob bundle: {}", e)))?;
 
-    // Reconstruct Alice's keys
     let alice_ed_priv = decode_32_hex(&alice.identity_key_ed25519_priv_hex)?;
     let alice_identity = IdentityKeyPair::from_bytes(&alice_ed_priv)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
     let alice_x_priv = decode_32_hex(&alice.identity_key_x25519_priv_hex)?;
-    let alice_x25519 = X25519KeyPair::from_secret_bytes(&alice_x_priv);
+    let alice_x25519 = X25519KeyPair::from_secret_bytes(alice_x_priv);
 
-    // Reconstruct Bob's bundle
     let bob_ed_pub = decode_32_hex(&bob.identity_key_hex)?;
     let bob_x_pub = decode_32_hex(&bob.identity_key_x25519_hex)?;
     let bob_spk_pub = decode_32_hex(&bob.signed_pre_key_public_hex)?;
-    let bob_spk_sig = hex::decode(&bob.signed_pre_key_signature_hex)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let bob_pq_pub = hex::decode(&bob.pq_pre_key_public_hex)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let bob_pq_sig = hex::decode(&bob.pq_pre_key_signature_hex)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let bob_spk_sig = hex::decode(&bob.signed_pre_key_signature_hex).unwrap_or_default();
+    let bob_pq_pub = hex::decode(&bob.pq_pre_key_public_hex).unwrap_or_default();
+    let bob_pq_sig = hex::decode(&bob.pq_pre_key_signature_hex).unwrap_or_default();
 
     let bob_otk = if let Some(otk) = bob.one_time_pre_keys.first() {
         let otk_pub = decode_32_hex(&otk.public_key_hex)?;
-        Some(genchat_crypto::keys::OneTimePreKey {
-            id: otk.key_id,
+        Some(OneTimePreKey {
+            key_id: otk.key_id,
             public_key: otk_pub,
-            keypair: X25519KeyPair::generate(),
         })
     } else {
         None
@@ -145,13 +149,13 @@ pub fn initiate_pqxdh_handshake(
     let prekey_bundle = PreKeyBundle {
         identity_key: bob_ed_pub,
         identity_key_x25519: bob_x_pub,
-        signed_pre_key: genchat_crypto::keys::SignedPreKeyBundle {
-            id: bob.signed_pre_key_id,
+        signed_pre_key: SignedPreKey {
+            key_id: bob.signed_pre_key_id,
             public_key: bob_spk_pub,
             signature: bob_spk_sig,
         },
-        pq_pre_key: genchat_crypto::keys::PQPreKeyBundle {
-            id: bob.pq_pre_key_id,
+        pq_pre_key: PqPreKey {
+            key_id: bob.pq_pre_key_id,
             public_key: bob_pq_pub,
             signature: bob_pq_sig,
         },
@@ -177,7 +181,7 @@ pub fn initiate_pqxdh_handshake(
     serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
-/// 3. Receive PQXDH Handshake (Bob $\leftarrow$ Alice)
+/// 3. Receive PQXDH Handshake (Bob <- Alice)
 #[wasm_bindgen]
 pub fn receive_pqxdh_handshake(
     bob_identity_bundle: JsValue,
@@ -192,17 +196,21 @@ pub fn receive_pqxdh_handshake(
     let bob_identity = IdentityKeyPair::from_bytes(&bob_ed_priv)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-    let bob_spk_priv = decode_32_hex(&bob.signed_pre_key.private_key_hex)?;
-    let bob_spk_keypair = X25519KeyPair::from_secret_bytes(&bob_spk_priv);
+    let bob_x_priv = decode_32_hex(&bob.identity_key_x25519_priv_hex)?;
+    let bob_x25519 = X25519KeyPair::from_secret_bytes(bob_x_priv);
 
-    let bob_pq_decaps_bytes = hex::decode(&bob.pq_pre_key.decapsulation_key_hex)
+    let bob_spk_priv = decode_32_hex(&bob.signed_pre_key.private_key_hex)?;
+    let bob_spk_keypair = X25519KeyPair::from_secret_bytes(bob_spk_priv);
+
+    let bob_pq_pub = hex::decode(&bob.pq_pre_key.public_key_hex)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let bob_pq_decaps_key = genchat_crypto::keys::ml_kem_768_decapsulation_key_from_bytes(&bob_pq_decaps_bytes)
+    let bob_pq_decaps = hex::decode(&bob.pq_pre_key.decapsulation_key_hex)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let bob_pq_keypair = PqKeyPair::from_bytes(bob_pq_pub, bob_pq_decaps);
 
     let bob_otk_keypair = if let Some(otk_id) = init_msg.used_one_time_key_id {
         bob.one_time_pre_keys.iter().find(|k| k.key_id == otk_id).and_then(|k| {
-            decode_32_hex(&k.private_key_hex).ok().map(|b| X25519KeyPair::from_secret_bytes(&b))
+            decode_32_hex(&k.private_key_hex).ok().map(|b| X25519KeyPair::from_secret_bytes(b))
         })
     } else {
         None
@@ -224,16 +232,16 @@ pub fn receive_pqxdh_handshake(
         used_one_time_key_id: init_msg.used_one_time_key_id,
     };
 
-    let shared_secret = receive_pqxdh(
+    let result = respond_pqxdh(
         &bob_identity,
+        &bob_x25519,
         &bob_spk_keypair,
-        &bob_pq_decaps_key,
+        &bob_pq_keypair,
         bob_otk_keypair.as_ref(),
-        &alice_ed_pub,
         &native_init_msg,
     ).map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-    Ok(hex::encode(shared_secret))
+    Ok(hex::encode(result.shared_secret))
 }
 
 /// 4. Create new Ratchet Account

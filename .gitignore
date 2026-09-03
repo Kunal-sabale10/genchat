@@ -28,3 +28,7 @@ Thumbs.db
 
 # Certs
 deploy/certs/
+
+# Node
+node_modules/
+dist/
