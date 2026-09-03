@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/genchat/services/gateway/internal/metrics"
 	"github.com/genchat/services/gateway/internal/ratelimit"
 	"github.com/genchat/services/gateway/internal/relay"
 	"github.com/genchat/services/gateway/internal/ws"
@@ -18,7 +20,19 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	wsAddr := getEnv("WS_ADDR", ":8081")
+	port := os.Getenv("PORT")
+	wsAddr := os.Getenv("WS_ADDR")
+	if wsAddr == "" {
+		if port != "" {
+			if !strings.HasPrefix(port, ":") {
+				wsAddr = ":" + port
+			} else {
+				wsAddr = port
+			}
+		} else {
+			wsAddr = ":8081"
+		}
+	}
 
 	hub := ws.NewHub()
 	go hub.Run()
@@ -29,10 +43,15 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", wsHandler.ServeHTTP)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
+	mux.HandleFunc("/metrics", metrics.DefaultMetrics.PrometheusHandler())
 
 	httpServer := &http.Server{Addr: wsAddr, Handler: mux}
 

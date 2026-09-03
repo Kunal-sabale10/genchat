@@ -14,12 +14,16 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
+	chatv1 "github.com/genchat/proto/gen/chat/v1"
 	"github.com/genchat/services/auth/internal/store"
 	waconfig "github.com/genchat/services/auth/internal/webauthn"
 )
 
 type AuthHandler struct {
+	chatv1.UnimplementedAuthServiceServer
 	store     *store.PostgresStore
 	wa        *waconfig.Config
 	jwtSecret string
@@ -47,89 +51,96 @@ type LoginResult struct {
 	RefreshToken string
 }
 
-func (h *AuthHandler) BeginRegistration(ctx context.Context, displayName string, identityKey []byte) (json.RawMessage, string, error) {
-	if len(identityKey) != 32 {
-		return nil, "", fmt.Errorf("invalid identity_key length: expected 32, got %d", len(identityKey))
-	}
+func (h *AuthHandler) BeginRegistration(ctx context.Context, req *chatv1.BeginRegistrationRequest) (*chatv1.BeginRegistrationResponse, error) {
+	tempID := make([]byte, 32)
+	rand.Read(tempID)
 
 	user := &waconfig.User{
-		ID:          identityKey, // Using identityKey as the user ID for WebAuthn
-		Name:        displayName,
-		DisplayName: displayName,
+		ID:          tempID,
+		Name:        req.DisplayName,
+		DisplayName: req.DisplayName,
 	}
 
 	options, sessionData, err := h.wa.WebAuthn.BeginRegistration(user)
 	if err != nil {
-		return nil, "", fmt.Errorf("begin registration failed: %w", err)
+		return nil, status.Errorf(codes.Internal, "begin registration failed: %v", err)
 	}
 
 	sessionJSON, err := json.Marshal(sessionData)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to marshal session data: %w", err)
+		return nil, status.Errorf(codes.Internal, "failed to marshal session data: %v", err)
 	}
 
 	sessionID := uuid.New().String()
-	err = h.store.SaveCeremony(ctx, sessionID, "registration", sessionJSON, nil, displayName, time.Now().Add(5*time.Minute))
+	err = h.store.SaveCeremony(ctx, sessionID, "registration", sessionJSON, nil, req.DisplayName, time.Now().Add(5*time.Minute))
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to save ceremony: %w", err)
+		return nil, status.Errorf(codes.Internal, "failed to save ceremony: %v", err)
 	}
 
 	optionsJSON, err := json.Marshal(options)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to marshal options: %w", err)
+		return nil, status.Errorf(codes.Internal, "failed to marshal options: %v", err)
 	}
 
-	return optionsJSON, sessionID, nil
+	return &chatv1.BeginRegistrationResponse{
+		OptionsJson: optionsJSON,
+		SessionId:   sessionID,
+	}, nil
 }
 
-func (h *AuthHandler) FinishRegistration(ctx context.Context, sessionID string, responseJSON []byte, identityKey []byte) (*RegistrationResult, error) {
-	if len(identityKey) != 32 {
-		return nil, fmt.Errorf("invalid identity_key length: expected 32, got %d", len(identityKey))
+func (h *AuthHandler) FinishRegistration(ctx context.Context, req *chatv1.FinishRegistrationRequest) (*chatv1.FinishRegistrationResponse, error) {
+	if len(req.IdentityKey) != 32 {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid identity_key length: expected 32, got %d", len(req.IdentityKey))
 	}
 
-	ceremony, err := h.store.GetCeremony(ctx, sessionID)
+	ceremony, err := h.store.GetCeremony(ctx, req.SessionId)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get ceremony: %w", err)
+		return nil, status.Errorf(codes.NotFound, "failed to get ceremony: %v", err)
 	}
 
 	if ceremony.CeremonyType != "registration" {
-		return nil, fmt.Errorf("invalid ceremony type")
+		return nil, status.Errorf(codes.InvalidArgument, "invalid ceremony type")
 	}
 
 	var sessionData webauthn.SessionData
 	if err := json.Unmarshal(ceremony.SessionData, &sessionData); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal session data: %w", err)
+		return nil, status.Errorf(codes.Internal, "failed to unmarshal session data: %v", err)
 	}
 
 	user := &waconfig.User{
-		ID:          identityKey,
+		ID:          req.IdentityKey,
 		Name:        ceremony.DisplayName,
 		DisplayName: ceremony.DisplayName,
 	}
 
-	parsedResponse, err := protocol.ParseCredentialCreationResponseBody(bytes.NewReader(responseJSON))
+	parsedResponse, err := protocol.ParseCredentialCreationResponseBody(bytes.NewReader(req.CredentialJson))
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse credential creation response: %w", err)
+		return nil, status.Errorf(codes.InvalidArgument, "failed to parse credential creation response: %v", err)
 	}
 
 	credential, err := h.wa.WebAuthn.CreateCredential(user, sessionData, parsedResponse)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create credential: %w", err)
+		return nil, status.Errorf(codes.Unauthenticated, "failed to create credential: %v", err)
 	}
 
 	credJSON, err := json.Marshal(credential)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal credential: %w", err)
+		return nil, status.Errorf(codes.Internal, "failed to marshal credential: %v", err)
 	}
 
-	userID, err := h.store.CreateUser(ctx, ceremony.DisplayName, identityKey)
+	userID, err := h.store.CreateUser(ctx, ceremony.DisplayName, req.IdentityKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create user: %w", err)
+		return nil, status.Errorf(codes.Internal, "failed to create user: %v", err)
 	}
 
-	deviceID, err := h.store.CreateDevice(ctx, userID, identityKey, "Default Device", credJSON)
+	deviceLabel := req.DeviceLabel
+	if deviceLabel == "" {
+		deviceLabel = "Default Device"
+	}
+
+	deviceID, err := h.store.CreateDevice(ctx, userID, req.IdentityKey, deviceLabel, credJSON)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create device: %w", err)
+		return nil, status.Errorf(codes.Internal, "failed to create device: %v", err)
 	}
 
 	accessToken := generateJWT(userID.String(), deviceID.String(), h.jwtSecret, 15*time.Minute)
@@ -138,28 +149,28 @@ func (h *AuthHandler) FinishRegistration(ctx context.Context, sessionID string, 
 
 	err = h.store.CreateAuthSession(ctx, userID, deviceID, refreshTokenHash[:], time.Now().Add(30*24*time.Hour))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create auth session: %w", err)
+		return nil, status.Errorf(codes.Internal, "failed to create auth session: %v", err)
 	}
 
-	_ = h.store.DeleteCeremony(ctx, sessionID)
+	_ = h.store.DeleteCeremony(ctx, req.SessionId)
 
-	return &RegistrationResult{
-		UserID:       userID.String(),
-		DeviceID:     deviceID.String(),
+	return &chatv1.FinishRegistrationResponse{
+		UserId:       userID.String(),
+		DeviceId:     deviceID.String(),
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 	}, nil
 }
 
-func (h *AuthHandler) BeginLogin(ctx context.Context, identityKey []byte) (json.RawMessage, string, error) {
-	dbUser, err := h.store.GetUserByIdentityKey(ctx, identityKey)
+func (h *AuthHandler) BeginLogin(ctx context.Context, req *chatv1.BeginLoginRequest) (*chatv1.BeginLoginResponse, error) {
+	uid, err := uuid.Parse(req.UserId)
 	if err != nil {
-		return nil, "", fmt.Errorf("user not found: %w", err)
+		return nil, status.Errorf(codes.InvalidArgument, "invalid user_id: %v", err)
 	}
 
-	devices, err := h.store.GetDevicesByUser(ctx, dbUser.ID)
+	devices, err := h.store.GetDevicesByUser(ctx, uid)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to get devices: %w", err)
+		return nil, status.Errorf(codes.NotFound, "failed to get devices: %v", err)
 	}
 
 	var creds []webauthn.Credential
@@ -171,55 +182,58 @@ func (h *AuthHandler) BeginLogin(ctx context.Context, identityKey []byte) (json.
 	}
 
 	user := &waconfig.User{
-		ID:          identityKey,
-		Name:        dbUser.DisplayName,
-		DisplayName: dbUser.DisplayName,
+		ID:          uid[:],
+		Name:        req.UserId,
+		DisplayName: req.UserId,
 		Credentials: creds,
 	}
 
 	options, sessionData, err := h.wa.WebAuthn.BeginLogin(user)
 	if err != nil {
-		return nil, "", fmt.Errorf("begin login failed: %w", err)
+		return nil, status.Errorf(codes.Internal, "begin login failed: %v", err)
 	}
 
 	sessionJSON, err := json.Marshal(sessionData)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to marshal session data: %w", err)
+		return nil, status.Errorf(codes.Internal, "failed to marshal session data: %v", err)
 	}
 
 	sessionID := uuid.New().String()
-	userIDBytes := dbUser.ID[:]
-	err = h.store.SaveCeremony(ctx, sessionID, "login", sessionJSON, userIDBytes, dbUser.DisplayName, time.Now().Add(5*time.Minute))
+	userIDBytes := uid[:]
+	err = h.store.SaveCeremony(ctx, sessionID, "login", sessionJSON, userIDBytes, req.UserId, time.Now().Add(5*time.Minute))
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to save ceremony: %w", err)
+		return nil, status.Errorf(codes.Internal, "failed to save ceremony: %v", err)
 	}
 
 	optionsJSON, err := json.Marshal(options)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to marshal options: %w", err)
+		return nil, status.Errorf(codes.Internal, "failed to marshal options: %v", err)
 	}
 
-	return optionsJSON, sessionID, nil
+	return &chatv1.BeginLoginResponse{
+		OptionsJson: optionsJSON,
+		SessionId:   sessionID,
+	}, nil
 }
 
-func (h *AuthHandler) FinishLogin(ctx context.Context, sessionID string, responseJSON []byte, identityKey []byte) (*LoginResult, error) {
-	ceremony, err := h.store.GetCeremony(ctx, sessionID)
+func (h *AuthHandler) FinishLogin(ctx context.Context, req *chatv1.FinishLoginRequest) (*chatv1.FinishLoginResponse, error) {
+	ceremony, err := h.store.GetCeremony(ctx, req.SessionId)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get ceremony: %w", err)
+		return nil, status.Errorf(codes.NotFound, "failed to get ceremony: %v", err)
 	}
 
 	if ceremony.CeremonyType != "login" {
-		return nil, fmt.Errorf("invalid ceremony type")
+		return nil, status.Errorf(codes.InvalidArgument, "invalid ceremony type")
 	}
 
-	dbUser, err := h.store.GetUserByIdentityKey(ctx, identityKey)
+	uid, err := uuid.FromBytes(ceremony.UserID)
 	if err != nil {
-		return nil, fmt.Errorf("user not found: %w", err)
+		return nil, status.Errorf(codes.Internal, "invalid user id in ceremony: %v", err)
 	}
 
-	devices, err := h.store.GetDevicesByUser(ctx, dbUser.ID)
+	devices, err := h.store.GetDevicesByUser(ctx, uid)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get devices: %w", err)
+		return nil, status.Errorf(codes.NotFound, "failed to get devices: %v", err)
 	}
 
 	var creds []webauthn.Credential
@@ -233,71 +247,71 @@ func (h *AuthHandler) FinishLogin(ctx context.Context, sessionID string, respons
 	}
 
 	user := &waconfig.User{
-		ID:          identityKey,
-		Name:        dbUser.DisplayName,
-		DisplayName: dbUser.DisplayName,
+		ID:          uid[:],
+		Name:        ceremony.DisplayName,
+		DisplayName: ceremony.DisplayName,
 		Credentials: creds,
 	}
 
 	var sessionData webauthn.SessionData
 	if err := json.Unmarshal(ceremony.SessionData, &sessionData); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal session data: %w", err)
+		return nil, status.Errorf(codes.Internal, "failed to unmarshal session data: %v", err)
 	}
 
-	parsedResponse, err := protocol.ParseCredentialRequestResponseBody(bytes.NewReader(responseJSON))
+	parsedResponse, err := protocol.ParseCredentialRequestResponseBody(bytes.NewReader(req.CredentialJson))
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse credential request response: %w", err)
+		return nil, status.Errorf(codes.InvalidArgument, "failed to parse credential request response: %v", err)
 	}
 
 	credential, err := h.wa.WebAuthn.ValidateLogin(user, sessionData, parsedResponse)
 	if err != nil {
-		return nil, fmt.Errorf("failed to validate login: %w", err)
+		return nil, status.Errorf(codes.Unauthenticated, "failed to validate login: %v", err)
 	}
 
 	deviceID, ok := credToDevice[string(credential.ID)]
 	if !ok {
-		return nil, fmt.Errorf("device not found for credential")
+		return nil, status.Errorf(codes.NotFound, "device not found for credential")
 	}
 
 	if err := h.store.UpdateDeviceLastSeen(ctx, deviceID); err != nil {
-		return nil, fmt.Errorf("failed to update device last seen: %w", err)
+		return nil, status.Errorf(codes.Internal, "failed to update device last seen: %v", err)
 	}
 
-	accessToken := generateJWT(dbUser.ID.String(), deviceID.String(), h.jwtSecret, 15*time.Minute)
+	accessToken := generateJWT(uid.String(), deviceID.String(), h.jwtSecret, 15*time.Minute)
 	refreshToken := generateRefreshToken()
 	refreshTokenHash := sha256.Sum256([]byte(refreshToken))
 
-	err = h.store.CreateAuthSession(ctx, dbUser.ID, deviceID, refreshTokenHash[:], time.Now().Add(30*24*time.Hour))
+	err = h.store.CreateAuthSession(ctx, uid, deviceID, refreshTokenHash[:], time.Now().Add(30*24*time.Hour))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create auth session: %w", err)
+		return nil, status.Errorf(codes.Internal, "failed to create auth session: %v", err)
 	}
 
-	_ = h.store.DeleteCeremony(ctx, sessionID)
+	_ = h.store.DeleteCeremony(ctx, req.SessionId)
 
-	return &LoginResult{
-		UserID:       dbUser.ID.String(),
-		DeviceID:     deviceID.String(),
+	return &chatv1.FinishLoginResponse{
+		UserId:       uid.String(),
+		DeviceId:     deviceID.String(),
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 	}, nil
 }
 
-func (h *AuthHandler) RefreshToken(ctx context.Context, refreshToken string) (string, string, error) {
-	hash := sha256.Sum256([]byte(refreshToken))
+func (h *AuthHandler) RefreshToken(ctx context.Context, req *chatv1.RefreshTokenRequest) (*chatv1.RefreshTokenResponse, error) {
+	hash := sha256.Sum256([]byte(req.RefreshToken))
 	session, err := h.store.GetAuthSession(ctx, hash[:])
 	if err != nil {
-		return "", "", fmt.Errorf("invalid refresh token: %w", err)
+		return nil, status.Errorf(codes.Unauthenticated, "invalid refresh token: %v", err)
 	}
 
 	if session.RevokedAt != nil {
-		return "", "", fmt.Errorf("refresh token revoked")
+		return nil, status.Errorf(codes.Unauthenticated, "refresh token revoked")
 	}
 	if session.ExpiresAt.Before(time.Now()) {
-		return "", "", fmt.Errorf("refresh token expired")
+		return nil, status.Errorf(codes.Unauthenticated, "refresh token expired")
 	}
 
 	if err := h.store.RevokeAuthSession(ctx, session.ID); err != nil {
-		return "", "", fmt.Errorf("failed to revoke old session: %w", err)
+		return nil, status.Errorf(codes.Internal, "failed to revoke old session: %v", err)
 	}
 
 	newAccessToken := generateJWT(session.UserID.String(), session.DeviceID.String(), h.jwtSecret, 15*time.Minute)
@@ -306,10 +320,13 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, refreshToken string) (st
 
 	err = h.store.CreateAuthSession(ctx, session.UserID, session.DeviceID, newRefreshTokenHash[:], time.Now().Add(30*24*time.Hour))
 	if err != nil {
-		return "", "", fmt.Errorf("failed to create new auth session: %w", err)
+		return nil, status.Errorf(codes.Internal, "failed to create new auth session: %v", err)
 	}
 
-	return newAccessToken, newRefreshToken, nil
+	return &chatv1.RefreshTokenResponse{
+		AccessToken:  newAccessToken,
+		RefreshToken: newRefreshToken,
+	}, nil
 }
 
 func generateJWT(userID, deviceID, secret string, expiry time.Duration) string {

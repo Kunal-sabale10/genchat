@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package chat.v1;
+
+option go_package = "github.com/genchat/proto/gen/chat/v1;chatv1";
+
+import "google/protobuf/timestamp.proto";
+
+service LedgerService {
+  rpc StoreMessage(StoreMessageRequest) returns (StoreMessageResponse);
+  rpc FetchMessages(FetchMessagesRequest) returns (FetchMessagesResponse);
+  rpc UpdateReceipt(UpdateReceiptRequest) returns (UpdateReceiptResponse);
+  rpc GetReceipts(GetReceiptsRequest) returns (GetReceiptsResponse);
+}
+
+message StoreMessageRequest {
+  string conversation_id = 1;
+  string sender_id = 2;
+  string client_msg_id = 3;
+  bytes encrypted_payload = 4;
+  bytes sender_ratchet_key = 5;
+  uint32 message_index = 6;
+}
+
+message StoredMessageResponse {
+  string conversation_id = 1;
+  string message_id = 2;
+  int64 sequence_num = 3;
+  string sender_id = 4;
+  string client_msg_id = 5;
+  bytes encrypted_payload = 6;
+  bytes sender_ratchet_key = 7;
+  uint32 message_index = 8;
+  google.protobuf.Timestamp created_at = 9;
+}
+
+message StoreMessageResponse {
+  StoredMessageResponse message = 1;
+}
+
+message FetchMessagesRequest {
+  string conversation_id = 1;
+  string bucket = 2;
+  int32 limit = 3;
+  string before_message_id = 4;
+}
+
+message FetchMessagesResponse {
+  repeated StoredMessageResponse messages = 1;
+}
+
+message UpdateReceiptRequest {
+  string conversation_id = 1;
+  string user_id = 2;
+  string receipt_type = 3;
+  string message_id = 4;
+  int64 sequence_num = 5;
+}
+
+message UpdateReceiptResponse {
+  bool success = 1;
+}
+
+message ReceiptItem {
+  string user_id = 1;
+  string delivered_message_id = 2;
+  int64 delivered_seq = 3;
+  string read_message_id = 4;
+  int64 read_seq = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+message GetReceiptsRequest {
+  string conversation_id = 1;
+}
+
+message GetReceiptsResponse {
+  repeated ReceiptItem receipts = 1;
+}

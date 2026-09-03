@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -25,11 +26,83 @@ func main() {
 		URLValidityMins: 15,
 	}
 
-	_ = storage.NewMinIOStorage(cfg)
+	store := storage.NewMinIOStorage(cfg)
 
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"healthy"}`))
+	})
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"healthy"}`))
+	})
+
+	http.HandleFunc("/media/upload", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			ContentType   string `json:"content_type"`
+			ContentLength uint64 `json:"content_length"`
+			Sha256Hash    string `json:"sha256_hash"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		res, err := store.GenerateUploadURL(r.Context(), req.ContentType, req.ContentLength, req.Sha256Hash)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"object_key": res.ObjectKey,
+			"upload_url": res.URL,
+			"expires_at": res.ExpiresAt,
+		})
+	})
+
+	http.HandleFunc("/media/download", func(w http.ResponseWriter, r *http.Request) {
+		objectKey := r.URL.Query().Get("object_key")
+		if objectKey == "" {
+			objectKey = r.URL.Query().Get("key")
+		}
+
+		if objectKey == "" && r.Method == http.MethodPost {
+			var req struct {
+				ObjectKey string `json:"object_key"`
+				Key       string `json:"key"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if req.ObjectKey != "" {
+				objectKey = req.ObjectKey
+			} else {
+				objectKey = req.Key
+			}
+		}
+
+		if objectKey == "" {
+			http.Error(w, "missing object_key or key parameter", http.StatusBadRequest)
+			return
+		}
+
+		res, err := store.GenerateDownloadURL(r.Context(), objectKey)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"object_key":    res.ObjectKey,
+			"download_url":  res.URL,
+			"expires_at":    res.ExpiresAt,
+		})
 	})
 
 	port := os.Getenv("PORT")

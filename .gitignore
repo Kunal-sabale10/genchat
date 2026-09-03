@@ -12,9 +12,6 @@ vendor/
 # Rust
 target/
 
-# Generated protobuf
-gen/
-
 # IDE
 .idea/
 .vscode/

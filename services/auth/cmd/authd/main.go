@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
+	chatv1 "github.com/genchat/proto/gen/chat/v1"
 	"github.com/genchat/services/auth/internal/handler"
 	"github.com/genchat/services/auth/internal/store"
 	waconfig "github.com/genchat/services/auth/internal/webauthn"
@@ -42,7 +43,7 @@ func main() {
 
 	grpcServer := grpc.NewServer()
 	authHandler := handler.NewAuthHandler(pgStore, waConf, jwtSecret)
-	_ = authHandler // Will register when proto gen code exists
+	chatv1.RegisterAuthServiceServer(grpcServer, authHandler)
 	reflection.Register(grpcServer)
 
 	lis, err := net.Listen("tcp", listenAddr)
