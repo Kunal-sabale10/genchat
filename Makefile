@@ -82,4 +82,11 @@ clean:
 	cd $(RUST_CRYPTO_DIR) && cargo clean
 	cd $(RUST_FFI_DIR) && cargo clean
 
+# Web frontend
+dev-web:
+	cd packages/client-web && npx vite
+
+build-web:
+	cd packages/client-web && npx tsc --noEmit && npx vite build
+
 all: proto build-rust build-go
