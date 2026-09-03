@@ -128,6 +128,21 @@ export class SecureKeyStorage {
     return JSON.parse(decryptedJson) as RatchetSessionState;
   }
 
+  public async getSession(channelId: string): Promise<string> {
+    const session = await this.loadSession(channelId);
+    return session ? session.session_pickle : "";
+  }
+
+  public async saveSession(channelId: string, sessionPickle: string, pickleKeyHex: string = "00".repeat(32)): Promise<void> {
+    await this.storeSession({
+      conversation_id: channelId,
+      peer_user_id: "",
+      session_pickle: sessionPickle,
+      pickle_key_hex: pickleKeyHex,
+      updated_at: Date.now(),
+    });
+  }
+
   /**
    * Wipe all keys and ratchet sessions from storage (e.g. on logout or key revocation)
    */

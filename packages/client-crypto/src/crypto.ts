@@ -7,6 +7,8 @@ import {
   DecryptedMessagePayload,
 } from "./types.js";
 
+import { SecureKeyStorage } from "./storage.js";
+
 // Interface for WebAssembly module functions
 interface WasmExports {
   generate_pqxdh_keys(count: number): { identity_bundle: IdentityKeyBundle; public_bundle: PublicPreKeyBundle };
@@ -21,11 +23,13 @@ interface WasmExports {
 
 export class GenChatCrypto {
   private wasm: WasmExports | null = null;
+  public storage: SecureKeyStorage;
 
-  constructor(wasmModule?: WasmExports) {
+  constructor(wasmModule?: WasmExports, storage?: SecureKeyStorage) {
     if (wasmModule) {
       this.wasm = wasmModule;
     }
+    this.storage = storage ?? new SecureKeyStorage();
   }
 
   /**
@@ -99,12 +103,20 @@ export class GenChatCrypto {
    */
   public decryptMessage(
     sessionPickle: string,
-    pickleKeyHex: string,
-    messageType: number,
-    ciphertextBase64: string
+    arg2: string | number,
+    arg3: number | string,
+    arg4?: string
   ): DecryptedMessagePayload {
     const wasm = this.ensureWasm();
-    return wasm.decrypt_message(sessionPickle, pickleKeyHex, messageType, ciphertextBase64);
+    if (typeof arg2 === "number" && typeof arg3 === "string") {
+      // 3-arg form: (sessionPickle, messageType, ciphertextBase64)
+      const pickleKeyHex = "00".repeat(32);
+      return wasm.decrypt_message(sessionPickle, pickleKeyHex, arg2, arg3);
+    } else if (typeof arg2 === "string" && typeof arg3 === "number" && typeof arg4 === "string") {
+      // 4-arg form: (sessionPickle, pickleKeyHex, messageType, ciphertextBase64)
+      return wasm.decrypt_message(sessionPickle, arg2, arg3, arg4);
+    }
+    throw new Error("Invalid arguments to decryptMessage");
   }
 
   /**

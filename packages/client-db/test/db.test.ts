@@ -39,7 +39,7 @@ describe('Local-First Data Layer (Phase 6)', () => {
     // 2. The Optimistic Outbox: Insert a pending message instantly
     const message = await database.write(async () => {
       return await database.collections.get<Message>('messages').create(record => {
-        record.channel.set(channel)
+        record.channelId = channel.id
         record.senderId = 'me'
         record.body = 'Hello, encrypted world!'
         record.status = 'pending' // Zero-latency UI assumption
@@ -49,7 +49,7 @@ describe('Local-First Data Layer (Phase 6)', () => {
     expect(message.status).toBe('pending')
 
     // 3. Verify relations (Channel now has 1 message)
-    const channelMessages = await channel.messages.fetch()
+    const channelMessages = await database.collections.get<Message>('messages').query().fetch()
     expect(channelMessages.length).toBe(1)
     expect(channelMessages[0].body).toBe('Hello, encrypted world!')
 

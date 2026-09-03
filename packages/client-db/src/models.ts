@@ -24,6 +24,7 @@ export class Message extends Model {
   }
 
   @field('server_id') serverId?: string
+  @field('channel_id') channelId!: string
   @relation('channels', 'channel_id') channel!: any
   @field('sender_id') senderId!: string
   @field('body') body!: string

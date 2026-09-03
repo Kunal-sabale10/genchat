@@ -9,14 +9,15 @@
     "test": "jest"
   },
   "dependencies": {
-    "@nozbe/watermelondb": "^0.27.1",
-    "@genchat/client-crypto": "file:../client-crypto"
+    "@genchat/client-crypto": "file:../client-crypto",
+    "@nozbe/watermelondb": "^0.27.1"
   },
   "devDependencies": {
-    "@types/jest": "^29.5.12",
+    "@types/jest": "^29.5.14",
     "@types/node": "^20.0.0",
     "jest": "^29.7.0",
-    "ts-jest": "^29.1.2",
+    "lokijs": "^1.5.12",
+    "ts-jest": "^29.4.12",
     "typescript": "^5.3.3"
   },
   "license": "Apache-2.0"
