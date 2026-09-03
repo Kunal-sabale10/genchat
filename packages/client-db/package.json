@@ -1,18 +1,22 @@
 {
   "name": "@genchat/client-db",
   "version": "1.0.0",
-  "description": "GenChat Local-First Reactive Data Architecture with WatermelonDB, Optimistic Outbox, and Zero-Knowledge Search",
+  "description": "GenChat Local-First Reactive Data Architecture with WatermelonDB",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "node --test dist/test/*.test.js"
+    "test": "jest"
   },
   "dependencies": {
+    "@nozbe/watermelondb": "^0.27.1",
     "@genchat/client-crypto": "file:../client-crypto"
   },
   "devDependencies": {
+    "@types/jest": "^29.5.12",
     "@types/node": "^20.0.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
     "typescript": "^5.3.3"
   },
   "license": "Apache-2.0"
