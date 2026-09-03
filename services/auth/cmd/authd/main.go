@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -52,16 +53,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	httpAddr := getEnv("HTTP_ADDR", ":8080")
+	httpServer := &http.Server{Addr: httpAddr, Handler: authHandler.HTTPHandler()}
+	go func() {
+		slog.Info("auth http service starting", "addr", httpAddr)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("auth http server error", "error", err)
+		}
+	}()
+
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		slog.Info("shutting down auth service...")
 		grpcServer.GracefulStop()
+		httpServer.Shutdown(context.Background())
 		cancel()
 	}()
 
-	slog.Info("auth service starting", "addr", listenAddr)
+	slog.Info("auth grpc service starting", "addr", listenAddr)
 	if err := grpcServer.Serve(lis); err != nil {
 		slog.Error("grpc server error", "error", err)
 		os.Exit(1)

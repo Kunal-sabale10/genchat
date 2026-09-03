@@ -33,31 +33,29 @@ export default function RegisterPage() {
         ? beginRes.optionsJson
         : new TextDecoder().decode(beginRes.optionsJson)
       const publicKeyOptions = JSON.parse(optionsJson)
-      const credential = await webauthnCreate({ publicKey: publicKeyOptions.publicKey })
+      const createOpts = publicKeyOptions.publicKey ? { publicKey: publicKeyOptions.publicKey } : { publicKey: publicKeyOptions }
+      const credential = await webauthnCreate(createOpts)
 
       // Step 3: Key Generation Ceremony (ML-KEM-768 + X25519 + Ed25519)
       setStep('keygen')
 
       // In production, this would use the initialized GenChatCrypto Wasm instance.
       // For now, we create a placeholder that will be wired up when Wasm is loaded.
-      let identityKeyBytes: Uint8Array<ArrayBuffer> = new Uint8Array(32)
+      const identityKeyBytes = new Uint8Array(32)
       try {
-        // Attempt real key ceremony if crypto is available
         const { performKeyCeremony: ceremony } = await import('@/lib/key-ceremony')
-        // GenChatCrypto would be loaded here in production with Wasm
         throw new Error('Wasm not yet wired')
       } catch {
-        // Wasm not available in dev — use random placeholder
         globalThis.crypto.getRandomValues(identityKeyBytes)
         console.warn('[KeyCeremony] Wasm not available, using random identity key for dev')
       }
+      const identityKeyHex = Array.from(identityKeyBytes).map(b => b.toString(16).padStart(2, '0')).join('')
 
       // Step 4: Finish registration with authd
-      const credentialJson = new TextEncoder().encode(JSON.stringify(credential))
       const finishRes = await AuthService.finishRegistration({
         sessionId: beginRes.sessionId,
-        credentialJson,
-        identityKey: identityKeyBytes,
+        credentialJson: JSON.stringify(credential),
+        identityKey: identityKeyHex,
         deviceLabel: `${navigator.userAgent.split(' ')[0]} Browser`,
       })
 

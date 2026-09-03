@@ -2,6 +2,7 @@ package webauthn
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/go-webauthn/webauthn/webauthn"
 )
@@ -13,10 +14,23 @@ type Config struct {
 
 // NewConfig creates a new WebAuthn configuration.
 func NewConfig(rpID, rpOrigin, rpName string) *Config {
+	origins := []string{
+		"http://localhost:3000",
+		"http://localhost:5173",
+		"http://127.0.0.1:3000",
+		"http://127.0.0.1:5173",
+	}
+	for _, o := range strings.Split(rpOrigin, ",") {
+		o = strings.TrimSpace(o)
+		if o != "" {
+			origins = append(origins, o)
+		}
+	}
+
 	wconfig := &webauthn.Config{
 		RPDisplayName: rpName,
 		RPID:          rpID,
-		RPOrigins:     []string{rpOrigin},
+		RPOrigins:     origins,
 	}
 
 	w, err := webauthn.New(wconfig)

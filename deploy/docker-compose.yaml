@@ -52,7 +52,7 @@ services:
     image: envoyproxy/envoy:v1.32-latest
     ports:
       - "8443:443"
-      - "8080:80"
+      - "8088:80"
     volumes:
       - ./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
       - ./certs:/etc/envoy/certs:ro
@@ -71,6 +71,7 @@ services:
       target: auth
     ports:
       - "50051:50051"
+      - "8080:8080"
     environment:
       - POSTGRES_URL=postgres://genchat:dev_password@postgres:5432/genchat?sslmode=disable
     depends_on:

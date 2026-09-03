@@ -1,0 +1,13 @@
+.git
+.gitignore
+**/node_modules
+**/dist
+**/target
+**/*.log
+**/*.pem
+deploy/certs
+deploy/envoy
+schema/postgres/pgdata
+schema/scylla/scylladata
+bin
+tmp

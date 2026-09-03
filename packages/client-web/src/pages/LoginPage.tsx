@@ -33,13 +33,13 @@ export default function LoginPage() {
         ? beginRes.optionsJson
         : new TextDecoder().decode(beginRes.optionsJson)
       const publicKeyOptions = JSON.parse(optionsJson)
-      const assertion = await webauthnGet({ publicKey: publicKeyOptions.publicKey })
+      const getOpts = publicKeyOptions.publicKey ? { publicKey: publicKeyOptions.publicKey } : { publicKey: publicKeyOptions }
+      const assertion = await webauthnGet(getOpts)
 
       // Step 3: Finish login with authd
-      const credentialJson = new TextEncoder().encode(JSON.stringify(assertion))
       const finishRes = await AuthService.finishLogin({
         sessionId: beginRes.sessionId,
-        credentialJson,
+        credentialJson: JSON.stringify(assertion),
       })
 
       // Step 4: Store auth tokens and navigate

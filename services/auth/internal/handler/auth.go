@@ -108,7 +108,7 @@ func (h *AuthHandler) FinishRegistration(ctx context.Context, req *chatv1.Finish
 	}
 
 	user := &waconfig.User{
-		ID:          req.IdentityKey,
+		ID:          sessionData.UserID,
 		Name:        ceremony.DisplayName,
 		DisplayName: ceremony.DisplayName,
 	}

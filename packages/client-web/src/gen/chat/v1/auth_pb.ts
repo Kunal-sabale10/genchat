@@ -6,14 +6,14 @@ export interface BeginRegistrationRequest {
 }
 
 export interface BeginRegistrationResponse {
-  optionsJson: Uint8Array
+  optionsJson: Uint8Array | string
   sessionId: string
 }
 
 export interface FinishRegistrationRequest {
   sessionId: string
-  credentialJson: Uint8Array
-  identityKey: Uint8Array
+  credentialJson: Uint8Array | string
+  identityKey: Uint8Array | string
   deviceLabel: string
 }
 
@@ -29,13 +29,13 @@ export interface BeginLoginRequest {
 }
 
 export interface BeginLoginResponse {
-  optionsJson: Uint8Array
+  optionsJson: Uint8Array | string
   sessionId: string
 }
 
 export interface FinishLoginRequest {
   sessionId: string
-  credentialJson: Uint8Array
+  credentialJson: Uint8Array | string
 }
 
 export interface FinishLoginResponse {
