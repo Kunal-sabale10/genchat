@@ -17,3 +17,9 @@ getrandom = { version = "0.2", features = ["js"] }
 js-sys = "0.3"
 hex = "0.4"
 base64 = "0.22"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.2"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
