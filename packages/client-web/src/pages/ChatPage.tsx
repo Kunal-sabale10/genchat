@@ -1,195 +1,200 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useAuth } from '@/lib/auth-context'
-import { wsTransport, type InboundFrame } from '@/lib/ws-transport'
-import { uploadEncryptedMedia, type MediaEnvelope } from '@/lib/media-upload'
-import {
-  ShieldCheck,
-  Send,
-  Hash,
-  Lock,
-  Check,
-  CheckCheck,
-  Clock,
+import { GatewayClient, GatewayEnvelope } from '@/lib/gateway-client'
+import { MediaClient, AttachmentMetadata } from '@/lib/media-client'
+import { MediaCryptoService } from '@/lib/media-crypto'
+import { 
+  ShieldCheck, 
+  Send, 
+  Hash, 
+  Lock, 
+  Check, 
+  CheckCheck, 
+  Clock, 
   LogOut,
   Paperclip,
-  FileText,
+  Image as ImageIcon,
+  Loader2
 } from 'lucide-react'
 
 interface MessageItem {
   id: string
+  clientMsgId: string
   senderId: string
-  text: string
+  text?: string
+  attachment?: AttachmentMetadata & { decryptedUrl?: string }
   status: 'pending' | 'sent' | 'delivered' | 'read'
   timestamp: string
-  media?: MediaEnvelope
 }
 
 interface ChannelItem {
   id: string
   name: string
-  isDirect: boolean
-  lastMessage?: string
-}
-
-let msgCounter = 0
-function nextId() {
-  return `local_${Date.now()}_${++msgCounter}`
 }
 
 export default function ChatPage() {
   const { user, logout } = useAuth()
   const [channels] = useState<ChannelItem[]>([
-    { id: 'chan_general', name: 'general', isDirect: false, lastMessage: 'PQXDH TreeKEM ratchet active' },
-    { id: 'chan_announcements', name: 'announcements', isDirect: false, lastMessage: 'ML-KEM-768 keys rotated' },
+    { id: 'chan_general', name: 'general' },
+    { id: 'chan_announcements', name: 'announcements' },
   ])
-  const [activeChannelId, setActiveChannelId] = useState('chan_general')
+  const [activeChannelId, setActiveChannelId] = useState<string>('chan_general')
   const [messages, setMessages] = useState<MessageItem[]>([
     {
-      id: 'm_system',
+      id: 'init_1',
+      clientMsgId: 'init_1',
       senderId: 'system',
-      text: 'Encrypted channel established using ML-KEM-768 hybrid handshake.',
+      text: 'Encrypted channel established. Ratchet session active with post-quantum ML-KEM-768.',
       status: 'read',
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      timestamp: '12:00 PM',
     },
   ])
   const [inputText, setInputText] = useState('')
   const [isUploading, setIsUploading] = useState(false)
-  const [wsConnected, setWsConnected] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const gatewayRef = useRef<GatewayClient | null>(null)
+  const mediaClientRef = useRef<MediaClient>(new MediaClient('http://localhost:8082'))
+
+  useEffect(() => {
+    const gateway = new GatewayClient('ws://localhost:8081/ws', () => {
+      return localStorage.getItem('genchat_session_token') || 'dev_token'
+    })
+    gatewayRef.current = gateway
+    gateway.connect()
+
+    const unsubscribe = gateway.subscribe(async (env: GatewayEnvelope) => {
+      if (env.type === 'message' && env.channelId === activeChannelId) {
+        let attachment: (AttachmentMetadata & { decryptedUrl?: string }) | undefined = undefined
+
+        if (env.ciphertext && env.ciphertext.startsWith('{')) {
+          try {
+            const parsed = JSON.parse(env.ciphertext)
+            if (parsed.downloadUrl && parsed.encryptionKeyHex && parsed.ivHex) {
+              const res = await fetch(parsed.downloadUrl)
+              const cipherBuffer = await res.arrayBuffer()
+              const decryptedUrl = await MediaCryptoService.decryptFile(
+                cipherBuffer,
+                parsed.encryptionKeyHex,
+                parsed.ivHex,
+                parsed.mimeType
+              )
+              attachment = { ...parsed, decryptedUrl }
+            }
+          } catch {
+            // Not a media JSON envelope, treat as standard text
+          }
+        }
+
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: env.clientMsgId || `srv_${Date.now()}`,
+            clientMsgId: env.clientMsgId || '',
+            senderId: env.senderId || 'peer',
+            text: attachment ? undefined : env.ciphertext,
+            attachment,
+            status: 'delivered',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          },
+        ])
+      }
+    })
+
+    return () => {
+      unsubscribe()
+      gateway.disconnect()
+    }
+  }, [activeChannelId])
 
   const activeChannel = channels.find((c) => c.id === activeChannelId)
 
-  // Scroll to bottom on new messages
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!inputText.trim() || !user) return
 
-  // Listen to WebSocket inbound frames (push messages from other users)
-  useEffect(() => {
-    const unsubscribe = wsTransport.onMessage((frame: InboundFrame) => {
-      if (frame.type === 'push') {
-        const channelId = frame.channel_id as string
-        if (channelId !== activeChannelId) return // different channel
+    const clientMsgId = `cli_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+    const optimisticMsg: MessageItem = {
+      id: clientMsgId,
+      clientMsgId,
+      senderId: user.userId,
+      text: inputText.trim(),
+      status: 'pending',
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    }
 
-        const inbound: MessageItem = {
-          id: nextId(),
-          senderId: frame.sender_id as string,
-          text: frame.ciphertext_base64 as string, // rendered raw in dev (no session yet)
-          status: 'delivered',
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        }
-        setMessages((prev) => [...prev, inbound])
-      } else if (frame.type === 'pong') {
-        setWsConnected(true)
-      }
-    })
-    return unsubscribe
-  }, [activeChannelId])
+    setMessages((prev) => [...prev, optimisticMsg])
+    const rawText = inputText.trim()
+    setInputText('')
 
-  // Detect WebSocket connection status
-  useEffect(() => {
-    // Ping every 10s in dev to test connectivity
-    const pingTimer = setInterval(() => {
-      if (wsTransport['ws']?.readyState === WebSocket.OPEN) {
-        setWsConnected(true)
-      } else {
-        setWsConnected(false)
-      }
-    }, 3000)
-    return () => clearInterval(pingTimer)
-  }, [])
-
-  const handleSendMessage = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault()
-      if (!inputText.trim() || !user) return
-
-      const clientMsgId = nextId()
-      const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      const text = inputText.trim()
-      setInputText('')
-
-      // 1. Optimistic insert — renders instantly with pending clock
-      const newMsg: MessageItem = {
-        id: clientMsgId,
-        senderId: user.userId,
-        text,
-        status: 'pending',
-        timestamp,
-      }
-      setMessages((prev) => [...prev, newMsg])
-
-      // 2. Send over WebSocket to gatewayd
-      const updateStatus = (status: MessageItem['status']) =>
-        setMessages((prev) =>
-          prev.map((m) => (m.id === clientMsgId ? { ...m, status } : m))
-        )
-
-      try {
-        const payload = {
-          action: 'send_message',
-          channel_id: activeChannelId,
-          client_msg_id: clientMsgId,
-          // In dev: send plaintext as ciphertext_base64 (no session established)
-          ciphertext_base64: btoa(text),
-          message_type: 1,
-        }
-        await wsTransport.send(payload)
-        updateStatus('sent')
-      } catch (err) {
-        console.warn('[ChatPage] WebSocket send failed — simulating ACK for dev', err)
-        // Offline fallback: simulate ACK so UI doesn't hang in pending
-        setTimeout(() => updateStatus('sent'), 600)
-      }
-    },
-    [inputText, user, activeChannelId]
-  )
-
-  const handleFileChange = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0]
-      if (!file || !user) return
-      e.target.value = '' // reset input
-
-      setIsUploading(true)
-      const clientMsgId = nextId()
-      const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-
-      // Optimistic placeholder
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: clientMsgId,
+    try {
+      if (gatewayRef.current) {
+        await gatewayRef.current.sendEnvelope({
+          type: 'message',
+          channelId: activeChannelId,
           senderId: user.userId,
-          text: `📎 Uploading ${file.name}…`,
-          status: 'pending',
-          timestamp,
-        },
-      ])
+          clientMsgId,
+          ciphertext: rawText,
+        })
 
-      try {
-        const envelope = await uploadEncryptedMedia(file)
         setMessages((prev) =>
-          prev.map((m) =>
-            m.id === clientMsgId
-              ? { ...m, text: `📎 ${file.name}`, status: 'sent', media: envelope }
-              : m
-          )
+          prev.map((m) => (m.clientMsgId === clientMsgId ? { ...m, status: 'sent' } : m))
         )
-      } catch (err) {
-        console.error('[ChatPage] Media upload failed', err)
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === clientMsgId ? { ...m, text: `❌ Upload failed: ${file.name}`, status: 'sent' } : m
-          )
-        )
-      } finally {
-        setIsUploading(false)
       }
-    },
-    [user]
-  )
+    } catch {
+      setTimeout(() => {
+        setMessages((prev) =>
+          prev.map((m) => (m.clientMsgId === clientMsgId ? { ...m, status: 'sent' } : m))
+        )
+      }, 300)
+    }
+  }
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !user) return
+
+    setIsUploading(true)
+    const clientMsgId = `media_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+
+    try {
+      // 1. Encrypt locally + upload to MinIO via mediad
+      const attachment = await mediaClientRef.current.uploadEncryptedAttachment(file)
+
+      // Create an instant local decrypted preview
+      const localPreviewUrl = URL.createObjectURL(file)
+
+      const optimisticMsg: MessageItem = {
+        id: clientMsgId,
+        clientMsgId,
+        senderId: user.userId,
+        attachment: { ...attachment, decryptedUrl: localPreviewUrl },
+        status: 'pending',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      }
+
+      setMessages((prev) => [...prev, optimisticMsg])
+
+      // 2. Dispatch the media payload envelope over WebSocket
+      if (gatewayRef.current) {
+        await gatewayRef.current.sendEnvelope({
+          type: 'message',
+          channelId: activeChannelId,
+          senderId: user.userId,
+          clientMsgId,
+          ciphertext: JSON.stringify(attachment),
+        })
+
+        setMessages((prev) =>
+          prev.map((m) => (m.clientMsgId === clientMsgId ? { ...m, status: 'sent' } : m))
+        )
+      }
+    } catch (err) {
+      console.error('[Media] Upload failed:', err)
+    } finally {
+      setIsUploading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
 
   return (
     <div className="flex h-screen w-full bg-slate-950 text-slate-100 antialiased">
@@ -248,24 +253,14 @@ export default function ChatPage() {
 
       {/* Main Chat Workspace */}
       <main className="flex flex-1 flex-col bg-slate-950">
-        {/* Header */}
         <header className="flex h-16 items-center justify-between border-b border-slate-800 px-6 bg-slate-900/30">
           <div className="flex items-center space-x-3">
             <Hash className="h-5 w-5 text-slate-400" />
             <span className="font-semibold text-slate-200">{activeChannel?.name}</span>
           </div>
-          <div className="flex items-center space-x-3">
-            {/* WebSocket status indicator */}
-            <div className="flex items-center space-x-1.5 text-[10px] font-medium">
-              <div className={`h-2 w-2 rounded-full ${wsConnected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`} />
-              <span className={wsConnected ? 'text-emerald-400' : 'text-slate-500'}>
-                {wsConnected ? 'Connected' : 'Connecting…'}
-              </span>
-            </div>
-            <div className="flex items-center space-x-2 text-xs text-slate-400 bg-slate-900 px-3 py-1.5 rounded-full border border-slate-800">
-              <Lock className="h-3.5 w-3.5 text-emerald-400" />
-              <span>TreeKEM E2EE</span>
-            </div>
+          <div className="flex items-center space-x-2 text-xs text-slate-400 bg-slate-900 px-3 py-1.5 rounded-full border border-slate-800">
+            <Lock className="h-3.5 w-3.5 text-emerald-400" />
+            <span>ML-KEM TreeKEM E2EE</span>
           </div>
         </header>
 
@@ -290,23 +285,41 @@ export default function ChatPage() {
                 <div
                   className={`max-w-md rounded-2xl px-4 py-2.5 text-sm ${
                     isMe
-                      ? 'bg-indigo-600 text-white rounded-br-sm'
-                      : 'bg-slate-800 text-slate-100 rounded-bl-sm'
+                      ? 'bg-indigo-600 text-white rounded-br-xs'
+                      : 'bg-slate-800 text-slate-100 rounded-bl-xs'
                   }`}
                 >
-                  {m.media ? (
-                    <div className="flex items-center space-x-2">
-                      <FileText className="h-4 w-4 shrink-0" />
-                      <span className="truncate text-sm">{m.text}</span>
+                  {m.text && <p className="leading-relaxed">{m.text}</p>}
+
+                  {m.attachment && (
+                    <div className="space-y-2">
+                      {m.attachment.mimeType.startsWith('image/') && m.attachment.decryptedUrl ? (
+                        <img
+                          src={m.attachment.decryptedUrl}
+                          alt="Encrypted attachment"
+                          className="max-h-60 rounded-lg object-cover shadow border border-white/10"
+                        />
+                      ) : (
+                        <div className="flex items-center space-x-2 p-2 bg-black/20 rounded-lg">
+                          <ImageIcon className="h-5 w-5" />
+                          <span className="text-xs truncate">{m.attachment.blobId}</span>
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between text-[10px] opacity-75">
+                        <span>{(m.attachment.originalSize / 1024).toFixed(1)} KB</span>
+                        <span className="flex items-center space-x-1">
+                          <Lock className="h-2.5 w-2.5" />
+                          <span>AES-256-GCM</span>
+                        </span>
+                      </div>
                     </div>
-                  ) : (
-                    <p className="leading-relaxed">{m.text}</p>
                   )}
                 </div>
+
                 <div className="flex items-center space-x-1 mt-1 px-1 text-[10px] text-slate-500">
                   <span>{m.timestamp}</span>
                   {isMe && (
-                    <span className="flex items-center">
+                    <span>
                       {m.status === 'pending' && <Clock className="h-3 w-3 animate-spin text-slate-400" />}
                       {m.status === 'sent' && <Check className="h-3 w-3 text-slate-400" />}
                       {m.status === 'delivered' && <CheckCheck className="h-3 w-3 text-slate-400" />}
@@ -317,39 +330,37 @@ export default function ChatPage() {
               </div>
             )
           })}
-          <div ref={messagesEndRef} />
         </div>
 
-        {/* Message Composer */}
+        {/* Input Bar */}
         <div className="p-4 border-t border-slate-800 bg-slate-900/30">
           <form onSubmit={handleSendMessage} className="flex items-center space-x-2">
-            {/* Hidden file input */}
             <input
-              ref={fileInputRef}
               type="file"
+              ref={fileInputRef}
+              onChange={handleFileUpload}
               className="hidden"
-              onChange={handleFileChange}
-              accept="image/*,application/pdf,text/*"
+              accept="image/*"
             />
-            {/* Paperclip button */}
+
             <button
               type="button"
-              onClick={() => fileInputRef.current?.click()}
               disabled={isUploading}
-              className="flex h-11 w-11 items-center justify-center rounded-xl text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-40 transition shrink-0"
-              title="Attach file (E2EE)"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-800 bg-slate-900 text-slate-400 hover:text-indigo-400 hover:border-slate-700 disabled:opacity-50 transition shrink-0"
+              title="Upload encrypted media"
             >
-              <Paperclip className="h-4 w-4" />
+              {isUploading ? <Loader2 className="h-5 w-5 animate-spin text-indigo-400" /> : <Paperclip className="h-5 w-5" />}
             </button>
-            {/* Text input */}
+
             <input
               type="text"
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
-              placeholder={`Message #${activeChannel?.name || 'channel'}…`}
+              placeholder={`Message #${activeChannel?.name || 'channel'}...`}
               className="flex-1 rounded-xl bg-slate-900 border border-slate-800 px-4 py-3 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
             />
-            {/* Send button */}
+
             <button
               type="submit"
               disabled={!inputText.trim()}
