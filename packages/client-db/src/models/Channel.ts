@@ -1,5 +1,5 @@
-import { Model, field, date, children } from "./decorators.js";
-import { Message } from "./Message.js";
+import { Model, field, date, children } from "./decorators";
+import { Message } from "./Message";
 
 export class Channel extends Model {
   public static table = "channels";

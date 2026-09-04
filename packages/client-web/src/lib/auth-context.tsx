@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react'
 import { AuthService } from './grpc-client'
+import { wsTransport } from './ws-transport'
 
 interface AuthUser {
   userId: string
@@ -27,6 +28,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
   const [isLoading, setIsLoading] = useState(false)
 
+  // Reconnect WebSocket on page refresh if already logged in
+  useEffect(() => {
+    const token = sessionStorage.getItem('genchat_access_token')
+    if (token) wsTransport.connect(token)
+    return () => wsTransport.disconnect()
+  }, [])
+
   const login = useCallback((token: string, refreshToken: string, userId: string, deviceId: string) => {
     const authUser = { userId, deviceId }
     setUser(authUser)
@@ -34,6 +42,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sessionStorage.setItem('genchat_user', JSON.stringify(authUser))
     sessionStorage.setItem('genchat_access_token', token)
     sessionStorage.setItem('genchat_refresh_token', refreshToken)
+    // Connect WebSocket with JWT
+    wsTransport.connect(token)
   }, [])
 
   const logout = useCallback(() => {
@@ -42,6 +52,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sessionStorage.removeItem('genchat_user')
     sessionStorage.removeItem('genchat_access_token')
     sessionStorage.removeItem('genchat_refresh_token')
+    wsTransport.disconnect()
   }, [])
 
   const refreshAccessToken = useCallback(async () => {

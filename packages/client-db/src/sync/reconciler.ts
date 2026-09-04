@@ -1,6 +1,6 @@
-import { LocalDatabase } from "../database.js";
-import { Message } from "../models/Message.js";
-import { Channel } from "../models/Channel.js";
+import { LocalDatabase } from "../database";
+import { Message } from "../models/Message";
+import { Channel } from "../models/Channel";
 
 export interface InboundEncryptedPayload {
   channel_id: string;

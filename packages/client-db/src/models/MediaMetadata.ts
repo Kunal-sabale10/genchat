@@ -1,5 +1,5 @@
-import { Model, field, date, relation } from "./decorators.js";
-import { Message } from "./Message.js";
+import { Model, field, date, relation } from "./decorators";
+import { Message } from "./Message";
 
 export class MediaMetadata extends Model {
   public static table = "media_metadata";

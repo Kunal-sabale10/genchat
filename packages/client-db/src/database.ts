@@ -1,7 +1,7 @@
-import { appSchema } from "./schema/schema.js";
-import { Channel } from "./models/Channel.js";
-import { Message } from "./models/Message.js";
-import { MediaMetadata } from "./models/MediaMetadata.js";
+import { appSchema } from "./schema/schema";
+import { Channel } from "./models/Channel";
+import { Message } from "./models/Message";
+import { MediaMetadata } from "./models/MediaMetadata";
 
 export class LocalCollection<T extends { id: string; raw: any }> {
   private items: Map<string, T> = new Map();
@@ -30,10 +30,13 @@ export class LocalCollection<T extends { id: string; raw: any }> {
   }
 
   public async create(recordBuilder: (record: T) => void): Promise<T> {
-    const id = (recordBuilder as any).id ?? Math.random().toString(36).substring(2, 12);
-    const instance = new this.modelClass(id, {}, this.db);
+    const defaultId = Math.random().toString(36).substring(2, 12);
+    const instance = new this.modelClass(defaultId, {}, this.db);
     recordBuilder(instance);
-    this.items.set(id, instance);
+    const finalId = instance.id || defaultId;
+    instance.id = finalId;
+    if (instance.raw) instance.raw.id = finalId;
+    this.items.set(finalId, instance);
     return instance;
   }
 

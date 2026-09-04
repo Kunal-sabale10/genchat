@@ -1,8 +1,7 @@
 import assert from "node:assert";
-import { test } from "node:test";
-import { LocalDatabase } from "../src/database.js";
-import { InboundSyncReconciler, CryptoDecryptor } from "../src/sync/reconciler.js";
-import { Channel } from "../src/models/Channel.js";
+import { LocalDatabase } from "../src/database";
+import { InboundSyncReconciler, CryptoDecryptor } from "../src/sync/reconciler";
+import { Channel } from "../src/models/Channel";
 
 test("InboundSyncReconciler batches incoming messages and decrypts via Wasm", async () => {
   const db = new LocalDatabase();

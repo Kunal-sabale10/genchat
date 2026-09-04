@@ -1,5 +1,5 @@
-import { LocalDatabase } from "../database.js";
-import { Message } from "../models/Message.js";
+import { LocalDatabase } from "../database";
+import { Message } from "../models/Message";
 
 export interface SearchOptions {
   channelId?: string;

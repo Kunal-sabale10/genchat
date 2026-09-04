@@ -1,8 +1,7 @@
 import assert from "node:assert";
-import { test } from "node:test";
-import { LocalDatabase } from "../src/database.js";
-import { ZeroKnowledgeSearchEngine } from "../src/search/search.js";
-import { Message } from "../src/models/Message.js";
+import { LocalDatabase } from "../src/database";
+import { ZeroKnowledgeSearchEngine } from "../src/search/search";
+import { Message } from "../src/models/Message";
 
 test("ZeroKnowledgeSearchEngine searches decrypted messages with ranking and prefix matching", async () => {
   const db = new LocalDatabase();

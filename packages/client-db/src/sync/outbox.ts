@@ -1,5 +1,5 @@
-import { LocalDatabase } from "../database.js";
-import { Message, MessageStatus } from "../models/Message.js";
+import { LocalDatabase } from "../database";
+import { Message, MessageStatus } from "../models/Message";
 
 export interface GatewayAck {
   client_msg_id: string;

@@ -37,9 +37,11 @@ func main() {
 	hub := ws.NewHub()
 	go hub.Run()
 
+	jwtSecret := getEnv("JWT_SECRET", "dev-secret-change-in-production")
+
 	limiter := ratelimit.NewLimiter(60, 5) // 60/min, burst 5
 	router := relay.NewRouter(hub)
-	wsHandler := ws.NewHandler(hub, router.Handle, limiter)
+	wsHandler := ws.NewHandler(hub, router.Handle, limiter, jwtSecret)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", wsHandler.ServeHTTP)

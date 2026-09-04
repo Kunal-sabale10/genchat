@@ -1,6 +1,6 @@
-import { Model, field, text, date, relation } from "./decorators.js";
-import { Channel } from "./Channel.js";
-import { MediaMetadata } from "./MediaMetadata.js";
+import { Model, field, text, date, relation } from "./decorators";
+import { Channel } from "./Channel";
+import { MediaMetadata } from "./MediaMetadata";
 
 export type MessageStatus = "pending" | "sent" | "delivered" | "read" | "failed";
 
