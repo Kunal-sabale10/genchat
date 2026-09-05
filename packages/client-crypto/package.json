@@ -2,8 +2,8 @@
   "name": "@genchat/client-crypto",
   "version": "1.0.0",
   "description": "GenChat Post-Quantum Cryptographic Client SDK with WebAssembly and WebCrypto Key Storage",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
   "scripts": {
     "build": "tsc",
     "test": "node --test dist/test/crypto.test.js"
