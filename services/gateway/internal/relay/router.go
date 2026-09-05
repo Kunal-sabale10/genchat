@@ -74,6 +74,36 @@ type HistoryMessageDTO struct {
 	CreatedAtUnix int64  `json:"created_at_unix"`
 }
 
+// TypingFrame is sent by client when typing state changes.
+type TypingFrame struct {
+	Action    string `json:"action"`
+	ChannelID string `json:"channel_id"`
+	IsTyping  bool   `json:"is_typing"`
+}
+
+type TypingPushFrame struct {
+	Type      string `json:"type"`
+	ChannelID string `json:"channel_id"`
+	UserID    string `json:"user_id"`
+	IsTyping  bool   `json:"is_typing"`
+}
+
+// ReadReceiptFrame is sent when messages are viewed.
+type ReadReceiptFrame struct {
+	Action      string `json:"action"`
+	ChannelID   string `json:"channel_id"`
+	ServerID    string `json:"server_id"`
+	SequenceNum int64  `json:"sequence_num"`
+}
+
+type ReadReceiptPushFrame struct {
+	Type        string `json:"type"`
+	ChannelID   string `json:"channel_id"`
+	UserID      string `json:"user_id"`
+	ServerID    string `json:"server_id"`
+	SequenceNum int64  `json:"sequence_num"`
+}
+
 // Router handles message routing between connected clients.
 type Router struct {
 	hub    *ws.Hub
@@ -103,6 +133,10 @@ func (r *Router) Handle(ctx context.Context, conn *ws.Conn, data []byte) error {
 		return r.handleSendMessage(ctx, conn, data)
 	case "fetch_history":
 		return r.handleFetchHistory(ctx, conn, data)
+	case "typing":
+		return r.handleTyping(conn, data)
+	case "read_receipt":
+		return r.handleReadReceipt(conn, data)
 	case "ping":
 		return r.handlePing(conn)
 	default:
@@ -230,6 +264,55 @@ func (r *Router) handleFetchHistory(ctx context.Context, conn *ws.Conn, data []b
 		Messages:  dtos,
 	})
 	r.hub.SendToUser(conn.UserID, resp)
+	return nil
+}
+
+func (r *Router) handleTyping(conn *ws.Conn, data []byte) error {
+	var frame TypingFrame
+	if err := json.Unmarshal(data, &frame); err != nil {
+		return nil
+	}
+	if frame.ChannelID == "" {
+		return nil
+	}
+
+	push, _ := json.Marshal(TypingPushFrame{
+		Type:      "typing",
+		ChannelID: frame.ChannelID,
+		UserID:    conn.UserID,
+		IsTyping:  frame.IsTyping,
+	})
+
+	if strings.HasPrefix(frame.ChannelID, "chan_") {
+		r.hub.BroadcastAll(conn.UserID, push)
+	} else {
+		r.hub.SendToUser(frame.ChannelID, push)
+	}
+	return nil
+}
+
+func (r *Router) handleReadReceipt(conn *ws.Conn, data []byte) error {
+	var frame ReadReceiptFrame
+	if err := json.Unmarshal(data, &frame); err != nil {
+		return nil
+	}
+	if frame.ChannelID == "" || frame.ServerID == "" {
+		return nil
+	}
+
+	push, _ := json.Marshal(ReadReceiptPushFrame{
+		Type:        "read_receipt",
+		ChannelID:   frame.ChannelID,
+		UserID:      conn.UserID,
+		ServerID:    frame.ServerID,
+		SequenceNum: frame.SequenceNum,
+	})
+
+	if strings.HasPrefix(frame.ChannelID, "chan_") {
+		r.hub.BroadcastAll(conn.UserID, push)
+	} else {
+		r.hub.SendToUser(frame.ChannelID, push)
+	}
 	return nil
 }
 

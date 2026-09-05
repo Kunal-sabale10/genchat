@@ -1,5 +1,5 @@
 export interface GatewayEnvelope {
-  type: 'message' | 'ack' | 'presence' | 'heartbeat' | 'push' | 'error' | 'pong'
+  type: 'message' | 'ack' | 'presence' | 'heartbeat' | 'push' | 'error' | 'pong' | 'typing' | 'read_receipt'
   channelId?: string
   senderId?: string
   clientMsgId?: string
@@ -8,8 +8,23 @@ export interface GatewayEnvelope {
   ciphertext?: string
 }
 
+export interface TypingEvent {
+  channelId: string
+  userId: string
+  isTyping: boolean
+}
+
+export interface ReadReceiptEvent {
+  channelId: string
+  userId: string
+  serverId: string
+  sequenceNum: number
+}
+
 export type MessageHandler = (envelope: GatewayEnvelope) => void
 export type StatusHandler = (connected: boolean) => void
+export type TypingHandler = (event: TypingEvent) => void
+export type ReadReceiptHandler = (event: ReadReceiptEvent) => void
 
 export class GatewayClient {
   private ws: WebSocket | null = null
@@ -18,6 +33,8 @@ export class GatewayClient {
   private reconnectInterval = 2000
   private messageHandlers: Set<MessageHandler> = new Set()
   private statusHandlers: Set<StatusHandler> = new Set()
+  private typingHandlers: Set<TypingHandler> = new Set()
+  private readReceiptHandlers: Set<ReadReceiptHandler> = new Set()
   private pendingAcks: Map<string, (seq: number) => void> = new Map()
   private pingTimer: ReturnType<typeof setInterval> | null = null
   private isExplicitDisconnect = false
@@ -96,7 +113,32 @@ export class GatewayClient {
           }
         }
 
-        // 2. Handle history response
+        // 2. Handle typing notifications
+        if (raw.type === 'typing') {
+          this.typingHandlers.forEach((h) =>
+            h({
+              channelId: raw.channel_id,
+              userId: raw.user_id,
+              isTyping: !!raw.is_typing,
+            })
+          )
+          return
+        }
+
+        // 3. Handle read receipts
+        if (raw.type === 'read_receipt') {
+          this.readReceiptHandlers.forEach((h) =>
+            h({
+              channelId: raw.channel_id,
+              userId: raw.user_id,
+              serverId: raw.server_id,
+              sequenceNum: raw.sequence_num ?? 0,
+            })
+          )
+          return
+        }
+
+        // 4. Handle history response
         if (raw.type === 'history' && Array.isArray(raw.messages)) {
           console.log(`[Gateway] Received history for ${raw.channel_id}: ${raw.messages.length} messages`)
           // Scylla messages are ordered DESC by time; reverse so oldest is first
@@ -226,6 +268,35 @@ export class GatewayClient {
       action: 'fetch_history',
       channel_id: channelId,
       limit,
+    }))
+  }
+
+  public onTyping(handler: TypingHandler): () => void {
+    this.typingHandlers.add(handler)
+    return () => this.typingHandlers.delete(handler)
+  }
+
+  public onReadReceipt(handler: ReadReceiptHandler): () => void {
+    this.readReceiptHandlers.add(handler)
+    return () => this.readReceiptHandlers.delete(handler)
+  }
+
+  public sendTyping(channelId: string, isTyping: boolean): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+    this.ws.send(JSON.stringify({
+      action: 'typing',
+      channel_id: channelId,
+      is_typing: isTyping,
+    }))
+  }
+
+  public sendReadReceipt(channelId: string, serverId: string, sequenceNum: number = 0): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+    this.ws.send(JSON.stringify({
+      action: 'read_receipt',
+      channel_id: channelId,
+      server_id: serverId,
+      sequence_num: sequenceNum,
     }))
   }
 
