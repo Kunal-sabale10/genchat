@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	chatv1 "github.com/genchat/proto/gen/chat/v1"
 )
@@ -59,8 +61,13 @@ type StoreMessageResult struct {
 
 // StoreMessage persists a 1:1 message synchronously and returns the durable
 // message ID + sequence number the ledger assigned. Idempotent: a retry with
-// the same (conversation_id, client_msg_id) returns Deduplicated=true rather
-// than erroring or double-writing.
+// the same (conversation_id, client_msg_id) gets back Deduplicated=true
+// (the ledger signals this via a gRPC AlreadyExists status, not a response
+// field — see services/msgledger/internal/handler/handler.go's
+// StoreMessageDirect) rather than erroring or double-writing. Note: on a
+// dedup hit we don't have the original message_id/sequence_num — the
+// ledger's AlreadyExists error doesn't carry them. Until that's added,
+// callers get Deduplicated=true with an empty MessageID.
 func (c *Client) StoreMessage(ctx context.Context, conversationID, senderID, clientMsgID string, encryptedPayload, senderRatchetKey []byte, messageIndex uint32) (*StoreMessageResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -74,12 +81,12 @@ func (c *Client) StoreMessage(ctx context.Context, conversationID, senderID, cli
 		MessageIndex:     messageIndex,
 	})
 	if err != nil {
+		if status.Code(err) == codes.AlreadyExists {
+			return &StoreMessageResult{Deduplicated: true}, nil
+		}
 		return nil, fmt.Errorf("ledgerclient: StoreMessage: %w", err)
 	}
 
-	if resp.GetDeduplicated() {
-		return &StoreMessageResult{Deduplicated: true}, nil
-	}
 	return &StoreMessageResult{
 		MessageID:   resp.GetMessage().GetMessageId(),
 		SequenceNum: resp.GetMessage().GetSequenceNum(),
