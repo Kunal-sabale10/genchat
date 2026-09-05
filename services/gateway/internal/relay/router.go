@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/genchat/services/gateway/internal/ledgerclient"
@@ -49,6 +50,30 @@ type ErrorFrame struct {
 	Message string `json:"message"`
 }
 
+// FetchHistoryFrame is the inbound request to fetch chat history.
+type FetchHistoryFrame struct {
+	Action         string `json:"action"`
+	ChannelID      string `json:"channel_id"`
+	Limit          int32  `json:"limit"`
+	BeforeServerID string `json:"before_server_id"`
+}
+
+// HistoryResponseFrame is sent back with stored messages.
+type HistoryResponseFrame struct {
+	Type      string              `json:"type"`
+	ChannelID string              `json:"channel_id"`
+	Messages  []HistoryMessageDTO `json:"messages"`
+}
+
+type HistoryMessageDTO struct {
+	ServerID      string `json:"server_id"`
+	SequenceNum   int64  `json:"sequence_num"`
+	SenderID      string `json:"sender_id"`
+	ClientMsgID   string `json:"client_msg_id"`
+	CiphertextB64 string `json:"ciphertext_base64"`
+	CreatedAtUnix int64  `json:"created_at_unix"`
+}
+
 // Router handles message routing between connected clients.
 type Router struct {
 	hub    *ws.Hub
@@ -76,6 +101,8 @@ func (r *Router) Handle(ctx context.Context, conn *ws.Conn, data []byte) error {
 	switch base.Action {
 	case "send_message":
 		return r.handleSendMessage(ctx, conn, data)
+	case "fetch_history":
+		return r.handleFetchHistory(ctx, conn, data)
 	case "ping":
 		return r.handlePing(conn)
 	default:
@@ -134,14 +161,6 @@ func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []by
 	r.hub.SendToUser(conn.UserID, ack)
 
 	// 2. Push to channel members
-	// Phase 8: 1:1 channels — channel_id IS the recipient user_id
-	// Phase 9 will add a channel→members lookup
-	recipientUserID := frame.ChannelID
-	if recipientUserID == conn.UserID {
-		// Self-send (test mode) — still push for loopback verification
-		slog.Debug("self-send loopback", "user_id", conn.UserID)
-	}
-
 	push, _ := json.Marshal(PushFrame{
 		Type:          "push",
 		ChannelID:     frame.ChannelID,
@@ -151,13 +170,66 @@ func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []by
 		ServerID:      serverID,
 		ServerTime:    time.Now().Unix(),
 	})
-	r.hub.SendToUser(recipientUserID, push)
+
+	if strings.HasPrefix(frame.ChannelID, "chan_") {
+		// Public channel: broadcast to all connected users except sender
+		r.hub.BroadcastAll(conn.UserID, push)
+	} else {
+		// 1:1 Direct Message: route to recipient
+		recipientUserID := frame.ChannelID
+		if recipientUserID == conn.UserID {
+			// Self-send loopback
+			slog.Debug("self-send loopback", "user_id", conn.UserID)
+		}
+		r.hub.SendToUser(recipientUserID, push)
+	}
 
 	slog.Info("message routed",
 		"sender", conn.UserID,
 		"channel", frame.ChannelID,
 		"server_id", serverID,
 	)
+	return nil
+}
+
+func (r *Router) handleFetchHistory(ctx context.Context, conn *ws.Conn, data []byte) error {
+	var frame FetchHistoryFrame
+	if err := json.Unmarshal(data, &frame); err != nil {
+		return r.sendError(conn, "INVALID_FRAME", "could not parse fetch_history frame")
+	}
+	if frame.ChannelID == "" {
+		return r.sendError(conn, "MISSING_FIELDS", "channel_id is required")
+	}
+
+	if r.ledger == nil {
+		return r.sendError(conn, "PERSISTENCE_UNAVAILABLE", "ledger not configured")
+	}
+
+	bucket := time.Now().Format("2006-01")
+	msgs, err := r.ledger.FetchMessages(ctx, frame.ChannelID, bucket, frame.Limit, frame.BeforeServerID)
+	if err != nil {
+		slog.Error("failed to fetch history", "error", err, "channel", frame.ChannelID)
+		return r.sendError(conn, "FETCH_FAILED", "could not fetch message history")
+	}
+
+	var dtos []HistoryMessageDTO
+	for _, m := range msgs {
+		dtos = append(dtos, HistoryMessageDTO{
+			ServerID:      m.MessageID,
+			SequenceNum:   m.SequenceNum,
+			SenderID:      m.SenderID,
+			ClientMsgID:   m.ClientMsgID,
+			CiphertextB64: base64.StdEncoding.EncodeToString(m.EncryptedPayload),
+			CreatedAtUnix: m.CreatedAt.Unix(),
+		})
+	}
+
+	resp, _ := json.Marshal(HistoryResponseFrame{
+		Type:      "history",
+		ChannelID: frame.ChannelID,
+		Messages:  dtos,
+	})
+	r.hub.SendToUser(conn.UserID, resp)
 	return nil
 }
 

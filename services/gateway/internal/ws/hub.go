@@ -115,6 +115,22 @@ func (h *Hub) BroadcastToUsers(userIDs []string, payload []byte) {
 	}
 }
 
+// BroadcastAll sends a payload to all connected users, optionally excluding one user (e.g. sender).
+func (h *Hub) BroadcastAll(excludeUserID string, payload []byte) {
+	h.mu.RLock()
+	userIDs := make([]string, 0, len(h.connections))
+	for uid := range h.connections {
+		if uid != excludeUserID {
+			userIDs = append(userIDs, uid)
+		}
+	}
+	h.mu.RUnlock()
+
+	for _, uid := range userIDs {
+		h.SendToUser(uid, payload)
+	}
+}
+
 func (h *Hub) GetActiveDeviceCount(userID string) int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

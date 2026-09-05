@@ -79,12 +79,14 @@ export class GatewayClient {
           text = String(event.data)
         }
 
+        console.log('[Gateway] Raw frame received:', text)
         const raw = JSON.parse(text)
 
         // 1. Handle ACK from gatewayd
         if (raw.type === 'ack') {
           const clientMsgId = raw.client_msg_id || raw.clientMsgId
           const seq = raw.sequence_num ?? raw.sequenceNum ?? 0
+          console.log('[Gateway] ACK for:', clientMsgId, 'seq:', seq)
           if (clientMsgId) {
             const resolver = this.pendingAcks.get(clientMsgId)
             if (resolver) {
@@ -94,7 +96,32 @@ export class GatewayClient {
           }
         }
 
-        // 2. Normalize push frame from gatewayd
+        // 2. Handle history response
+        if (raw.type === 'history' && Array.isArray(raw.messages)) {
+          console.log(`[Gateway] Received history for ${raw.channel_id}: ${raw.messages.length} messages`)
+          // Scylla messages are ordered DESC by time; reverse so oldest is first
+          const chronological = [...raw.messages].reverse()
+          for (const m of chronological) {
+            let decodedCiphertext = m.ciphertext_base64 || ''
+            try {
+              decodedCiphertext = atob(m.ciphertext_base64)
+            } catch {
+              // Leave as-is
+            }
+            const histEnvelope: GatewayEnvelope = {
+              type: 'message',
+              channelId: raw.channel_id,
+              senderId: m.sender_id,
+              clientMsgId: m.client_msg_id || m.server_id,
+              sequenceNum: m.sequence_num,
+              ciphertext: decodedCiphertext,
+            }
+            this.messageHandlers.forEach((handler) => handler(histEnvelope))
+          }
+          return
+        }
+
+        // 3. Normalize push frame from gatewayd
         let envelope: GatewayEnvelope
         if (raw.type === 'push') {
           let decodedCiphertext = raw.ciphertext_base64 || ''
@@ -113,6 +140,7 @@ export class GatewayClient {
             messageType: raw.message_type,
             ciphertext: decodedCiphertext,
           }
+          console.log('[Gateway] Normalized push → envelope:', JSON.stringify(envelope))
         } else {
           envelope = {
             type: raw.type || 'message',
@@ -125,6 +153,7 @@ export class GatewayClient {
           }
         }
 
+        console.log('[Gateway] Dispatching to', this.messageHandlers.size, 'handler(s)')
         this.messageHandlers.forEach((handler) => handler(envelope))
       } catch (err) {
         console.error('[Gateway] Failed to parse message frame:', err)
@@ -188,6 +217,16 @@ export class GatewayClient {
 
       this.ws.send(JSON.stringify(wireFrame))
     })
+  }
+
+  public fetchHistory(channelId: string, limit = 50): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+    console.log(`[Gateway] Requesting history for channel: ${channelId}`)
+    this.ws.send(JSON.stringify({
+      action: 'fetch_history',
+      channel_id: channelId,
+      limit,
+    }))
   }
 
   public disconnect(): void {

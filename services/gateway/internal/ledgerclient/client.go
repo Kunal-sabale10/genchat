@@ -92,3 +92,55 @@ func (c *Client) StoreMessage(ctx context.Context, conversationID, senderID, cli
 		SequenceNum: resp.GetMessage().GetSequenceNum(),
 	}, nil
 }
+
+// LedgerMessage represents a message fetched from the ledger store.
+type LedgerMessage struct {
+	ConversationID   string    `json:"conversation_id"`
+	MessageID        string    `json:"message_id"`
+	SequenceNum      int64     `json:"sequence_num"`
+	SenderID         string    `json:"sender_id"`
+	ClientMsgID      string    `json:"client_msg_id"`
+	EncryptedPayload []byte    `json:"encrypted_payload"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+// FetchMessages retrieves historical messages for a conversation/channel.
+func (c *Client) FetchMessages(ctx context.Context, conversationID, bucket string, limit int32, beforeMessageID string) ([]*LedgerMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if bucket == "" {
+		bucket = time.Now().Format("2006-01")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+
+	resp, err := c.rpc.FetchMessages(ctx, &chatv1.FetchMessagesRequest{
+		ConversationId:  conversationID,
+		Bucket:          bucket,
+		Limit:           limit,
+		BeforeMessageId: beforeMessageID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ledgerclient: FetchMessages: %w", err)
+	}
+
+	var msgs []*LedgerMessage
+	for _, m := range resp.GetMessages() {
+		var createdAt time.Time
+		if m.GetCreatedAt() != nil {
+			createdAt = m.GetCreatedAt().AsTime()
+		}
+		msgs = append(msgs, &LedgerMessage{
+			ConversationID:   m.GetConversationId(),
+			MessageID:        m.GetMessageId(),
+			SequenceNum:      m.GetSequenceNum(),
+			SenderID:         m.GetSenderId(),
+			ClientMsgID:      m.GetClientMsgId(),
+			EncryptedPayload: m.GetEncryptedPayload(),
+			CreatedAt:        createdAt,
+		})
+	}
+	return msgs, nil
+}

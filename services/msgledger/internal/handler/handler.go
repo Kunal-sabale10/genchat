@@ -75,7 +75,11 @@ func (h *LedgerHandler) StoreMessageDirect(ctx context.Context, msg *store.Messa
 	}
 
 	now := time.Now()
-	msgID, _ := uuid.NewV7()
+	msgID, err := uuid.NewUUID()
+	if err != nil {
+		tID := gocql.TimeUUID()
+		msgID, _ = uuid.Parse(tID.String())
+	}
 	bucket := now.Format("2006-01")
 
 	storedMsg := &store.StoredMessage{

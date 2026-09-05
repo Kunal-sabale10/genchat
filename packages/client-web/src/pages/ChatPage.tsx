@@ -76,6 +76,10 @@ export default function ChatPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, activeChannelId])
 
+  // Keep a ref for current userId so the subscribe closure always has the latest
+  const userIdRef = useRef(user?.userId)
+  useEffect(() => { userIdRef.current = user?.userId }, [user?.userId])
+
   // WebSocket Connection using real authenticated JWT
   useEffect(() => {
     // Connect through Vite's /ws proxy or directly
@@ -95,11 +99,25 @@ export default function ChatPage() {
     gateway.connect()
 
     const unsubMessages = gateway.subscribe(async (env: GatewayEnvelope) => {
+      console.log('[ChatPage] Received envelope:', JSON.stringify(env))
+
       if (env.type === 'message' && env.channelId) {
+        // --- Key fix: remap channelId for incoming 1:1 DMs ---
+        // The gateway sets push.channel_id = recipient's user_id (me).
+        // But my DM conversations are keyed by the peer's user_id.
+        // So if channelId === myUserId, remap to senderId.
+        const myUserId = userIdRef.current
+        const effectiveChannelId =
+          env.channelId === myUserId && env.senderId
+            ? env.senderId
+            : env.channelId
+
+        console.log('[ChatPage] myUserId:', myUserId, 'env.channelId:', env.channelId, 'env.senderId:', env.senderId, '→ effectiveChannelId:', effectiveChannelId)
+
         // Auto-add incoming sender to Direct Messages if not already present
-        if (env.senderId && env.senderId !== user?.userId) {
+        if (env.senderId && env.senderId !== myUserId) {
           setConversations((prev) => {
-            const exists = prev.some((c) => c.id === env.senderId || c.id === env.channelId)
+            const exists = prev.some((c) => c.id === env.senderId)
             if (!exists) {
               return [
                 ...prev,
@@ -135,19 +153,23 @@ export default function ChatPage() {
           }
         }
 
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: env.clientMsgId || `srv_${Date.now()}`,
-            clientMsgId: env.clientMsgId || '',
-            channelId: env.channelId!,
-            senderId: env.senderId || 'peer',
-            text: attachment ? undefined : env.ciphertext,
-            attachment,
-            status: 'delivered',
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          },
-        ])
+        const newMsg = {
+          id: env.clientMsgId || `srv_${Date.now()}`,
+          clientMsgId: env.clientMsgId || '',
+          channelId: effectiveChannelId,
+          senderId: env.senderId || 'peer',
+          text: attachment ? undefined : env.ciphertext,
+          attachment,
+          status: 'delivered' as const,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        }
+        console.log('[ChatPage] Adding message to state:', JSON.stringify(newMsg))
+        setMessages((prev) => {
+          if (prev.some((m) => (newMsg.clientMsgId && m.clientMsgId === newMsg.clientMsgId) || m.id === newMsg.id)) {
+            return prev
+          }
+          return [...prev, newMsg]
+        })
       }
     })
 
@@ -156,21 +178,17 @@ export default function ChatPage() {
       unsubMessages()
       gateway.disconnect()
     }
-  }, [accessToken, user?.userId])
+  }, [accessToken])
+
+  // Fetch message history when connected or when switching conversation
+  useEffect(() => {
+    if (isConnected && gatewayRef.current && activeChannelId) {
+      gatewayRef.current.fetchHistory(activeChannelId)
+    }
+  }, [isConnected, activeChannelId])
 
   const activeConversation = conversations.find((c) => c.id === activeChannelId)
-  const currentMessages = messages.filter((m) => {
-    // For general channels: match exact channelId
-    if (!activeConversation?.isDirect) {
-      return m.channelId === activeChannelId
-    }
-    // For 1:1 DMs: show messages between me and this peer
-    return (
-      (m.channelId === activeChannelId && m.senderId === user?.userId) ||
-      (m.senderId === activeChannelId && (m.channelId === user?.userId || m.channelId === activeChannelId)) ||
-      m.channelId === activeChannelId
-    )
-  })
+  const currentMessages = messages.filter((m) => m.channelId === activeChannelId)
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault()
