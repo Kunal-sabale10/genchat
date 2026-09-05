@@ -4,6 +4,11 @@ global:
   imageRegistry: "ghcr.io/kunal-sabale10/genchat"
   imageTag: "v1.0.0"
   imagePullPolicy: IfNotPresent
+  # CHANGE THIS. This default matches every service's dev-only fallback —
+  # deploying without overriding it means tokens are forgeable by anyone
+  # who has read this file. Override with --set global.jwtSecret=... or an
+  # external secret manager.
+  jwtSecret: "dev-secret-change-in-production"
 
 gateway:
   replicaCount: 3

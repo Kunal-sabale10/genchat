@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -85,37 +86,43 @@ func parseAndValidateJWT(tokenStr, secret string) (*jwtClaims, error) {
 
 // ServeHTTP upgrades to WebSocket
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// 1. Extract auth token from query param or header
+	// 1. Extract auth token from query param or Authorization header.
+	// NOTE: the X-User-ID header fallback that used to exist here is gone —
+	// it let any caller declare an arbitrary identity with zero
+	// verification. It's still used by the local dev docker-compose and by
+	// tests/e2e/messaging_test.go; both need to switch to real signed JWTs
+	// (see the /dev-token issuance TODO below) for this fix to be usable
+	// end-to-end.
 	token := r.URL.Query().Get("token")
 	if token == "" {
 		authHeader := r.Header.Get("Authorization")
 		if strings.HasPrefix(authHeader, "Bearer ") {
 			token = strings.TrimPrefix(authHeader, "Bearer ")
-		} else if customUserID := r.Header.Get("X-User-ID"); customUserID != "" {
-			token = customUserID
 		}
 	}
 
-	// 2. Validate JWT and extract user_id, device_id
-	userID := "mock-user-id"
-	deviceID := "mock-device-id"
-
-	if token != "" {
-		claims, err := parseAndValidateJWT(token, h.jwtSecret)
-		if err == nil && claims.Sub != "" {
-			userID = claims.Sub
-			if claims.DeviceID != "" {
-				deviceID = claims.DeviceID
-			}
-		} else {
-			slog.Debug("jwt validation fallback to raw token", "err", err)
-			userID = token
-		}
+	// 2. Validate JWT — fail closed. A connection with a missing, malformed,
+	// expired, or badly-signed token is rejected outright; it is never
+	// allowed to fall back to trusting the raw token string as an identity.
+	if token == "" {
+		http.Error(w, "missing auth token", http.StatusUnauthorized)
+		return
 	}
+	claims, err := parseAndValidateJWT(token, h.jwtSecret)
+	if err != nil || claims.Sub == "" {
+		slog.Warn("websocket auth rejected", "error", err)
+		http.Error(w, "invalid or expired token", http.StatusUnauthorized)
+		return
+	}
+	userID := claims.Sub
+	deviceID := claims.DeviceID
 
-	// 3. Upgrade connection using nhooyr.io/websocket
+	// 3. Upgrade connection using nhooyr.io/websocket.
+	// InsecureSkipVerify disables the library's Origin check (WebSocket's
+	// CSRF protection) and must never be on outside local development —
+	// gated on WS_ALLOW_ANY_ORIGIN so it can't ship on accidentally.
 	wsConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true, // For development
+		InsecureSkipVerify: os.Getenv("WS_ALLOW_ANY_ORIGIN") == "true",
 	})
 	if err != nil {
 		slog.Error("websocket accept error", "error", err)

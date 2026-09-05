@@ -27,6 +27,11 @@ spec:
           env:
             - name: POSTGRES_URL
               value: "postgres://{{ .Values.databases.postgres.user }}@{{ .Values.databases.postgres.host }}:{{ .Values.databases.postgres.port }}/{{ .Values.databases.postgres.database }}?sslmode=require"
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-shared-secrets
+                  key: jwt-secret
           resources:
             {{- toYaml .Values.auth.resources | nindent 12 }}
 ---

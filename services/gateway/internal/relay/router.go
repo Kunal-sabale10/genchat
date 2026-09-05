@@ -2,12 +2,13 @@ package relay
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"time"
 
+	"github.com/genchat/services/gateway/internal/ledgerclient"
 	"github.com/genchat/services/gateway/internal/ws"
 )
 
@@ -50,11 +51,16 @@ type ErrorFrame struct {
 
 // Router handles message routing between connected clients.
 type Router struct {
-	hub *ws.Hub
+	hub    *ws.Hub
+	ledger *ledgerclient.Client
 }
 
-func NewRouter(hub *ws.Hub) *Router {
-	return &Router{hub: hub}
+// NewRouter builds a Router. ledger may be nil (e.g. in unit tests that
+// don't need persistence), in which case handleSendMessage falls back to
+// in-memory relay only and logs a warning — this should never happen in a
+// real deployment, where gatewayd always dials msgledger at startup.
+func NewRouter(hub *ws.Hub, ledger *ledgerclient.Client) *Router {
+	return &Router{hub: hub, ledger: ledger}
 }
 
 // Handle satisfies ws.MessageHandler — entry point for every inbound WebSocket frame.
@@ -77,7 +83,7 @@ func (r *Router) Handle(ctx context.Context, conn *ws.Conn, data []byte) error {
 	}
 }
 
-func (r *Router) handleSendMessage(_ context.Context, conn *ws.Conn, data []byte) error {
+func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []byte) error {
 	var frame InboundFrame
 	if err := json.Unmarshal(data, &frame); err != nil {
 		return r.sendError(conn, "INVALID_FRAME", "could not parse send_message frame")
@@ -86,10 +92,39 @@ func (r *Router) handleSendMessage(_ context.Context, conn *ws.Conn, data []byte
 		return r.sendError(conn, "MISSING_FIELDS", "channel_id, client_msg_id, ciphertext_base64 are required")
 	}
 
-	serverID := fmt.Sprintf("msg_%d_%s", time.Now().UnixNano(), frame.ClientMsgID[:min(8, len(frame.ClientMsgID))])
-	seqNum := rand.Int63n(1_000_000) // TODO: replace with ScyllaDB sequence counter
+	ciphertext, err := base64.StdEncoding.DecodeString(frame.CiphertextB64)
+	if err != nil {
+		return r.sendError(conn, "INVALID_CIPHERTEXT", "ciphertext_base64 could not be decoded")
+	}
 
-	// 1. ACK the sender
+	if r.ledger == nil {
+		// No ledger connection configured — should never happen outside tests.
+		slog.Error("ledger client not configured; message will NOT be durably stored",
+			"sender", conn.UserID, "channel", frame.ChannelID)
+		return r.sendError(conn, "PERSISTENCE_UNAVAILABLE", "message store is not reachable")
+	}
+
+	// Persist synchronously and wait for the durable message_id/sequence_num
+	// before acknowledging the sender. If this fails (ledgerd down, Scylla
+	// unreachable, etc.) the sender gets an error instead of a false ACK —
+	// no message should ever be acknowledged unless it's durably stored.
+	stored, err := r.ledger.StoreMessage(ctx, frame.ChannelID, conn.UserID, frame.ClientMsgID, ciphertext, nil, uint32(frame.MessageType))
+	if err != nil {
+		slog.Error("failed to persist message", "error", err, "sender", conn.UserID, "channel", frame.ChannelID)
+		return r.sendError(conn, "PERSISTENCE_FAILED", "message could not be stored")
+	}
+
+	serverID := stored.MessageID
+	seqNum := stored.SequenceNum
+	if stored.Deduplicated {
+		// Client retried a client_msg_id we already stored. We don't have
+		// the original message_id/seq handy from a dedup response (see
+		// grpc_adapter.go); ACK with what we have so the client stops
+		// retrying, but this is a known gap — see StoreMessage's TODO.
+		slog.Debug("duplicate client_msg_id, not re-storing", "client_msg_id", frame.ClientMsgID)
+	}
+
+	// 1. ACK the sender — only sent after successful persistence above.
 	ack, _ := json.Marshal(AckFrame{
 		Type:        "ack",
 		ClientMsgID: frame.ClientMsgID,
@@ -154,11 +189,4 @@ func (r *Router) HandleReceipt(senderUserID string, conversationID string, recei
 		r.hub.SendToUser(conversationID, receiptPayload)
 	}
 	return nil
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

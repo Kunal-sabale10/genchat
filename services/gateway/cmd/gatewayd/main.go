@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/genchat/services/gateway/internal/ledgerclient"
 	"github.com/genchat/services/gateway/internal/metrics"
 	"github.com/genchat/services/gateway/internal/ratelimit"
 	"github.com/genchat/services/gateway/internal/relay"
@@ -19,6 +20,19 @@ import (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
+
+	// The gateway cannot durably store messages without msgledger — refuse
+	// to start rather than silently running in a mode where every "sent"
+	// message is only ever held in memory.
+	ledgerAddr := getEnv("LEDGER_ADDR", "localhost:50052")
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ledger, err := ledgerclient.Dial(dialCtx, ledgerAddr)
+	dialCancel()
+	if err != nil {
+		slog.Error("failed to connect to msgledger", "addr", ledgerAddr, "error", err)
+		os.Exit(1)
+	}
+	defer ledger.Close()
 
 	port := os.Getenv("PORT")
 	wsAddr := os.Getenv("WS_ADDR")
@@ -40,7 +54,7 @@ func main() {
 	jwtSecret := getEnv("JWT_SECRET", "dev-secret-change-in-production")
 
 	limiter := ratelimit.NewLimiter(60, 5) // 60/min, burst 5
-	router := relay.NewRouter(hub)
+	router := relay.NewRouter(hub, ledger)
 	wsHandler := ws.NewHandler(hub, router.Handle, limiter, jwtSecret)
 
 	mux := http.NewServeMux()

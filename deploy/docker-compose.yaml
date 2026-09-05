@@ -88,9 +88,15 @@ services:
       - "8081:8081"
     environment:
       - JWT_SECRET=dev-secret-change-in-production
+      - LEDGER_ADDR=ledger:50052
+      # Local dev only — do not set this in any deployed environment. It
+      # disables the WebSocket Origin/CSRF check.
+      - WS_ALLOW_ANY_ORIGIN=true
     depends_on:
       redis:
         condition: service_healthy
+      ledger:
+        condition: service_started
 
   ledger:
     build:

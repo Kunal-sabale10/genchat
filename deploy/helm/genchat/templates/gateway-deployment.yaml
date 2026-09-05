@@ -36,6 +36,13 @@ spec:
               value: "{{ .Values.databases.redis.host }}:{{ .Values.databases.redis.port }}"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "{{ .Values.monitoring.otlpEndpoint }}"
+            - name: LEDGER_ADDR
+              value: "{{ .Release.Name }}-ledger:{{ .Values.ledger.port }}"
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-shared-secrets
+                  key: jwt-secret
           resources:
             {{- toYaml .Values.gateway.resources | nindent 12 }}
           livenessProbe:
