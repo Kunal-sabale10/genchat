@@ -358,5 +358,57 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 		})
 	}))
 
+	// List registered users for contact discovery
+	mux.HandleFunc("/chat.v1.AuthService/ListUsers", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+		if !h.authLimiter.Allow(GetClientIP(r)) {
+			writeErrorJSON(w, r, "rate limit exceeded, please slow down", http.StatusTooManyRequests, nil)
+			return
+		}
+
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, nil)
+			return
+		}
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		claims, err := h.VerifyJWT(token)
+		if err != nil {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, err)
+			return
+		}
+
+		users, err := h.store.ListUsers(r.Context(), 50)
+		if err != nil {
+			writeErrorJSON(w, r, "failed to list users", http.StatusInternalServerError, err)
+			return
+		}
+
+		type UserItem struct {
+			UserID      string `json:"userId"`
+			DisplayName string `json:"displayName"`
+			CreatedAt   int64  `json:"createdAt"`
+			IsSelf      bool   `json:"isSelf"`
+		}
+
+		userList := make([]UserItem, 0, len(users))
+		for _, u := range users {
+			userList = append(userList, UserItem{
+				UserID:      u.ID.String(),
+				DisplayName: u.DisplayName,
+				CreatedAt:   u.CreatedAt.Unix(),
+				IsSelf:      u.ID.String() == claims.Sub,
+			})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"users": userList,
+		})
+	}))
+
 	return mux
 }

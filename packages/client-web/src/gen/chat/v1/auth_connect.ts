@@ -15,15 +15,30 @@ import type {
   RefreshTokenResponse,
 } from './auth_pb'
 
+export interface UserSummary {
+  userId: string
+  displayName: string
+  createdAt: string
+  isSelf: boolean
+}
+
+export interface ListUsersResponse {
+  users: UserSummary[]
+}
+
 const BASE_URL = import.meta.env.DEV ? 'http://localhost:8080' : ''
 
-async function grpcUnary<TReq, TRes>(service: string, method: string, request: TReq): Promise<TRes> {
+async function grpcUnary<TReq, TRes>(service: string, method: string, request: TReq, token?: string): Promise<TRes> {
   const body = JSON.stringify(request)
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  }
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
   const res = await fetch(`${BASE_URL}/${service}/${method}`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers,
     body,
   })
   if (!res.ok) {
@@ -49,4 +64,8 @@ export const AuthService = {
   refreshToken(req: RefreshTokenRequest): Promise<RefreshTokenResponse> {
     return grpcUnary('chat.v1.AuthService', 'RefreshToken', req)
   },
+  listUsers(token?: string): Promise<ListUsersResponse> {
+    return grpcUnary('chat.v1.AuthService', 'ListUsers', {}, token)
+  },
 }
+

@@ -1,3 +1,7 @@
+// ARCHIVED: Experimental MLS Group Channel Service Definition
+// Not implemented in current P2P E2EE direct messaging phase.
+// Preserved for future unified multi-party group chat / group calling roadmap.
+
 syntax = "proto3";
 
 package chat.v1;

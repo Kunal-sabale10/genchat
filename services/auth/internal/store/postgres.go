@@ -105,6 +105,27 @@ func (s *PostgresStore) GetUserByIdentityKey(ctx context.Context, key []byte) (*
 	return u, nil
 }
 
+func (s *PostgresStore) ListUsers(ctx context.Context, limit int) ([]*User, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id, display_name, identity_key, created_at FROM users ORDER BY created_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list users query failed: %w", err)
+	}
+	defer rows.Close()
+
+	var users []*User
+	for rows.Next() {
+		u := &User{}
+		if err := rows.Scan(&u.ID, &u.DisplayName, &u.IdentityKey, &u.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan user row failed: %w", err)
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
 func (s *PostgresStore) CreateDevice(ctx context.Context, userID uuid.UUID, identityKey []byte, label string, webauthnCred []byte) (uuid.UUID, error) {
 	var id uuid.UUID
 	now := time.Now()

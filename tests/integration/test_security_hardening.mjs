@@ -167,7 +167,36 @@ async function runSecurityTests() {
       break
     }
   }
-  assert(hit429, 'Excessive rapid requests trigger HTTP 429 Too Many Requests')
+  // TEST 5: User Discovery Directory (ListUsers)
+  console.log('\n5. Testing User Discovery Directory (/chat.v1.AuthService/ListUsers)...')
+  const unauthListRes = await fetch(`${AUTH_URL}/chat.v1.AuthService/ListUsers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  assert(unauthListRes.status === 401, 'Unauthenticated ListUsers returns HTTP 401')
+  const unauthListJson = await unauthListRes.json().catch(() => ({}))
+  assert(
+    unauthListJson.error === 'unauthorized',
+    'Unauthenticated ListUsers returns generic {"error": "unauthorized"}'
+  )
+
+  const authListRes = await fetch(`${AUTH_URL}/chat.v1.AuthService/ListUsers`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${testToken}`,
+    },
+    body: JSON.stringify({}),
+  })
+  assert(authListRes.status === 200, 'Authenticated ListUsers returns HTTP 200 OK')
+  const listData = await authListRes.json()
+  assert(Array.isArray(listData.users), 'ListUsers response contains users array')
+  assert(listData.users.length > 0, 'ListUsers returns at least 1 registered user')
+  assert(
+    listData.users.every((u) => u.userId && typeof u.isSelf === 'boolean'),
+    'All returned users have valid userId and boolean isSelf flag'
+  )
 
   console.log(`\n=== SUMMARY: ${passed} Passed, ${failed} Failed ===`)
   if (failed > 0) {

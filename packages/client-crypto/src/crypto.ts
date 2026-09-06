@@ -17,8 +17,6 @@ interface WasmExports {
   create_ratchet_account(pickleKeyHex: string): string;
   encrypt_message(sessionPickle: string, pickleKeyHex: string, plaintext: Uint8Array): EncryptedMessagePayload;
   decrypt_message(sessionPickle: string, pickleKeyHex: string, messageType: number, ciphertextBase64: string): DecryptedMessagePayload;
-  sframe_encrypt(participantKeyId: bigint, baseSecretHex: string, framePayload: Uint8Array): Uint8Array;
-  sframe_decrypt(participantKeyId: bigint, baseSecretHex: string, encryptedFrame: Uint8Array): Uint8Array;
 }
 
 export class GenChatCrypto {
@@ -118,28 +116,5 @@ export class GenChatCrypto {
     }
     throw new Error("Invalid arguments to decryptMessage");
   }
-
-  /**
-   * 6. WebRTC Insertable Streams SFrame frame encryption
-   */
-  public sframeEncrypt(
-    participantKeyId: bigint,
-    baseSecretHex: string,
-    framePayload: Uint8Array
-  ): Uint8Array {
-    const wasm = this.ensureWasm();
-    return wasm.sframe_encrypt(participantKeyId, baseSecretHex, framePayload);
-  }
-
-  /**
-   * 7. WebRTC Insertable Streams SFrame frame decryption
-   */
-  public sframeDecrypt(
-    participantKeyId: bigint,
-    baseSecretHex: string,
-    encryptedFrame: Uint8Array
-  ): Uint8Array {
-    const wasm = this.ensureWasm();
-    return wasm.sframe_decrypt(participantKeyId, baseSecretHex, encryptedFrame);
-  }
 }
+

@@ -11,6 +11,7 @@ import { ImageViewerModal } from '@/components/ImageViewerModal'
 import { FileAttachmentCard } from '@/components/FileAttachmentCard'
 import { AttachmentStaging } from '@/components/AttachmentStaging'
 import { WebRtcManager, fetchDynamicIceServers } from '@/lib/webrtc-manager'
+import { AuthService } from '@/lib/grpc-client'
 import { 
   ShieldCheck, 
   Send, 
@@ -60,11 +61,8 @@ interface ConversationItem {
 export default function ChatPage() {
   const { user, accessToken, logout } = useAuth()
   
-  const [conversations, setConversations] = useState<ConversationItem[]>([
-    { id: 'chan_general', name: 'general', isDirect: false },
-    { id: 'chan_announcements', name: 'announcements', isDirect: false },
-  ])
-  const [activeChannelId, setActiveChannelId] = useState<string>('chan_general')
+  const [conversations, setConversations] = useState<ConversationItem[]>([])
+  const [activeChannelId, setActiveChannelId] = useState<string>('')
   const [messages, setMessages] = useState<MessageItem[]>([])
 
   const [inputText, setInputText] = useState('')
@@ -74,6 +72,9 @@ export default function ChatPage() {
   // Modals state
   const [showNewDmModal, setShowNewDmModal] = useState(false)
   const [newDmUserId, setNewDmUserId] = useState('')
+  const [availableUsers, setAvailableUsers] = useState<Array<{ userId: string; displayName: string; isSelf: boolean }>>([])
+  const [isLoadingUsers, setIsLoadingUsers] = useState(false)
+  const [userSearchQuery, setUserSearchQuery] = useState('')
   const [showNewChanModal, setShowNewChanModal] = useState(false)
   const [newChanName, setNewChanName] = useState('')
   const [showSafetyModal, setShowSafetyModal] = useState(false)
@@ -174,25 +175,62 @@ export default function ChatPage() {
       // Load conversations
       const cachedConvs = await localDb.getConversations()
       if (cachedConvs && cachedConvs.length > 0) {
-        setConversations(cachedConvs)
+        // Filter out legacy mock channels
+        const cleanConvs = cachedConvs.filter(
+          (c) =>
+            c.id !== 'general' &&
+            c.id !== 'announcements' &&
+            c.id !== 'chan_general' &&
+            c.id !== 'chan_announcements'
+        )
+        setConversations(cleanConvs)
+        if (cleanConvs.length > 0 && !activeChannelId) {
+          setActiveChannelId(cleanConvs[0].id)
+        }
       }
 
       // Load messages for current channel
-      const cachedMsgs = await localDb.getMessagesByChannel(activeChannelId)
-      if (cachedMsgs && cachedMsgs.length > 0) {
-        setMessages((prev) => {
-          // Merge avoiding duplicates
-          const ids = new Set(cachedMsgs.map((m) => m.id))
-          const existingNotInCache = prev.filter((m) => !ids.has(m.id))
-          return [...cachedMsgs, ...existingNotInCache].map((m: any) => ({
-            ...m,
-            isEncrypted: true,
-          }))
-        })
+      if (activeChannelId) {
+        const cachedMsgs = await localDb.getMessagesByChannel(activeChannelId)
+        if (cachedMsgs && cachedMsgs.length > 0) {
+          setMessages((prev) => {
+            // Merge avoiding duplicates
+            const ids = new Set(cachedMsgs.map((m) => m.id))
+            const existingNotInCache = prev.filter((m) => !ids.has(m.id))
+            return [...cachedMsgs, ...existingNotInCache].map((m: any) => ({
+              ...m,
+              isEncrypted: true,
+            }))
+          })
+        }
       }
     }
     loadLocalCache()
   }, [activeChannelId])
+
+  // Fetch registered users when New DM / Start Conversation modal opens
+  useEffect(() => {
+    if (!showNewDmModal) return
+    let active = true
+    async function fetchUsers() {
+      setIsLoadingUsers(true)
+      try {
+        const token = accessToken || sessionStorage.getItem('genchat_access_token') || undefined
+        const res = await AuthService.listUsers(token)
+        if (active && res.users) {
+          setAvailableUsers(res.users)
+        }
+      } catch (err) {
+        console.warn('[ChatPage] Failed to fetch user directory:', err)
+      } finally {
+        if (active) setIsLoadingUsers(false)
+      }
+    }
+    fetchUsers()
+    return () => {
+      active = false
+    }
+  }, [showNewDmModal, accessToken])
 
   // Save conversations to IndexedDB when updated
   useEffect(() => {
@@ -886,20 +924,29 @@ export default function ChatPage() {
   }
 
   // --- 7. Modals Handlers ---
-  const handleStartDirectMessage = (e: React.FormEvent) => {
-    e.preventDefault()
-    const target = newDmUserId.trim()
+  const handleSelectUser = (targetUserId: string, displayName?: string) => {
+    const target = targetUserId.trim()
     if (!target) return
 
-    if (!conversations.some((c) => c.id === target)) {
-      setConversations((prev) => [
+    setConversations((prev) => {
+      const exists = prev.some((c) => c.id === target)
+      if (exists) return prev
+      return [
         ...prev,
-        { id: target, name: target, isDirect: true },
-      ])
-    }
+        { id: target, name: displayName || target, isDirect: true },
+      ]
+    })
     setActiveChannelId(target)
     setNewDmUserId('')
+    setUserSearchQuery('')
     setShowNewDmModal(false)
+  }
+
+  const handleStartDirectMessage = (e: React.FormEvent) => {
+    e.preventDefault()
+    const target = (userSearchQuery || newDmUserId).trim()
+    if (!target) return
+    handleSelectUser(target)
   }
 
   const handleCreateChannel = (e: React.FormEvent) => {
@@ -974,7 +1021,25 @@ export default function ChatPage() {
         </div>
 
         {/* Conversation List */}
+        {/* Quick Start Conversation Action */}
+        <div className="p-3 pb-0">
+          <button
+            onClick={() => setShowNewDmModal(true)}
+            className="flex w-full items-center justify-center space-x-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-semibold text-white shadow-md hover:bg-indigo-500 transition-colors shadow-indigo-600/20"
+          >
+            <UserPlus className="h-4 w-4" />
+            <span>Start Conversation</span>
+          </button>
+        </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-4">
+          {conversations.length === 0 && (
+            <div className="rounded-xl border border-dashed border-slate-800 p-4 text-center">
+              <p className="text-xs text-slate-400 font-medium">No conversations yet</p>
+              <p className="text-[11px] text-slate-500 mt-1">
+                Start an end-to-end encrypted direct chat with any registered user.
+              </p>
+            </div>
+          )}
           {/* Channels */}
           <div className="space-y-1">
             <div className="flex items-center justify-between px-2 py-1">
@@ -1097,6 +1162,27 @@ export default function ChatPage() {
 
       {/* Main Chat Workspace */}
       <main className="flex flex-1 flex-col bg-slate-950">
+        {!activeConversation ? (
+          <div className="flex flex-1 flex-col items-center justify-center p-8 text-center select-none">
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-600/10 text-indigo-400 mb-4 border border-indigo-500/20 shadow-lg">
+              <ShieldCheck className="h-8 w-8" />
+            </div>
+            <h2 className="text-xl font-bold text-slate-100">Welcome to GenChat</h2>
+            <p className="text-xs text-slate-400 max-w-sm mt-2 leading-relaxed">
+              Zero-knowledge, post-quantum end-to-end encrypted messaging with WebRTC voice/video and encrypted attachments.
+            </p>
+            <div className="mt-6">
+              <button
+                onClick={() => setShowNewDmModal(true)}
+                className="flex items-center space-x-2 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg hover:bg-indigo-500 transition shadow-indigo-600/30"
+              >
+                <UserPlus className="h-4 w-4" />
+                <span>Start a Conversation</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
         {/* Header */}
         <header className="flex h-16 items-center justify-between border-b border-slate-800 px-6 bg-slate-900/30">
           <div className="flex items-center space-x-3">
@@ -1474,6 +1560,8 @@ export default function ChatPage() {
             </button>
           </form>
         </div>
+          </>
+        )}
       </main>
 
       {/* --- Zero-Knowledge Search Dialog (Ctrl+K) --- */}
@@ -1629,59 +1717,146 @@ export default function ChatPage() {
         </div>
       )}
 
-      {/* --- Start New Direct Message Modal --- */}
+      {/* --- Start New Direct Message / User Discovery Modal --- */}
       {showNewDmModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4 animate-in fade-in duration-200">
           <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center space-x-2">
-                <UserPlus className="h-5 w-5 text-indigo-400" />
-                <h3 className="font-semibold text-slate-100">Start Direct Message</h3>
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600/20 text-indigo-400">
+                  <UserPlus className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-slate-100 text-sm">Start a Conversation</h3>
+                  <p className="text-[11px] text-slate-400">End-to-End Encrypted Direct Messaging</p>
+                </div>
               </div>
               <button
-                onClick={() => setShowNewDmModal(false)}
-                className="text-slate-400 hover:text-slate-200 transition"
+                onClick={() => {
+                  setShowNewDmModal(false)
+                  setUserSearchQuery('')
+                  setNewDmUserId('')
+                }}
+                className="text-slate-400 hover:text-slate-200 transition p-1 rounded-lg hover:bg-slate-800"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
 
-            <p className="text-xs text-slate-400 mb-4">
-              Enter the recipient's User ID to open an end-to-end encrypted direct messaging channel.
-            </p>
-
-            <form onSubmit={handleStartDirectMessage} className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">
-                  Recipient User ID
-                </label>
+            {/* Real-time search or direct ID input */}
+            <div className="space-y-3">
+              <div className="relative">
+                <Search className="absolute left-3 top-3 h-4 w-4 text-slate-500" />
                 <input
                   type="text"
-                  required
-                  placeholder="e.g. user_bob or 123e4567-e89b-..."
-                  value={newDmUserId}
-                  onChange={(e) => setNewDmUserId(e.target.value)}
-                  className="w-full rounded-xl border border-slate-800 bg-slate-950 px-4 py-2.5 text-sm text-slate-100 placeholder-slate-600 focus:border-indigo-500 focus:outline-none"
+                  placeholder="Search by name or type User ID..."
+                  value={userSearchQuery}
+                  onChange={(e) => setUserSearchQuery(e.target.value)}
+                  className="w-full rounded-xl border border-slate-800 bg-slate-950 pl-9 pr-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
                   autoFocus
                 />
               </div>
 
-              <div className="flex justify-end space-x-2 pt-2">
+              {/* Registered Users Discovery List */}
+              <div className="space-y-1">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 px-1 pt-1">
+                  Registered Users
+                </p>
+
+                {isLoadingUsers ? (
+                  <div className="flex items-center justify-center py-6 text-slate-400 space-x-2">
+                    <Loader2 className="h-4 w-4 animate-spin text-indigo-400" />
+                    <span className="text-xs">Loading directory...</span>
+                  </div>
+                ) : (
+                  <div className="max-h-60 overflow-y-auto space-y-1 pr-1">
+                    {/* Filtered users list */}
+                    {availableUsers
+                      .filter((u) => !u.isSelf)
+                      .filter((u) => {
+                        const q = userSearchQuery.trim().toLowerCase()
+                        if (!q) return true
+                        return (
+                          u.displayName?.toLowerCase().includes(q) ||
+                          u.userId.toLowerCase().includes(q)
+                        )
+                      })
+                      .map((u) => (
+                        <div
+                          key={u.userId}
+                          onClick={() => handleSelectUser(u.userId, u.displayName)}
+                          className="flex items-center justify-between p-2.5 rounded-xl border border-slate-800/60 bg-slate-950/40 hover:bg-indigo-600/10 hover:border-indigo-500/30 cursor-pointer transition group"
+                        >
+                          <div className="flex items-center space-x-3 min-w-0">
+                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-indigo-600/20 text-indigo-300 font-semibold text-xs border border-indigo-500/30">
+                              {(u.displayName || u.userId).slice(0, 2).toUpperCase()}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-xs font-semibold text-slate-200 group-hover:text-indigo-200 truncate">
+                                {u.displayName || 'Anonymous User'}
+                              </p>
+                              <p className="text-[10px] font-mono text-slate-500 truncate">
+                                {u.userId}
+                              </p>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleSelectUser(u.userId, u.displayName)
+                            }}
+                            className="shrink-0 rounded-lg bg-indigo-600/80 hover:bg-indigo-600 px-2.5 py-1 text-[11px] font-medium text-white transition"
+                          >
+                            Message
+                          </button>
+                        </div>
+                      ))}
+
+                    {/* If custom query doesn't match any registered user, allow direct messaging */}
+                    {userSearchQuery.trim() && (
+                      <div
+                        onClick={() => handleSelectUser(userSearchQuery.trim())}
+                        className="flex items-center justify-between p-2.5 rounded-xl border border-dashed border-indigo-500/40 bg-indigo-950/20 hover:bg-indigo-950/40 cursor-pointer transition"
+                      >
+                        <div className="flex items-center space-x-2 truncate">
+                          <UserPlus className="h-4 w-4 text-indigo-400 shrink-0" />
+                          <span className="text-xs text-indigo-200 truncate">
+                            Message custom ID: <strong className="text-white">@{userSearchQuery.trim()}</strong>
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          className="shrink-0 rounded-lg bg-indigo-600 px-2.5 py-1 text-[11px] font-medium text-white"
+                        >
+                          Chat
+                        </button>
+                      </div>
+                    )}
+
+                    {!isLoadingUsers && availableUsers.filter((u) => !u.isSelf).length === 0 && !userSearchQuery.trim() && (
+                      <div className="py-4 text-center text-xs text-slate-500">
+                        No other registered users found in directory.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-end pt-2 border-t border-slate-800">
                 <button
                   type="button"
-                  onClick={() => setShowNewDmModal(false)}
+                  onClick={() => {
+                    setShowNewDmModal(false)
+                    setUserSearchQuery('')
+                    setNewDmUserId('')
+                  }}
                   className="rounded-xl px-4 py-2 text-xs font-medium text-slate-400 hover:bg-slate-800 transition"
                 >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-500 transition"
-                >
-                  Start Conversation
+                  Close
                 </button>
               </div>
-            </form>
+            </div>
           </div>
         </div>
       )}
