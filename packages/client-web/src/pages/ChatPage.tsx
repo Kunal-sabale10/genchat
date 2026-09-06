@@ -77,6 +77,8 @@ export default function ChatPage() {
   const [peerTypingUser, setPeerTypingUser] = useState<string | null>(null)
   const [copiedUserId, setCopiedUserId] = useState(false)
   const [copiedSafetyNumber, setCopiedSafetyNumber] = useState(false)
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({})
+  const [incomingToast, setIncomingToast] = useState<{ senderId: string; channelId: string; preview: string } | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const gatewayRef = useRef<GatewayClient | null>(null)
@@ -198,11 +200,38 @@ export default function ChatPage() {
     // Handle incoming messages (push & history)
     const unsubMessages = gateway.subscribe(async (env: GatewayEnvelope) => {
       if (env.type === 'message' && env.channelId) {
-        const myUserId = userIdRef.current
+        const myUserId =
+          userIdRef.current ||
+          user?.userId ||
+          (() => {
+            try {
+              const u = sessionStorage.getItem('genchat_user')
+              return u ? JSON.parse(u).userId : ''
+            } catch {
+              return ''
+            }
+          })()
+
+        const isDirectForMe = Boolean(
+          myUserId &&
+            env.channelId &&
+            (env.channelId === myUserId ||
+              env.channelId.toLowerCase() === myUserId.toLowerCase())
+        )
+
+        // If it's a DM addressed to me, remap channelId to the sender's user ID
         const effectiveChannelId =
-          env.channelId === myUserId && env.senderId
+          isDirectForMe && env.senderId
             ? env.senderId
             : env.channelId
+
+        console.log('[ChatPage] Message received:', {
+          myUserId,
+          envChannel: env.channelId,
+          sender: env.senderId,
+          effectiveChannelId,
+          activeChannelId,
+        })
 
         // Auto-add incoming sender to Direct Messages if not already present
         if (env.senderId && env.senderId !== myUserId) {
@@ -279,11 +308,32 @@ export default function ChatPage() {
         // Automatically dispatch read receipt if this is the active channel
         if (effectiveChannelId === activeChannelId && env.senderId && env.senderId !== myUserId) {
           gateway.sendReadReceipt(effectiveChannelId, msgId, env.sequenceNum || 0)
+        } else if (env.senderId && env.senderId !== myUserId) {
+          // Message received for a background channel/DM: notify user and bump unread count
+          setUnreadCounts((prev) => ({
+            ...prev,
+            [effectiveChannelId]: (prev[effectiveChannelId] || 0) + 1,
+          }))
+          setIncomingToast({
+            senderId: env.senderId,
+            channelId: effectiveChannelId,
+            preview: (displayText || 'Sent an attachment').slice(0, 50),
+          })
+          setTimeout(() => setIncomingToast(null), 6000)
         }
 
         setMessages((prev) => {
-          if (prev.some((m) => (newMsg.clientMsgId && m.clientMsgId === newMsg.clientMsgId) || m.id === newMsg.id)) {
-            return prev
+          const exists = prev.some(
+            (m) =>
+              (newMsg.clientMsgId && m.clientMsgId === newMsg.clientMsgId) ||
+              m.id === newMsg.id
+          )
+          if (exists) {
+            return prev.map((m) =>
+              (newMsg.clientMsgId && m.clientMsgId === newMsg.clientMsgId) || m.id === newMsg.id
+                ? { ...m, ...newMsg, status: m.status === 'read' ? 'read' : newMsg.status }
+                : m
+            )
           }
           return [...prev, newMsg]
         })
@@ -308,7 +358,17 @@ export default function ChatPage() {
   }, [isConnected, activeChannelId])
 
   const activeConversation = conversations.find((c) => c.id === activeChannelId)
-  const currentMessages = messages.filter((m) => m.channelId === activeChannelId)
+  
+  // Robust message filter: matches exact channelId OR peer user in 1:1 DMs
+  const currentMessages = messages.filter((m) => {
+    if (m.channelId === activeChannelId) return true
+    const myId = userIdRef.current || user?.userId
+    if (activeConversation?.isDirect) {
+      if (m.senderId === activeChannelId && (m.channelId === myId || m.channelId === 'peer')) return true
+      if (m.senderId === myId && m.channelId === activeChannelId) return true
+    }
+    return false
+  })
 
   // --- 4. Typing Signal Emitter (Debounced 1.5s) ---
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -544,7 +604,11 @@ export default function ChatPage() {
             {channelConversations.map((chan) => (
               <button
                 key={chan.id}
-                onClick={() => setActiveChannelId(chan.id)}
+                onClick={() => {
+                  setActiveChannelId(chan.id)
+                  setUnreadCounts((prev) => ({ ...prev, [chan.id]: 0 }))
+                  setIncomingToast(null)
+                }}
                 className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
                   activeChannelId === chan.id
                     ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30'
@@ -555,6 +619,11 @@ export default function ChatPage() {
                   <Hash className="h-4 w-4 shrink-0 text-slate-500" />
                   <span className="truncate">{chan.name}</span>
                 </div>
+                {unreadCounts[chan.id] > 0 && (
+                  <span className="rounded-full bg-indigo-600 px-1.5 py-0.5 text-[10px] font-bold text-white shrink-0">
+                    {unreadCounts[chan.id]}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -581,7 +650,11 @@ export default function ChatPage() {
               dmConversations.map((dm) => (
                 <button
                   key={dm.id}
-                  onClick={() => setActiveChannelId(dm.id)}
+                  onClick={() => {
+                    setActiveChannelId(dm.id)
+                    setUnreadCounts((prev) => ({ ...prev, [dm.id]: 0 }))
+                    setIncomingToast(null)
+                  }}
                   className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
                     activeChannelId === dm.id
                       ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30'
@@ -592,6 +665,11 @@ export default function ChatPage() {
                     <User className="h-4 w-4 shrink-0 text-slate-500" />
                     <span className="truncate">{dm.name}</span>
                   </div>
+                  {unreadCounts[dm.id] > 0 && (
+                    <span className="rounded-full bg-indigo-600 px-1.5 py-0.5 text-[10px] font-bold text-white shrink-0 animate-pulse">
+                      {unreadCounts[dm.id]}
+                    </span>
+                  )}
                 </button>
               ))
             )}
@@ -683,6 +761,34 @@ export default function ChatPage() {
             </button>
           </div>
         </header>
+
+        {/* Incoming Message Alert Banner */}
+        {incomingToast && (
+          <div className="mx-6 mt-3 flex items-center justify-between rounded-xl bg-indigo-600/90 text-white px-4 py-2.5 shadow-lg border border-indigo-400/30 animate-in fade-in slide-in-from-top-2 duration-200">
+            <div className="flex items-center space-x-2 text-xs truncate">
+              <span className="font-bold shrink-0">@{incomingToast.senderId.slice(0, 10)}...:</span>
+              <span className="truncate opacity-90">{incomingToast.preview}</span>
+            </div>
+            <div className="flex items-center space-x-2 ml-4 shrink-0">
+              <button
+                onClick={() => {
+                  setActiveChannelId(incomingToast.channelId)
+                  setUnreadCounts((prev) => ({ ...prev, [incomingToast.channelId]: 0 }))
+                  setIncomingToast(null)
+                }}
+                className="bg-white text-indigo-700 font-semibold text-xs px-2.5 py-1 rounded-lg hover:bg-indigo-50 transition shadow-xs"
+              >
+                View
+              </button>
+              <button
+                onClick={() => setIncomingToast(null)}
+                className="text-indigo-200 hover:text-white p-0.5"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Message Stream */}
         <div className="flex-1 overflow-y-auto p-6 space-y-4">

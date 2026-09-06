@@ -34,7 +34,12 @@ export class E2eeService {
 
     // Derive raw key material from conversation ID + deterministic pairing
     const enc = new TextEncoder()
-    const ikm = enc.encode(`genchat_ikm_${conversationId}`)
+    let canonicalId = conversationId
+    if (!conversationId.startsWith('chan_') && currentUserId) {
+      const parts = conversationId.includes(':') ? conversationId.split(':') : [conversationId, currentUserId]
+      canonicalId = parts.filter(Boolean).sort().join(':')
+    }
+    const ikm = enc.encode(`genchat_ikm_${canonicalId}`)
 
     const baseKey = await crypto.subtle.importKey(
       'raw',

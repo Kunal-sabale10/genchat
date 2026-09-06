@@ -169,7 +169,8 @@ func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []by
 	// before acknowledging the sender. If this fails (ledgerd down, Scylla
 	// unreachable, etc.) the sender gets an error instead of a false ACK —
 	// no message should ever be acknowledged unless it's durably stored.
-	stored, err := r.ledger.StoreMessage(ctx, frame.ChannelID, conn.UserID, frame.ClientMsgID, ciphertext, nil, uint32(frame.MessageType))
+	conversationID := getConversationID(conn.UserID, frame.ChannelID)
+	stored, err := r.ledger.StoreMessage(ctx, conversationID, conn.UserID, frame.ClientMsgID, ciphertext, nil, uint32(frame.MessageType))
 	if err != nil {
 		slog.Error("failed to persist message", "error", err, "sender", conn.UserID, "channel", frame.ChannelID)
 		return r.sendError(conn, "PERSISTENCE_FAILED", "message could not be stored")
@@ -239,10 +240,11 @@ func (r *Router) handleFetchHistory(ctx context.Context, conn *ws.Conn, data []b
 		return r.sendError(conn, "PERSISTENCE_UNAVAILABLE", "ledger not configured")
 	}
 
+	conversationID := getConversationID(conn.UserID, frame.ChannelID)
 	bucket := time.Now().Format("2006-01")
-	msgs, err := r.ledger.FetchMessages(ctx, frame.ChannelID, bucket, frame.Limit, frame.BeforeServerID)
+	msgs, err := r.ledger.FetchMessages(ctx, conversationID, bucket, frame.Limit, frame.BeforeServerID)
 	if err != nil {
-		slog.Error("failed to fetch history", "error", err, "channel", frame.ChannelID)
+		slog.Error("failed to fetch history", "error", err, "channel", frame.ChannelID, "conversation_id", conversationID)
 		return r.sendError(conn, "FETCH_FAILED", "could not fetch message history")
 	}
 
@@ -344,4 +346,17 @@ func (r *Router) HandleReceipt(senderUserID string, conversationID string, recei
 		r.hub.SendToUser(conversationID, receiptPayload)
 	}
 	return nil
+}
+
+// getConversationID derives a canonical conversation partition key.
+// For public channels (chan_*), it returns the channel ID directly.
+// For 1:1 direct messages, it sorts user IDs to ensure both peers read/write the same Scylla partition.
+func getConversationID(currentUserID, channelID string) string {
+	if strings.HasPrefix(channelID, "chan_") {
+		return channelID
+	}
+	if currentUserID < channelID {
+		return "dm:" + currentUserID + ":" + channelID
+	}
+	return "dm:" + channelID + ":" + currentUserID
 }

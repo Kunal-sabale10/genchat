@@ -93,7 +93,7 @@ export class LocalStorageDb {
 
     // Fallback: localStorage
     try {
-      const all = this.getLocalStorageMessages()
+      const all = this.getLocalStorageMessages(msg.channelId)
       const idx = all.findIndex((m) => m.id === msg.id || (msg.clientMsgId && m.clientMsgId === msg.clientMsgId))
       if (idx >= 0) all[idx] = msg
       else all.push(msg)
