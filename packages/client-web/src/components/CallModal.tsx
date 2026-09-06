@@ -10,6 +10,8 @@ import {
   Minimize2,
   User,
   ShieldCheck,
+  Volume2,
+  VolumeX,
 } from 'lucide-react'
 
 export interface CallModalProps {
@@ -47,7 +49,17 @@ export const CallModal: React.FC<CallModalProps> = ({
 }) => {
   const localVideoRef = useRef<HTMLVideoElement>(null)
   const remoteVideoRef = useRef<HTMLVideoElement>(null)
+  const remoteAudioRef = useRef<HTMLAudioElement>(null)
   const [durationSeconds, setDurationSeconds] = useState(0)
+  const [outputVolume, setOutputVolume] = useState(0.8)
+  const [showVolumeSlider, setShowVolumeSlider] = useState(false)
+
+  // Synchronize output volume with audio element
+  useEffect(() => {
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.volume = outputVolume
+    }
+  }, [outputVolume])
 
   // Attach local stream to local video element
   useEffect(() => {
@@ -58,17 +70,18 @@ export const CallModal: React.FC<CallModalProps> = ({
     }
   }, [localStream, callState, isMinimized])
 
-  // Attach remote stream to remote video element
+  // Attach remote stream to dedicated background audio player (uninterrupted across layouts)
   useEffect(() => {
-    if (remoteVideoRef.current && remoteStream) {
-      if (remoteVideoRef.current.srcObject !== remoteStream) {
-        remoteVideoRef.current.srcObject = remoteStream
-        remoteVideoRef.current.play().catch((err) => {
-          console.warn('[CallModal] Remote video play error:', err)
+    if (remoteAudioRef.current && remoteStream) {
+      if (remoteAudioRef.current.srcObject !== remoteStream) {
+        remoteAudioRef.current.srcObject = remoteStream
+        remoteAudioRef.current.volume = outputVolume
+        remoteAudioRef.current.play().catch((err) => {
+          console.warn('[CallModal] Remote audio play error:', err)
         })
       }
     }
-  }, [remoteStream, callState, isMinimized])
+  }, [remoteStream, callState])
 
   // In-call duration timer
   useEffect(() => {
@@ -95,59 +108,75 @@ export const CallModal: React.FC<CallModalProps> = ({
   // --- 1. Minimized Floating Call Pill (Allows navigating app while on call) ---
   if (isMinimized && callState === 'connected') {
     return (
-      <div className="fixed bottom-6 right-6 z-50 flex items-center space-x-3 rounded-2xl border border-slate-700/80 bg-slate-900/95 p-3 shadow-2xl backdrop-blur-md transition-all">
-        <div className="flex items-center space-x-2.5">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-600/20 text-indigo-400">
-            {callType === 'video' ? <Video className="h-5 w-5" /> : <Phone className="h-5 w-5" />}
-          </div>
-          <div>
-            <p className="max-w-[120px] truncate text-xs font-semibold text-slate-200">@{peerId}</p>
-            <p className="text-[11px] font-mono text-emerald-400">{formatTimer(durationSeconds)}</p>
-          </div>
-        </div>
+      <>
+        {/* Continuous audio player during minimized call */}
+        <audio
+          ref={(el) => {
+            (remoteAudioRef as any).current = el
+            if (el && remoteStream && el.srcObject !== remoteStream) {
+              el.srcObject = remoteStream
+              el.volume = outputVolume
+              el.play().catch((err) => console.warn('[CallModal] Minimized audio error:', err))
+            }
+          }}
+          autoPlay
+          playsInline
+        />
 
-        <div className="flex items-center space-x-1.5 border-l border-slate-800 pl-2">
-          <button
-            onClick={onToggleMute}
-            className={`rounded-lg p-2 transition ${
-              isMuted ? 'bg-rose-500/20 text-rose-400' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-            }`}
-            title={isMuted ? 'Unmute Microphone' : 'Mute Microphone'}
-          >
-            {isMuted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-          </button>
+        <div className="fixed bottom-6 right-6 z-50 flex items-center space-x-3 rounded-2xl border border-slate-700/80 bg-slate-900/95 p-3 shadow-2xl backdrop-blur-md transition-all">
+          <div className="flex items-center space-x-2.5">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-600/20 text-indigo-400">
+              {callType === 'video' ? <Video className="h-5 w-5" /> : <Phone className="h-5 w-5" />}
+            </div>
+            <div>
+              <p className="max-w-[120px] truncate text-xs font-semibold text-slate-200">@{peerId}</p>
+              <p className="text-[11px] font-mono text-emerald-400">{formatTimer(durationSeconds)}</p>
+            </div>
+          </div>
 
-          {callType === 'video' && (
+          <div className="flex items-center space-x-1.5 border-l border-slate-800 pl-2">
             <button
-              onClick={onToggleVideo}
+              onClick={onToggleMute}
               className={`rounded-lg p-2 transition ${
-                isVideoDisabled
-                  ? 'bg-rose-500/20 text-rose-400'
-                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                isMuted ? 'bg-rose-500/20 text-rose-400' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
               }`}
-              title={isVideoDisabled ? 'Turn Camera On' : 'Turn Camera Off'}
+              title={isMuted ? 'Unmute Microphone' : 'Mute Microphone'}
             >
-              {isVideoDisabled ? <VideoOff className="h-4 w-4" /> : <Video className="h-4 w-4" />}
+              {isMuted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
             </button>
-          )}
 
-          <button
-            onClick={onToggleMinimize}
-            className="rounded-lg bg-slate-800 p-2 text-slate-300 hover:bg-slate-700 transition"
-            title="Maximize View"
-          >
-            <Maximize2 className="h-4 w-4" />
-          </button>
+            {callType === 'video' && (
+              <button
+                onClick={onToggleVideo}
+                className={`rounded-lg p-2 transition ${
+                  isVideoDisabled
+                    ? 'bg-rose-500/20 text-rose-400'
+                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                }`}
+                title={isVideoDisabled ? 'Turn Camera On' : 'Turn Camera Off'}
+              >
+                {isVideoDisabled ? <VideoOff className="h-4 w-4" /> : <Video className="h-4 w-4" />}
+              </button>
+            )}
 
-          <button
-            onClick={onHangup}
-            className="rounded-lg bg-rose-600 p-2 text-white hover:bg-rose-500 transition shadow-md shadow-rose-600/20"
-            title="End Call"
-          >
-            <PhoneOff className="h-4 w-4" />
-          </button>
+            <button
+              onClick={onToggleMinimize}
+              className="rounded-lg bg-slate-800 p-2 text-slate-300 hover:bg-slate-700 transition"
+              title="Maximize View"
+            >
+              <Maximize2 className="h-4 w-4" />
+            </button>
+
+            <button
+              onClick={onHangup}
+              className="rounded-lg bg-rose-600 p-2 text-white hover:bg-rose-500 transition shadow-md shadow-rose-600/20"
+              title="End Call"
+            >
+              <PhoneOff className="h-4 w-4" />
+            </button>
+          </div>
         </div>
-      </div>
+      </>
     )
   }
 
@@ -242,6 +271,20 @@ export const CallModal: React.FC<CallModalProps> = ({
   if (callState === 'connected') {
     return (
       <div className="fixed inset-0 z-50 flex flex-col bg-slate-950 text-slate-100 animate-in fade-in duration-200">
+        {/* Dedicated persistent audio player with calibrated volume and anti-feedback */}
+        <audio
+          ref={(el) => {
+            (remoteAudioRef as any).current = el
+            if (el && remoteStream && el.srcObject !== remoteStream) {
+              el.srcObject = remoteStream
+              el.volume = outputVolume
+              el.play().catch((err) => console.warn('[CallModal] Remote audio play error:', err))
+            }
+          }}
+          autoPlay
+          playsInline
+        />
+
         {/* Top bar */}
         <div className="flex h-16 items-center justify-between px-6 border-b border-slate-800 bg-slate-900/60 backdrop-blur-md">
           <div className="flex items-center space-x-3">
@@ -255,9 +298,9 @@ export const CallModal: React.FC<CallModalProps> = ({
           </div>
 
           <div className="flex items-center space-x-2">
-            <div className="flex items-center space-x-1.5 rounded-full bg-slate-800/80 px-3 py-1 text-xs text-slate-300 border border-slate-700/50">
+            <div className="hidden md:flex items-center space-x-1.5 rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-indigo-300 border border-indigo-500/20">
               <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
-              <span>WebRTC Encrypted</span>
+              <span>Opus HD Voice • In-Band FEC</span>
             </div>
 
             <button
@@ -274,17 +317,21 @@ export const CallModal: React.FC<CallModalProps> = ({
         <div className="relative flex flex-1 items-center justify-center p-6 overflow-hidden">
           {callType === 'video' ? (
             <div className="relative h-full w-full max-w-5xl rounded-3xl overflow-hidden bg-slate-900 border border-slate-800 shadow-2xl flex items-center justify-center">
-              {/* Remote Video (Main) */}
+              {/* Remote Video (Main) — muted to prevent comb-filter double-audio echo */}
               <video
                 ref={(el) => {
                   (remoteVideoRef as any).current = el
-                  if (el && remoteStream && el.srcObject !== remoteStream) {
-                    el.srcObject = remoteStream
-                    el.play().catch((err) => console.warn('[CallModal] Remote video play error:', err))
+                  if (el) {
+                    el.muted = true
+                    if (remoteStream && el.srcObject !== remoteStream) {
+                      el.srcObject = remoteStream
+                      el.play().catch((err) => console.warn('[CallModal] Remote video play error:', err))
+                    }
                   }
                 }}
                 autoPlay
                 playsInline
+                muted
                 className="h-full w-full object-contain bg-black"
               />
 
@@ -330,18 +377,9 @@ export const CallModal: React.FC<CallModalProps> = ({
                 <p className="text-base font-mono text-emerald-400 pt-2">{formatTimer(durationSeconds)}</p>
               </div>
 
-              {/* Hidden audio tag to route remote audio tracks */}
-              <audio
-                ref={(el) => {
-                  (remoteVideoRef as any).current = el
-                  if (el && remoteStream && el.srcObject !== remoteStream) {
-                    el.srcObject = remoteStream
-                    el.play().catch((err) => console.warn('[CallModal] Remote audio play error:', err))
-                  }
-                }}
-                autoPlay
-                playsInline
-              />
+              <p className="text-[11px] text-slate-500 max-w-xs text-center">
+                🎧 If testing both tabs on the same computer, wear headphones or lower speaker volume to prevent microphone echo.
+              </p>
             </div>
           )}
         </div>
@@ -375,6 +413,38 @@ export const CallModal: React.FC<CallModalProps> = ({
               {isVideoDisabled ? <VideoOff className="h-5 w-5" /> : <Video className="h-5 w-5" />}
             </button>
           )}
+
+          {/* Speaker Volume & Feedback Prevention Control */}
+          <div className="relative flex items-center">
+            <button
+              onClick={() => setShowVolumeSlider((prev) => !prev)}
+              className={`flex h-12 w-12 items-center justify-center rounded-full transition hover:scale-105 active:scale-95 ${
+                outputVolume === 0
+                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+                  : 'bg-slate-800 text-slate-200 hover:bg-slate-700'
+              }`}
+              title="Speaker Volume"
+            >
+              {outputVolume === 0 ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
+            </button>
+
+            {showVolumeSlider && (
+              <div className="absolute bottom-16 -left-3 flex flex-col items-center rounded-2xl border border-slate-700 bg-slate-900/95 p-3 shadow-2xl backdrop-blur-md z-30 animate-in fade-in slide-in-from-bottom-2">
+                <span className="text-[10px] font-mono text-slate-300 mb-2">
+                  {Math.round(outputVolume * 100)}%
+                </span>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={outputVolume}
+                  onChange={(e) => setOutputVolume(parseFloat(e.target.value))}
+                  className="h-24 w-2 accent-indigo-500 [writing-mode:vertical-lr] [direction:rtl] cursor-pointer"
+                />
+              </div>
+            )}
+          </div>
 
           {/* End Call Button */}
           <button

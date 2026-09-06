@@ -84,11 +84,84 @@ function createFallbackVideoTrack(label: string): MediaStreamTrack {
   return track
 }
 
+export const HIGH_QUALITY_AUDIO_CONSTRAINTS: MediaTrackConstraints = {
+  echoCancellation: { ideal: true },
+  noiseSuppression: { ideal: true },
+  autoGainControl: { ideal: true },
+  channelCount: { ideal: 1 }, // Pure mono eliminates stereo comb filtering & phase cancellation
+  sampleRate: { ideal: 48000 },
+  sampleSize: { ideal: 16 },
+  ...({
+    googEchoCancellation: { ideal: true },
+    googAutoGainControl: { ideal: true },
+    googNoiseSuppression: { ideal: true },
+    googHighpassFilter: { ideal: true },
+    googTypingNoiseDetection: { ideal: true },
+  } as any),
+}
+
 function createSilentAudioTrack(): MediaStreamTrack {
   const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext
-  const ctx = new AudioContextClass()
+  const ctx = new AudioContextClass({ sampleRate: 48000 })
+  const osc = ctx.createOscillator()
+  const gain = ctx.createGain()
+  gain.gain.value = 0.0
   const dst = ctx.createMediaStreamDestination()
+  osc.connect(gain)
+  gain.connect(dst)
+  osc.start()
   return dst.stream.getAudioTracks()[0]
+}
+
+/**
+ * Munges SDP to enforce high-fidelity Opus voice codec settings:
+ * - in-band Forward Error Correction (useinbandfec=1) heals lost packets
+ * - discontinuous transmission (usedtx=1) eliminates silence crackles
+ * - stable high-res voice bitrate (maxaveragebitrate=64000)
+ * - strict mono voice (stereo=0;sprop-stereo=0) prevents phase distortion
+ * - 20ms audio frame packetization (minptime=10;maxptime=20;cbr=1)
+ */
+export function optimizeAudioSdp(sdp: string): string {
+  if (!sdp) return sdp
+  const lines = sdp.split('\r\n')
+  let opusPt: string | null = null
+
+  for (const line of lines) {
+    const match = line.match(/^a=rtpmap:(\d+)\s+opus\/48000/i)
+    if (match) {
+      opusPt = match[1]
+      break
+    }
+  }
+
+  if (!opusPt) return sdp
+
+  const enhancedParams = 'minptime=10;maxptime=20;useinbandfec=1;usedtx=1;maxaveragebitrate=64000;stereo=0;sprop-stereo=0;cbr=1'
+  let foundFmtp = false
+
+  const newLines = lines.map((line) => {
+    if (line.startsWith(`a=fmtp:${opusPt} `)) {
+      foundFmtp = true
+      let params = line.substring(`a=fmtp:${opusPt} `.length)
+      if (!params.includes('useinbandfec=')) params += ';useinbandfec=1'
+      if (!params.includes('usedtx=')) params += ';usedtx=1'
+      if (!params.includes('maxaveragebitrate=')) params += ';maxaveragebitrate=64000'
+      if (!params.includes('stereo=')) params += ';stereo=0;sprop-stereo=0'
+      if (!params.includes('cbr=')) params += ';cbr=1'
+      if (!params.includes('minptime=')) params += ';minptime=10;maxptime=20'
+      return `a=fmtp:${opusPt} ${params}`
+    }
+    return line
+  })
+
+  if (!foundFmtp) {
+    const rtpmapIdx = newLines.findIndex((l) => l.startsWith(`a=rtpmap:${opusPt} `))
+    if (rtpmapIdx !== -1) {
+      newLines.splice(rtpmapIdx + 1, 0, `a=fmtp:${opusPt} ${enhancedParams}`)
+    }
+  }
+
+  return newLines.join('\r\n')
 }
 
 export class WebRtcManager {
@@ -114,14 +187,10 @@ export class WebRtcManager {
     let audioTrack: MediaStreamTrack | null = null
     let videoTrack: MediaStreamTrack | null = null
 
-    // 1. Attempt to acquire real hardware media streams
+    // 1. Attempt to acquire real hardware media streams with high-quality acoustic processing
     try {
       const constraints: MediaStreamConstraints = {
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
+        audio: HIGH_QUALITY_AUDIO_CONSTRAINTS,
         video:
           callType === 'video'
             ? {
@@ -139,9 +208,11 @@ export class WebRtcManager {
     } catch (primaryErr) {
       console.warn('[WebRTC] Primary getUserMedia failed, attempting graceful fallback:', primaryErr)
 
-      // If video failed (e.g. exclusive lock on same PC or camera in use), try audio only
+      // If video failed (e.g. exclusive lock on same PC or camera in use), try audio only with AEC
       try {
-        const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        const audioStream = await navigator.mediaDevices.getUserMedia({
+          audio: HIGH_QUALITY_AUDIO_CONSTRAINTS,
+        })
         audioTrack = audioStream.getAudioTracks()[0] || null
       } catch (audioErr) {
         console.warn('[WebRTC] Microphone unavailable, using silent audio fallback:', audioErr)
@@ -228,7 +299,30 @@ export class WebRtcManager {
   }
 
   /**
-   * Create SDP Offer for outgoing calls
+   * Prioritize audio packets over video packets in the WebRTC transmission pipeline
+   */
+  private configureSenders(): void {
+    if (!this.pc) return
+    const senders = this.pc.getSenders()
+    for (const sender of senders) {
+      if (sender.track?.kind === 'audio') {
+        try {
+          const params = sender.getParameters()
+          if (params.encodings && params.encodings.length > 0) {
+            params.encodings[0].maxBitrate = 64000
+            params.encodings[0].networkPriority = 'high' as any
+            params.encodings[0].priority = 'high' as any
+            sender.setParameters(params).catch(() => {})
+          }
+        } catch {
+          // sender parameter mutations not supported on this browser version
+        }
+      }
+    }
+  }
+
+  /**
+   * Create SDP Offer for outgoing calls with voice optimization
    */
   public async createOffer(): Promise<RTCSessionDescriptionInit> {
     const pc = this.initPeerConnection()
@@ -236,24 +330,31 @@ export class WebRtcManager {
       offerToReceiveAudio: true,
       offerToReceiveVideo: true,
     })
-    await pc.setLocalDescription(offer)
-    return offer
+    const optimizedSdp = optimizeAudioSdp(offer.sdp || '')
+    const desc = new RTCSessionDescription({ type: 'offer', sdp: optimizedSdp })
+    await pc.setLocalDescription(desc)
+    this.configureSenders()
+    return desc
   }
 
   /**
-   * Accept incoming SDP Offer and create SDP Answer
+   * Accept incoming SDP Offer and create SDP Answer with voice optimization
    */
   public async handleOffer(sdp: string): Promise<RTCSessionDescriptionInit> {
     const pc = this.initPeerConnection()
-    await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }))
+    const optimizedRemoteSdp = optimizeAudioSdp(sdp)
+    await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: optimizedRemoteSdp }))
     this.isRemoteDescriptionSet = true
 
     // Drain queued ICE candidates
     await this.drainPendingCandidates()
 
     const answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
-    return answer
+    const optimizedLocalSdp = optimizeAudioSdp(answer.sdp || '')
+    const desc = new RTCSessionDescription({ type: 'answer', sdp: optimizedLocalSdp })
+    await pc.setLocalDescription(desc)
+    this.configureSenders()
+    return desc
   }
 
   /**
@@ -261,11 +362,13 @@ export class WebRtcManager {
    */
   public async handleAnswer(sdp: string): Promise<void> {
     if (!this.pc) return
-    await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp }))
+    const optimizedRemoteSdp = optimizeAudioSdp(sdp)
+    await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: optimizedRemoteSdp }))
     this.isRemoteDescriptionSet = true
 
     // Drain queued ICE candidates
     await this.drainPendingCandidates()
+    this.configureSenders()
   }
 
   /**
