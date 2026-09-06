@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-webauthn/webauthn/protocol"
@@ -24,16 +25,33 @@ import (
 
 type AuthHandler struct {
 	chatv1.UnimplementedAuthServiceServer
-	store     *store.PostgresStore
-	wa        *waconfig.Config
-	jwtSecret string
+	store            *store.PostgresStore
+	wa               *waconfig.Config
+	jwtSecret        string
+	turnSharedSecret string
+	turnRealm        string
+	turnURLs         []string
+	allowedOrigins   []string
+	ceremonyLimiter  *IPRateLimiter
+	authLimiter      *IPRateLimiter
 }
 
-func NewAuthHandler(store *store.PostgresStore, wa *waconfig.Config, jwtSecret string) *AuthHandler {
+func NewAuthHandler(
+	store *store.PostgresStore,
+	wa *waconfig.Config,
+	jwtSecret, turnSharedSecret, turnRealm string,
+	turnURLs, allowedOrigins []string,
+) *AuthHandler {
 	return &AuthHandler{
-		store:     store,
-		wa:        wa,
-		jwtSecret: jwtSecret,
+		store:            store,
+		wa:               wa,
+		jwtSecret:        jwtSecret,
+		turnSharedSecret: turnSharedSecret,
+		turnRealm:        turnRealm,
+		turnURLs:         turnURLs,
+		allowedOrigins:   allowedOrigins,
+		ceremonyLimiter:  NewIPRateLimiter(15, 5),  // 15 req/min, burst 5
+		authLimiter:      NewIPRateLimiter(30, 10), // 30 req/min, burst 10
 	}
 }
 
@@ -347,3 +365,47 @@ func generateRefreshToken() string {
 	rand.Read(b)
 	return base64.RawURLEncoding.EncodeToString(b)
 }
+
+type JWTPayload struct {
+	Sub      string `json:"sub"`
+	DeviceID string `json:"device_id"`
+	Exp      int64  `json:"exp"`
+}
+
+func (h *AuthHandler) VerifyJWT(tokenString string) (*JWTPayload, error) {
+	parts := strings.Split(tokenString, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid token format")
+	}
+
+	sigBase := parts[0] + "." + parts[1]
+	mac := hmac.New(sha256.New, []byte(h.jwtSecret))
+	mac.Write([]byte(sigBase))
+	expectedSig := mac.Sum(nil)
+
+	sigBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return nil, fmt.Errorf("invalid signature encoding")
+	}
+
+	if !hmac.Equal(sigBytes, expectedSig) {
+		return nil, fmt.Errorf("invalid token signature")
+	}
+
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("invalid payload encoding")
+	}
+
+	var payload JWTPayload
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		return nil, fmt.Errorf("invalid payload json")
+	}
+
+	if time.Now().Unix() > payload.Exp {
+		return nil, fmt.Errorf("token expired")
+	}
+
+	return &payload, nil
+}
+

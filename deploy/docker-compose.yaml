@@ -89,6 +89,10 @@ services:
       # origin mismatch.
       - WEBAUTHN_RP_ID=localhost
       - WEBAUTHN_RP_ORIGIN=http://localhost:3000
+      - TURN_SHARED_SECRET=dev_turn_shared_secret_32b_change_in_prod
+      - TURN_REALM=genchat.local
+      - TURN_URLS=turn:localhost:3478?transport=udp,turn:localhost:3478?transport=tcp
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
     depends_on:
       postgres:
         condition: service_healthy
@@ -179,6 +183,7 @@ services:
       - MINIO_ROOT_USER=minioadmin
       - MINIO_ROOT_PASSWORD=minioadmin_secret
       - PORT=8082
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
     depends_on:
       minio-init:
         condition: service_completed_successfully
@@ -192,10 +197,11 @@ services:
     command:
       - -n
       - --log-file=stdout
-      - --lt-cred-mech
       - --fingerprint
       - --realm=genchat.local
-      - --user=genchat:dev_turn_password
+      - --use-auth-secret
+      - --static-auth-secret
+      - dev_turn_shared_secret_32b_change_in_prod
       - --min-port=49152
       - --max-port=49160
     restart: unless-stopped

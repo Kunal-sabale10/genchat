@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,6 +30,25 @@ func main() {
 	rpID := getEnv("WEBAUTHN_RP_ID", "localhost")
 	rpOrigin := getEnv("WEBAUTHN_RP_ORIGIN", "http://localhost:3000")
 
+	turnSharedSecret := getEnv("TURN_SHARED_SECRET", "dev_turn_shared_secret_32b_change_in_prod")
+	turnRealm := getEnv("TURN_REALM", "genchat.local")
+	turnURLsRaw := getEnv("TURN_URLS", "turn:localhost:3478?transport=udp,turn:localhost:3478?transport=tcp")
+	allowedOriginsRaw := getEnv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
+
+	var turnURLs []string
+	for _, u := range strings.Split(turnURLsRaw, ",") {
+		if trimmed := strings.TrimSpace(u); trimmed != "" {
+			turnURLs = append(turnURLs, trimmed)
+		}
+	}
+
+	var allowedOrigins []string
+	for _, o := range strings.Split(allowedOriginsRaw, ",") {
+		if trimmed := strings.TrimSpace(o); trimmed != "" {
+			allowedOrigins = append(allowedOrigins, trimmed)
+		}
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -43,7 +63,7 @@ func main() {
 	waConf := waconfig.NewConfig(rpID, rpOrigin, "GenChat")
 
 	grpcServer := grpc.NewServer()
-	authHandler := handler.NewAuthHandler(pgStore, waConf, jwtSecret)
+	authHandler := handler.NewAuthHandler(pgStore, waConf, jwtSecret, turnSharedSecret, turnRealm, turnURLs, allowedOrigins)
 	chatv1.RegisterAuthServiceServer(grpcServer, authHandler)
 	reflection.Register(grpcServer)
 

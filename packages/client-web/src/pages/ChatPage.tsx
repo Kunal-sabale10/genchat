@@ -10,7 +10,7 @@ import { CameraModal } from '@/components/CameraModal'
 import { ImageViewerModal } from '@/components/ImageViewerModal'
 import { FileAttachmentCard } from '@/components/FileAttachmentCard'
 import { AttachmentStaging } from '@/components/AttachmentStaging'
-import { WebRtcManager } from '@/lib/webrtc-manager'
+import { WebRtcManager, fetchDynamicIceServers } from '@/lib/webrtc-manager'
 import { 
   ShieldCheck, 
   Send, 
@@ -699,7 +699,9 @@ export default function ChatPage() {
     setIsCallMuted(false)
     setIsCallVideoDisabled(false)
 
+    const dynamicServers = await fetchDynamicIceServers(accessToken || undefined)
     const rtc = new WebRtcManager({
+      iceServers: dynamicServers,
       onLocalStream: (s) => setLocalStream(s),
       onRemoteStream: (s) => setRemoteStream(s),
       onIceCandidate: (candidate) => {
@@ -755,7 +757,9 @@ export default function ChatPage() {
     setIsCallMuted(false)
     setIsCallVideoDisabled(false)
 
+    const dynamicServers = await fetchDynamicIceServers(accessToken || undefined)
     const rtc = new WebRtcManager({
+      iceServers: dynamicServers,
       onLocalStream: (s) => setLocalStream(s),
       onRemoteStream: (s) => setRemoteStream(s),
       onIceCandidate: (candidate) => {

@@ -25,22 +25,66 @@ export const DEFAULT_ICE_SERVERS: RTCConfiguration = {
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
-    // Local / coturn TURN relay for symmetric NAT & enterprise firewall traversal
-    {
-      urls: [
-        'turn:localhost:3478?transport=udp',
-        'turn:localhost:3478?transport=tcp',
-      ],
-      username: 'genchat',
-      credential: 'dev_turn_password',
-    },
   ],
   iceCandidatePoolSize: 2,
+}
+
+let cachedIceServers: RTCIceServer[] | null = null
+let cachedIceServersExpiresAt = 0
+
+/**
+ * Dynamically fetches ephemeral RFC 7635 TURN credentials from authd.
+ * Caches credentials in-memory until near expiry.
+ */
+export async function fetchDynamicIceServers(accessToken?: string): Promise<RTCIceServer[]> {
+  const now = Date.now()
+  if (cachedIceServers && cachedIceServersExpiresAt > now + 60000) {
+    return cachedIceServers
+  }
+
+  const token =
+    accessToken ||
+    (typeof sessionStorage !== 'undefined'
+      ? sessionStorage.getItem('genchat_access_token')
+      : null)
+
+  if (!token) {
+    return DEFAULT_ICE_SERVERS.iceServers || []
+  }
+
+  const authBaseUrl = (import.meta as any).env?.DEV ? 'http://localhost:8080' : ''
+  try {
+    const res = await fetch(`${authBaseUrl}/chat.v1.AuthService/GetIceServers`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+    if (!res.ok) {
+      console.warn(`[WebRTC] Failed to fetch dynamic ICE servers (${res.status}), using STUN fallback`)
+      return DEFAULT_ICE_SERVERS.iceServers || []
+    }
+    const data = await res.json()
+    if (Array.isArray(data.iceServers) && data.iceServers.length > 0) {
+      cachedIceServers = data.iceServers
+      const ttlMs = ((data.ttl as number) || 3600) * 1000
+      cachedIceServersExpiresAt = now + ttlMs
+      return data.iceServers
+    }
+  } catch (err) {
+    console.warn('[WebRTC] Error fetching dynamic ICE servers:', err)
+  }
+
+  return DEFAULT_ICE_SERVERS.iceServers || []
 }
 
 export function getIceConfiguration(customServers?: RTCIceServer[]): RTCConfiguration {
   if (customServers && customServers.length > 0) {
     return { iceServers: customServers, iceCandidatePoolSize: 2 }
+  }
+
+  if (cachedIceServers && cachedIceServers.length > 0) {
+    return { iceServers: cachedIceServers, iceCandidatePoolSize: 2 }
   }
 
   const envServers = (import.meta as any).env?.VITE_ICE_SERVERS
@@ -49,7 +93,7 @@ export function getIceConfiguration(customServers?: RTCIceServer[]): RTCConfigur
       const parsed = typeof envServers === 'string' ? JSON.parse(envServers) : envServers
       return { iceServers: parsed, iceCandidatePoolSize: 2 }
     } catch {
-      console.warn('[WebRTC] Could not parse VITE_ICE_SERVERS, using default STUN/TURN configuration')
+      console.warn('[WebRTC] Could not parse VITE_ICE_SERVERS, using default STUN configuration')
     }
   }
 
