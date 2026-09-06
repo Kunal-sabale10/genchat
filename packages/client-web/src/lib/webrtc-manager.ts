@@ -26,6 +26,71 @@ const DEFAULT_ICE_SERVERS: RTCConfiguration = {
   ],
 }
 
+function createFallbackVideoTrack(label: string): MediaStreamTrack {
+  const canvas = document.createElement('canvas')
+  canvas.width = 640
+  canvas.height = 480
+  const ctx = canvas.getContext('2d')!
+
+  let angle = 0
+  const draw = () => {
+    ctx.fillStyle = '#090d16'
+    ctx.fillRect(0, 0, 640, 480)
+
+    const cx = 320
+    const cy = 200
+    const radius = 60 + Math.sin(angle) * 6
+
+    const grad = ctx.createRadialGradient(cx, cy, 20, cx, cy, radius + 20)
+    grad.addColorStop(0, '#6366f1')
+    grad.addColorStop(1, '#4338ca22')
+    ctx.fillStyle = grad
+    ctx.beginPath()
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2)
+    ctx.fill()
+
+    ctx.fillStyle = '#ffffff'
+    ctx.beginPath()
+    ctx.arc(cx, cy - 10, 22, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.beginPath()
+    ctx.arc(cx, cy + 32, 34, Math.PI, Math.PI * 2)
+    ctx.fill()
+
+    ctx.font = 'bold 18px sans-serif'
+    ctx.textAlign = 'center'
+    ctx.fillStyle = '#cbd5e1'
+    ctx.fillText(label, 320, 310)
+
+    ctx.font = '13px sans-serif'
+    ctx.fillStyle = '#94a3b8'
+    ctx.fillText('(Simulated Camera Feed)', 320, 335)
+
+    angle += 0.05
+  }
+
+  const intervalId = setInterval(draw, 100)
+  draw()
+
+  const stream = (canvas as any).captureStream(15)
+  const track = stream.getVideoTracks()[0]
+
+  const originalStop = track.stop.bind(track)
+  track.stop = () => {
+    clearInterval(intervalId)
+    originalStop()
+  }
+
+  return track
+}
+
+function createSilentAudioTrack(): MediaStreamTrack {
+  const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext
+  const ctx = new AudioContextClass()
+  const dst = ctx.createMediaStreamDestination()
+  return dst.stream.getAudioTracks()[0]
+}
+
 export class WebRtcManager {
   private pc: RTCPeerConnection | null = null
   private localStream: MediaStream | null = null
@@ -39,38 +104,74 @@ export class WebRtcManager {
   constructor(private callbacks: WebRtcCallbacks = {}) {}
 
   /**
-   * Acquire local camera and microphone stream
+   * Acquire local camera and microphone stream with graceful fallbacks
    */
   public async startLocalStream(callType: 'audio' | 'video'): Promise<MediaStream> {
     if (this.localStream) {
       return this.localStream
     }
 
-    const constraints: MediaStreamConstraints = {
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-      video:
-        callType === 'video'
-          ? {
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
-              facingMode: 'user',
-            }
-          : false,
+    let audioTrack: MediaStreamTrack | null = null
+    let videoTrack: MediaStreamTrack | null = null
+
+    // 1. Attempt to acquire real hardware media streams
+    try {
+      const constraints: MediaStreamConstraints = {
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video:
+          callType === 'video'
+            ? {
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                facingMode: 'user',
+              }
+            : false,
+      }
+      const stream = await navigator.mediaDevices.getUserMedia(constraints)
+      audioTrack = stream.getAudioTracks()[0] || null
+      if (callType === 'video') {
+        videoTrack = stream.getVideoTracks()[0] || null
+      }
+    } catch (primaryErr) {
+      console.warn('[WebRTC] Primary getUserMedia failed, attempting graceful fallback:', primaryErr)
+
+      // If video failed (e.g. exclusive lock on same PC or camera in use), try audio only
+      try {
+        const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        audioTrack = audioStream.getAudioTracks()[0] || null
+      } catch (audioErr) {
+        console.warn('[WebRTC] Microphone unavailable, using silent audio fallback:', audioErr)
+        try {
+          audioTrack = createSilentAudioTrack()
+        } catch {
+          // WebAudio unavailable
+        }
+      }
+
+      // If call is video and videoTrack is still null, generate synthetic video stream
+      if (callType === 'video' && !videoTrack) {
+        console.info('[WebRTC] Generating synthetic camera feed (camera busy or unavailable)')
+        videoTrack = createFallbackVideoTrack('Camera Busy / Shared PC Test')
+      }
     }
 
-    try {
-      this.localStream = await navigator.mediaDevices.getUserMedia(constraints)
-      this.callbacks.onLocalStream?.(this.localStream)
-      return this.localStream
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error('Failed to acquire media stream')
-      this.callbacks.onError?.(error)
-      throw error
+    const tracks: MediaStreamTrack[] = []
+    if (audioTrack) tracks.push(audioTrack)
+    if (videoTrack) tracks.push(videoTrack)
+
+    if (tracks.length === 0) {
+      const err = new Error('Could not acquire audio or video stream')
+      this.callbacks.onError?.(err)
+      throw err
     }
+
+    this.localStream = new MediaStream(tracks)
+    this.callbacks.onLocalStream?.(this.localStream)
+    return this.localStream
   }
 
   /**
@@ -94,14 +195,18 @@ export class WebRtcManager {
 
     // Handle inbound remote tracks
     this.pc.ontrack = (event) => {
-      console.log('[WebRTC] Received remote track:', event.track.kind)
-      if (this.remoteStream) {
-        event.streams[0]?.getTracks().forEach((track) => {
-          if (!this.remoteStream!.getTracks().some((t) => t.id === track.id)) {
-            this.remoteStream!.addTrack(track)
-          }
-        })
+      console.log('[WebRTC] Received remote track:', event.track.kind, event.track.id)
+      if (event.streams && event.streams[0]) {
+        this.remoteStream = event.streams[0]
+      } else {
+        if (!this.remoteStream) {
+          this.remoteStream = new MediaStream()
+        }
+        if (!this.remoteStream.getTracks().some((t) => t.id === event.track.id)) {
+          this.remoteStream.addTrack(event.track)
+        }
       }
+      this.callbacks.onRemoteStream?.(this.remoteStream)
     }
 
     // Handle ICE candidates

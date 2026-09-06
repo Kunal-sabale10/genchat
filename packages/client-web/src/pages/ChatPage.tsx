@@ -97,6 +97,7 @@ export default function ChatPage() {
 
   const webrtcRef = useRef<WebRtcManager | null>(null)
   const pendingOfferRef = useRef<{ sdp: string; callType: 'audio' | 'video' } | null>(null)
+  const pendingIceCandidatesRef = useRef<RTCIceCandidateInit[]>([])
   const activeCallPeerIdRef = useRef<string>('')
   useEffect(() => { activeCallPeerIdRef.current = activeCallPeerId }, [activeCallPeerId])
   const activeCallIdRef = useRef<string>('')
@@ -238,11 +239,17 @@ export default function ChatPage() {
         await webrtcRef.current?.handleAnswer(ev.sdp)
         setCallState('connected')
       } else if (ev.signalType === 'ice_candidate' && ev.candidate) {
-        await webrtcRef.current?.addIceCandidate(ev.candidate)
+        if (webrtcRef.current) {
+          await webrtcRef.current.addIceCandidate(ev.candidate)
+        } else {
+          console.log('[ChatPage] Buffering early ICE candidate from peer:', ev.candidate)
+          pendingIceCandidatesRef.current.push(ev.candidate)
+        }
       } else if (ev.signalType === 'hangup' || ev.signalType === 'reject' || ev.signalType === 'peer_offline') {
         webrtcRef.current?.hangup()
         webrtcRef.current = null
         pendingOfferRef.current = null
+        pendingIceCandidatesRef.current = []
         setLocalStream(null)
         setRemoteStream(null)
         setCallState('idle')
@@ -602,10 +609,11 @@ export default function ChatPage() {
         })
       },
       onConnectionStateChange: (state) => {
-        console.log('[ChatPage] WebRTC ConnectionState:', state)
+        console.log('[ChatPage] WebRTC ConnectionState (caller):', state)
         if (state === 'connected') {
           setCallState('connected')
-        } else if (state === 'failed' || state === 'disconnected') {
+        } else if (state === 'failed') {
+          console.warn('[ChatPage] Caller connection failed')
           handleEndCall()
         }
       },
@@ -657,9 +665,11 @@ export default function ChatPage() {
         })
       },
       onConnectionStateChange: (state) => {
+        console.log('[ChatPage] WebRTC ConnectionState (callee):', state)
         if (state === 'connected') {
           setCallState('connected')
-        } else if (state === 'failed' || state === 'disconnected') {
+        } else if (state === 'failed') {
+          console.warn('[ChatPage] Callee connection failed')
           handleEndCall()
         }
       },
@@ -669,6 +679,15 @@ export default function ChatPage() {
       },
     })
     webrtcRef.current = rtc
+
+    // Drain any early ICE candidates that arrived before the user clicked Accept
+    while (pendingIceCandidatesRef.current.length > 0) {
+      const cand = pendingIceCandidatesRef.current.shift()
+      if (cand) {
+        console.log('[ChatPage] Draining early ICE candidate to callee WebRTC instance')
+        await rtc.addIceCandidate(cand)
+      }
+    }
 
     try {
       await rtc.startLocalStream(incomingType)
@@ -694,6 +713,7 @@ export default function ChatPage() {
       })
     }
     pendingOfferRef.current = null
+    pendingIceCandidatesRef.current = []
     setCallState('idle')
     setActiveCallId('')
     setActiveCallPeerId('')
@@ -710,6 +730,7 @@ export default function ChatPage() {
     webrtcRef.current?.hangup()
     webrtcRef.current = null
     pendingOfferRef.current = null
+    pendingIceCandidatesRef.current = []
     setLocalStream(null)
     setRemoteStream(null)
     setCallState('idle')

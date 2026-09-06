@@ -52,16 +52,23 @@ export const CallModal: React.FC<CallModalProps> = ({
   // Attach local stream to local video element
   useEffect(() => {
     if (localVideoRef.current && localStream) {
-      localVideoRef.current.srcObject = localStream
+      if (localVideoRef.current.srcObject !== localStream) {
+        localVideoRef.current.srcObject = localStream
+      }
     }
-  }, [localStream])
+  }, [localStream, callState, isMinimized])
 
   // Attach remote stream to remote video element
   useEffect(() => {
     if (remoteVideoRef.current && remoteStream) {
-      remoteVideoRef.current.srcObject = remoteStream
+      if (remoteVideoRef.current.srcObject !== remoteStream) {
+        remoteVideoRef.current.srcObject = remoteStream
+        remoteVideoRef.current.play().catch((err) => {
+          console.warn('[CallModal] Remote video play error:', err)
+        })
+      }
     }
-  }, [remoteStream])
+  }, [remoteStream, callState, isMinimized])
 
   // In-call duration timer
   useEffect(() => {
@@ -200,6 +207,23 @@ export const CallModal: React.FC<CallModalProps> = ({
           <h3 className="text-xl font-bold text-slate-100">Calling @{peerId}...</h3>
           <p className="mt-1 text-xs text-slate-500 font-medium">Waiting for peer to connect</p>
 
+          {callType === 'video' && localStream && (
+            <div className="my-4 mx-auto h-32 w-44 rounded-2xl overflow-hidden border border-slate-700 bg-black shadow-inner">
+              <video
+                ref={(el) => {
+                  if (el) {
+                    el.muted = true
+                    if (el.srcObject !== localStream) el.srcObject = localStream
+                  }
+                }}
+                autoPlay
+                playsInline
+                muted
+                className="h-full w-full object-cover scale-x-[-1]"
+              />
+            </div>
+          )}
+
           <div className="mt-8 flex justify-center">
             <button
               onClick={onHangup}
@@ -252,7 +276,13 @@ export const CallModal: React.FC<CallModalProps> = ({
             <div className="relative h-full w-full max-w-5xl rounded-3xl overflow-hidden bg-slate-900 border border-slate-800 shadow-2xl flex items-center justify-center">
               {/* Remote Video (Main) */}
               <video
-                ref={remoteVideoRef}
+                ref={(el) => {
+                  (remoteVideoRef as any).current = el
+                  if (el && remoteStream && el.srcObject !== remoteStream) {
+                    el.srcObject = remoteStream
+                    el.play().catch((err) => console.warn('[CallModal] Remote video play error:', err))
+                  }
+                }}
                 autoPlay
                 playsInline
                 className="h-full w-full object-contain bg-black"
@@ -261,7 +291,15 @@ export const CallModal: React.FC<CallModalProps> = ({
               {/* Local Video PiP (Picture-in-Picture Floating Preview) */}
               <div className="absolute bottom-6 right-6 h-40 w-56 rounded-2xl overflow-hidden border-2 border-slate-700 bg-slate-900 shadow-2xl z-10 transition-transform hover:scale-105">
                 <video
-                  ref={localVideoRef}
+                  ref={(el) => {
+                    (localVideoRef as any).current = el
+                    if (el) {
+                      el.muted = true
+                      if (localStream && el.srcObject !== localStream) {
+                        el.srcObject = localStream
+                      }
+                    }
+                  }}
                   autoPlay
                   playsInline
                   muted
@@ -293,7 +331,17 @@ export const CallModal: React.FC<CallModalProps> = ({
               </div>
 
               {/* Hidden audio tag to route remote audio tracks */}
-              <audio ref={remoteVideoRef} autoPlay playsInline />
+              <audio
+                ref={(el) => {
+                  (remoteVideoRef as any).current = el
+                  if (el && remoteStream && el.srcObject !== remoteStream) {
+                    el.srcObject = remoteStream
+                    el.play().catch((err) => console.warn('[CallModal] Remote audio play error:', err))
+                  }
+                }}
+                autoPlay
+                playsInline
+              />
             </div>
           )}
         </div>
