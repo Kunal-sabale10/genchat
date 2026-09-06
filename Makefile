@@ -40,6 +40,7 @@ build-go: proto
 	cd services/auth && go build -o ../../bin/authd ./cmd/authd
 	cd services/gateway && go build -o ../../bin/gatewayd ./cmd/gatewayd
 	cd services/msgledger && go build -o ../../bin/ledgerd ./cmd/ledgerd
+	cd services/media && go build -o ../../bin/mediad ./cmd/mediad
 
 # Run all tests
 test: test-rust test-go
@@ -52,6 +53,7 @@ test-go:
 	cd services/auth && go test ./...
 	cd services/gateway && go test ./...
 	cd services/msgledger && go test ./...
+	cd services/media && go test ./...
 
 # Lint
 lint:
@@ -59,6 +61,7 @@ lint:
 	cd services/auth && golangci-lint run
 	cd services/gateway && golangci-lint run
 	cd services/msgledger && golangci-lint run
+	cd services/media && golangci-lint run
 
 # Docker
 docker-up:
