@@ -104,6 +104,29 @@ type ReadReceiptPushFrame struct {
 	SequenceNum int64  `json:"sequence_num"`
 }
 
+// CallSignalInboundFrame is sent by a client to initiate, negotiate, or end a WebRTC call.
+type CallSignalInboundFrame struct {
+	Action       string          `json:"action"` // "call_signal"
+	SignalType   string          `json:"signal_type"` // "offer", "answer", "ice_candidate", "hangup", "reject"
+	CallID       string          `json:"call_id"`
+	TargetUserID string          `json:"target_user_id"`
+	CallType     string          `json:"call_type,omitempty"` // "audio" | "video"
+	SDP          string          `json:"sdp,omitempty"`
+	Candidate    json.RawMessage `json:"candidate,omitempty"`
+}
+
+// CallSignalPushFrame is relayed to the target peer.
+type CallSignalPushFrame struct {
+	Type         string          `json:"type"` // "call_signal"
+	SignalType   string          `json:"signal_type"`
+	CallID       string          `json:"call_id"`
+	SenderID     string          `json:"sender_id"`
+	TargetUserID string          `json:"target_user_id"`
+	CallType     string          `json:"call_type,omitempty"`
+	SDP          string          `json:"sdp,omitempty"`
+	Candidate    json.RawMessage `json:"candidate,omitempty"`
+}
+
 // Router handles message routing between connected clients.
 type Router struct {
 	hub    *ws.Hub
@@ -137,6 +160,8 @@ func (r *Router) Handle(ctx context.Context, conn *ws.Conn, data []byte) error {
 		return r.handleTyping(conn, data)
 	case "read_receipt":
 		return r.handleReadReceipt(conn, data)
+	case "call_signal":
+		return r.handleCallSignal(conn, data)
 	case "ping":
 		return r.handlePing(conn)
 	default:
@@ -321,6 +346,55 @@ func (r *Router) handleReadReceipt(conn *ws.Conn, data []byte) error {
 func (r *Router) handlePing(conn *ws.Conn) error {
 	pong, _ := json.Marshal(map[string]string{"type": "pong"})
 	r.hub.SendToUser(conn.UserID, pong)
+	return nil
+}
+
+func (r *Router) handleCallSignal(conn *ws.Conn, data []byte) error {
+	var frame CallSignalInboundFrame
+	if err := json.Unmarshal(data, &frame); err != nil {
+		return r.sendError(conn, "INVALID_FRAME", "could not parse call_signal frame")
+	}
+
+	if frame.TargetUserID == "" || frame.CallID == "" || frame.SignalType == "" {
+		return r.sendError(conn, "MISSING_FIELDS", "target_user_id, call_id, signal_type are required")
+	}
+
+	// If recipient is offline and this is an offer, inform caller immediately
+	if frame.SignalType == "offer" && !r.hub.IsOnline(frame.TargetUserID) {
+		slog.Info("call target is offline", "caller", conn.UserID, "target", frame.TargetUserID, "call_id", frame.CallID)
+		offlineNotice, _ := json.Marshal(CallSignalPushFrame{
+			Type:         "call_signal",
+			SignalType:   "peer_offline",
+			CallID:       frame.CallID,
+			SenderID:     frame.TargetUserID,
+			TargetUserID: conn.UserID,
+			CallType:     frame.CallType,
+		})
+		r.hub.SendToUser(conn.UserID, offlineNotice)
+		return nil
+	}
+
+	pushPayload, err := json.Marshal(CallSignalPushFrame{
+		Type:         "call_signal",
+		SignalType:   frame.SignalType,
+		CallID:       frame.CallID,
+		SenderID:     conn.UserID,
+		TargetUserID: frame.TargetUserID,
+		CallType:     frame.CallType,
+		SDP:          frame.SDP,
+		Candidate:    frame.Candidate,
+	})
+	if err != nil {
+		return err
+	}
+
+	r.hub.SendToUser(frame.TargetUserID, pushPayload)
+	slog.Info("call signal relayed",
+		"signal_type", frame.SignalType,
+		"caller", conn.UserID,
+		"target", frame.TargetUserID,
+		"call_id", frame.CallID,
+	)
 	return nil
 }
 

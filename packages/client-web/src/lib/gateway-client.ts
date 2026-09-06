@@ -21,10 +21,21 @@ export interface ReadReceiptEvent {
   sequenceNum: number
 }
 
+export interface CallSignalEvent {
+  signalType: 'offer' | 'answer' | 'ice_candidate' | 'hangup' | 'reject' | 'peer_offline'
+  callId: string
+  senderId?: string
+  targetUserId?: string
+  callType?: 'audio' | 'video'
+  sdp?: string
+  candidate?: any
+}
+
 export type MessageHandler = (envelope: GatewayEnvelope) => void
 export type StatusHandler = (connected: boolean) => void
 export type TypingHandler = (event: TypingEvent) => void
 export type ReadReceiptHandler = (event: ReadReceiptEvent) => void
+export type CallSignalHandler = (event: CallSignalEvent) => void
 
 export class GatewayClient {
   private ws: WebSocket | null = null
@@ -35,6 +46,7 @@ export class GatewayClient {
   private statusHandlers: Set<StatusHandler> = new Set()
   private typingHandlers: Set<TypingHandler> = new Set()
   private readReceiptHandlers: Set<ReadReceiptHandler> = new Set()
+  private callSignalHandlers: Set<CallSignalHandler> = new Set()
   private pendingAcks: Map<string, (seq: number) => void> = new Map()
   private pingTimer: ReturnType<typeof setInterval> | null = null
   private isExplicitDisconnect = false
@@ -141,6 +153,23 @@ export class GatewayClient {
         // 4. Handle server errors
         if (raw.type === 'error') {
           console.warn('[Gateway] Server error frame:', raw.code, raw.message)
+          return
+        }
+
+        // 5. Handle WebRTC call signaling
+        if (raw.type === 'call_signal') {
+          console.log('[Gateway] Received call_signal:', raw.signal_type, 'from:', raw.sender_id, 'call:', raw.call_id)
+          this.callSignalHandlers.forEach((h) =>
+            h({
+              signalType: raw.signal_type,
+              callId: raw.call_id,
+              senderId: raw.sender_id,
+              targetUserId: raw.target_user_id,
+              callType: raw.call_type || 'video',
+              sdp: raw.sdp,
+              candidate: raw.candidate,
+            })
+          )
           return
         }
 
@@ -304,6 +333,29 @@ export class GatewayClient {
       server_id: serverId,
       sequence_num: sequenceNum,
     }))
+  }
+
+  public onCallSignal(handler: CallSignalHandler): () => void {
+    this.callSignalHandlers.add(handler)
+    return () => this.callSignalHandlers.delete(handler)
+  }
+
+  public sendCallSignal(event: CallSignalEvent): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn('[Gateway] Cannot send call signal, WebSocket not open')
+      return
+    }
+    const frame = {
+      action: 'call_signal',
+      signal_type: event.signalType,
+      call_id: event.callId,
+      target_user_id: event.targetUserId,
+      call_type: event.callType || 'video',
+      sdp: event.sdp,
+      candidate: event.candidate,
+    }
+    console.log('[Gateway] Dispatched call_signal:', event.signalType, 'to:', event.targetUserId)
+    this.ws.send(JSON.stringify(frame))
   }
 
   public disconnect(): void {

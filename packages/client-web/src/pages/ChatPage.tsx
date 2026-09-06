@@ -5,6 +5,8 @@ import { MediaClient, AttachmentMetadata } from '@/lib/media-client'
 import { MediaCryptoService } from '@/lib/media-crypto'
 import { E2eeService } from '@/lib/e2ee-ratchet'
 import { localDb, StoredMessage, StoredConversation, SearchSnippetResult } from '@/lib/local-storage-db'
+import { CallModal } from '@/components/CallModal'
+import { WebRtcManager } from '@/lib/webrtc-manager'
 import { 
   ShieldCheck, 
   Send, 
@@ -24,7 +26,9 @@ import {
   X,
   Search,
   Key,
-  Radio
+  Radio,
+  Phone,
+  Video
 } from 'lucide-react'
 
 interface MessageItem {
@@ -79,6 +83,24 @@ export default function ChatPage() {
   const [copiedSafetyNumber, setCopiedSafetyNumber] = useState(false)
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({})
   const [incomingToast, setIncomingToast] = useState<{ senderId: string; channelId: string; preview: string } | null>(null)
+
+  // WebRTC Audio/Video Call states
+  const [callState, setCallState] = useState<'idle' | 'incoming' | 'outgoing' | 'connected' | 'ended'>('idle')
+  const [callType, setCallType] = useState<'audio' | 'video'>('video')
+  const [activeCallId, setActiveCallId] = useState<string>('')
+  const [activeCallPeerId, setActiveCallPeerId] = useState<string>('')
+  const [isCallMuted, setIsCallMuted] = useState(false)
+  const [isCallVideoDisabled, setIsCallVideoDisabled] = useState(false)
+  const [isCallMinimized, setIsCallMinimized] = useState(false)
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null)
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null)
+
+  const webrtcRef = useRef<WebRtcManager | null>(null)
+  const pendingOfferRef = useRef<{ sdp: string; callType: 'audio' | 'video' } | null>(null)
+  const activeCallPeerIdRef = useRef<string>('')
+  useEffect(() => { activeCallPeerIdRef.current = activeCallPeerId }, [activeCallPeerId])
+  const activeCallIdRef = useRef<string>('')
+  useEffect(() => { activeCallIdRef.current = activeCallId }, [activeCallId])
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const gatewayRef = useRef<GatewayClient | null>(null)
@@ -201,6 +223,38 @@ export default function ChatPage() {
         })
       )
       localDb.updateMessageStatus(ev.serverId, 'read')
+    })
+
+    // Handle WebRTC call signals from peers
+    const unsubCallSignal = gateway.onCallSignal(async (ev) => {
+      console.log('[ChatPage] CallSignal received:', ev.signalType, ev)
+      if (ev.signalType === 'offer' && ev.sdp) {
+        pendingOfferRef.current = { sdp: ev.sdp, callType: ev.callType || 'video' }
+        setActiveCallId(ev.callId)
+        setActiveCallPeerId(ev.senderId || 'Unknown')
+        setCallType(ev.callType || 'video')
+        setCallState('incoming')
+      } else if (ev.signalType === 'answer' && ev.sdp) {
+        await webrtcRef.current?.handleAnswer(ev.sdp)
+        setCallState('connected')
+      } else if (ev.signalType === 'ice_candidate' && ev.candidate) {
+        await webrtcRef.current?.addIceCandidate(ev.candidate)
+      } else if (ev.signalType === 'hangup' || ev.signalType === 'reject' || ev.signalType === 'peer_offline') {
+        webrtcRef.current?.hangup()
+        webrtcRef.current = null
+        pendingOfferRef.current = null
+        setLocalStream(null)
+        setRemoteStream(null)
+        setCallState('idle')
+        setActiveCallId('')
+        setActiveCallPeerId('')
+        setIsCallMinimized(false)
+        if (ev.signalType === 'peer_offline') {
+          alert('User is currently offline and cannot be reached.')
+        } else if (ev.signalType === 'reject') {
+          alert('Call was declined by peer.')
+        }
+      }
     })
 
     gateway.connect()
@@ -357,6 +411,7 @@ export default function ChatPage() {
       unsubStatus()
       unsubTyping()
       unsubReceipts()
+      unsubCallSignal()
       unsubMessages()
       gateway.disconnect()
     }
@@ -517,6 +572,163 @@ export default function ChatPage() {
     } finally {
       setIsUploading(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  // --- WebRTC Calling Actions ---
+  const handleStartCall = async (type: 'audio' | 'video') => {
+    if (!activeConversation?.isDirect || !user || !gatewayRef.current) return
+
+    const peerId = activeConversation.id
+    const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+
+    setActiveCallId(callId)
+    setActiveCallPeerId(peerId)
+    setCallType(type)
+    setCallState('outgoing')
+    setIsCallMinimized(false)
+    setIsCallMuted(false)
+    setIsCallVideoDisabled(false)
+
+    const rtc = new WebRtcManager({
+      onLocalStream: (s) => setLocalStream(s),
+      onRemoteStream: (s) => setRemoteStream(s),
+      onIceCandidate: (candidate) => {
+        gatewayRef.current?.sendCallSignal({
+          signalType: 'ice_candidate',
+          callId,
+          targetUserId: peerId,
+          candidate: candidate.toJSON(),
+        })
+      },
+      onConnectionStateChange: (state) => {
+        console.log('[ChatPage] WebRTC ConnectionState:', state)
+        if (state === 'connected') {
+          setCallState('connected')
+        } else if (state === 'failed' || state === 'disconnected') {
+          handleEndCall()
+        }
+      },
+      onError: (err) => {
+        console.error('[WebRTC] Call error:', err)
+        alert(`Could not start call: ${err.message}`)
+        handleEndCall()
+      },
+    })
+    webrtcRef.current = rtc
+
+    try {
+      await rtc.startLocalStream(type)
+      const offer = await rtc.createOffer()
+      gatewayRef.current.sendCallSignal({
+        signalType: 'offer',
+        callId,
+        targetUserId: peerId,
+        callType: type,
+        sdp: offer.sdp,
+      })
+    } catch (err) {
+      console.error('[WebRTC] Error acquiring devices / creating offer:', err)
+      handleEndCall()
+    }
+  }
+
+  const handleAcceptCall = async () => {
+    if (!pendingOfferRef.current || !gatewayRef.current) return
+
+    const { sdp, callType: incomingType } = pendingOfferRef.current
+    const callId = activeCallIdRef.current
+    const peerId = activeCallPeerIdRef.current
+
+    setCallState('connected')
+    setCallType(incomingType)
+    setIsCallMuted(false)
+    setIsCallVideoDisabled(false)
+
+    const rtc = new WebRtcManager({
+      onLocalStream: (s) => setLocalStream(s),
+      onRemoteStream: (s) => setRemoteStream(s),
+      onIceCandidate: (candidate) => {
+        gatewayRef.current?.sendCallSignal({
+          signalType: 'ice_candidate',
+          callId,
+          targetUserId: peerId,
+          candidate: candidate.toJSON(),
+        })
+      },
+      onConnectionStateChange: (state) => {
+        if (state === 'connected') {
+          setCallState('connected')
+        } else if (state === 'failed' || state === 'disconnected') {
+          handleEndCall()
+        }
+      },
+      onError: (err) => {
+        console.error('[WebRTC] Error accepting call:', err)
+        handleEndCall()
+      },
+    })
+    webrtcRef.current = rtc
+
+    try {
+      await rtc.startLocalStream(incomingType)
+      const answer = await rtc.handleOffer(sdp)
+      gatewayRef.current.sendCallSignal({
+        signalType: 'answer',
+        callId,
+        targetUserId: peerId,
+        sdp: answer.sdp,
+      })
+    } catch (err) {
+      console.error('[WebRTC] Failed to answer call:', err)
+      handleEndCall()
+    }
+  }
+
+  const handleRejectCall = () => {
+    if (gatewayRef.current && activeCallPeerIdRef.current && activeCallIdRef.current) {
+      gatewayRef.current.sendCallSignal({
+        signalType: 'reject',
+        callId: activeCallIdRef.current,
+        targetUserId: activeCallPeerIdRef.current,
+      })
+    }
+    pendingOfferRef.current = null
+    setCallState('idle')
+    setActiveCallId('')
+    setActiveCallPeerId('')
+  }
+
+  const handleEndCall = () => {
+    if (gatewayRef.current && activeCallPeerIdRef.current && activeCallIdRef.current) {
+      gatewayRef.current.sendCallSignal({
+        signalType: 'hangup',
+        callId: activeCallIdRef.current,
+        targetUserId: activeCallPeerIdRef.current,
+      })
+    }
+    webrtcRef.current?.hangup()
+    webrtcRef.current = null
+    pendingOfferRef.current = null
+    setLocalStream(null)
+    setRemoteStream(null)
+    setCallState('idle')
+    setActiveCallId('')
+    setActiveCallPeerId('')
+    setIsCallMinimized(false)
+  }
+
+  const handleToggleCallMute = () => {
+    if (webrtcRef.current) {
+      const isMuted = webrtcRef.current.toggleAudio()
+      setIsCallMuted(isMuted)
+    }
+  }
+
+  const handleToggleCallVideo = () => {
+    if (webrtcRef.current) {
+      const isOff = webrtcRef.current.toggleVideo()
+      setIsCallVideoDisabled(isOff)
     }
   }
 
@@ -763,6 +975,31 @@ export default function ChatPage() {
           </div>
 
           <div className="flex items-center space-x-4">
+            {/* Direct Call Controls (Voice & Video) */}
+            {activeConversation?.isDirect && (
+              <div className="flex items-center space-x-2 border-r border-slate-800 pr-4">
+                <button
+                  onClick={() => handleStartCall('audio')}
+                  disabled={callState !== 'idle'}
+                  className="flex items-center space-x-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 border border-slate-800 hover:bg-emerald-600/20 hover:text-emerald-400 hover:border-emerald-500/30 transition disabled:opacity-40 disabled:cursor-not-allowed shadow-xs"
+                  title="Start Voice Call"
+                >
+                  <Phone className="h-3.5 w-3.5 text-emerald-400" />
+                  <span className="hidden sm:inline">Voice</span>
+                </button>
+
+                <button
+                  onClick={() => handleStartCall('video')}
+                  disabled={callState !== 'idle'}
+                  className="flex items-center space-x-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 border border-slate-800 hover:bg-indigo-600/20 hover:text-indigo-400 hover:border-indigo-500/30 transition disabled:opacity-40 disabled:cursor-not-allowed shadow-xs"
+                  title="Start Video Call"
+                >
+                  <Video className="h-3.5 w-3.5 text-indigo-400" />
+                  <span className="hidden sm:inline">Video</span>
+                </button>
+              </div>
+            )}
+
             {/* Live Gateway Connection Indicator */}
             <div className="flex items-center space-x-1.5 text-xs">
               <span
@@ -1177,6 +1414,26 @@ export default function ChatPage() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* WebRTC Video / Voice Calling Modal & Minimized Widget */}
+      {callState !== 'idle' && (
+        <CallModal
+          callState={callState}
+          callType={callType}
+          peerId={activeCallPeerId}
+          localStream={localStream}
+          remoteStream={remoteStream}
+          isMuted={isCallMuted}
+          isVideoDisabled={isCallVideoDisabled}
+          isMinimized={isCallMinimized}
+          onAccept={handleAcceptCall}
+          onReject={handleRejectCall}
+          onHangup={handleEndCall}
+          onToggleMute={handleToggleCallMute}
+          onToggleVideo={handleToggleCallVideo}
+          onToggleMinimize={() => setIsCallMinimized((prev) => !prev)}
+        />
       )}
     </div>
   )
