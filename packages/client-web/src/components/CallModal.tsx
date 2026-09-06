@@ -298,6 +298,11 @@ export const CallModal: React.FC<CallModalProps> = ({
           </div>
 
           <div className="flex items-center space-x-2">
+            <div className="hidden sm:flex items-center space-x-1.5 rounded-full bg-slate-800/80 px-2.5 py-1 text-xs text-slate-300 border border-slate-700/50">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span>P2P / TURN Relay</span>
+            </div>
+
             <div className="hidden md:flex items-center space-x-1.5 rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-indigo-300 border border-indigo-500/20">
               <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
               <span>Opus HD Voice • In-Band FEC</span>

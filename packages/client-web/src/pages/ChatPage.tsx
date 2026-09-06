@@ -739,6 +739,32 @@ export default function ChatPage() {
     setIsCallMinimized(false)
   }
 
+  // --- 45-Second Ring Timeout: cancels unanswered outgoing calls or auto-dismisses incoming calls ---
+  useEffect(() => {
+    if (callState === 'outgoing') {
+      const timeout = setTimeout(() => {
+        const peer = activeCallPeerIdRef.current
+        console.info(`[WebRTC] Outgoing call to @${peer} timed out after 45s (no answer)`)
+        handleEndCall()
+        alert(`No answer from @${peer}`)
+      }, 45000)
+      return () => clearTimeout(timeout)
+    }
+
+    if (callState === 'incoming') {
+      const timeout = setTimeout(() => {
+        const peer = activeCallPeerIdRef.current
+        console.info(`[WebRTC] Incoming call from @${peer} timed out after 45s`)
+        pendingOfferRef.current = null
+        pendingIceCandidatesRef.current = []
+        setCallState('idle')
+        setActiveCallId('')
+        setActiveCallPeerId('')
+      }, 45000)
+      return () => clearTimeout(timeout)
+    }
+  }, [callState])
+
   const handleToggleCallMute = () => {
     if (webrtcRef.current) {
       const isMuted = webrtcRef.current.toggleAudio()

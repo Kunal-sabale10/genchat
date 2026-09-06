@@ -16,14 +16,44 @@ export interface WebRtcCallbacks {
   onIceCandidate?: (candidate: RTCIceCandidate) => void
   onConnectionStateChange?: (state: RTCPeerConnectionState) => void
   onError?: (err: Error) => void
+  iceServers?: RTCIceServer[]
+  allowSyntheticFallback?: boolean
 }
 
-const DEFAULT_ICE_SERVERS: RTCConfiguration = {
+export const DEFAULT_ICE_SERVERS: RTCConfiguration = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
+    // Local / coturn TURN relay for symmetric NAT & enterprise firewall traversal
+    {
+      urls: [
+        'turn:localhost:3478?transport=udp',
+        'turn:localhost:3478?transport=tcp',
+      ],
+      username: 'genchat',
+      credential: 'dev_turn_password',
+    },
   ],
+  iceCandidatePoolSize: 2,
+}
+
+export function getIceConfiguration(customServers?: RTCIceServer[]): RTCConfiguration {
+  if (customServers && customServers.length > 0) {
+    return { iceServers: customServers, iceCandidatePoolSize: 2 }
+  }
+
+  const envServers = (import.meta as any).env?.VITE_ICE_SERVERS
+  if (envServers) {
+    try {
+      const parsed = typeof envServers === 'string' ? JSON.parse(envServers) : envServers
+      return { iceServers: parsed, iceCandidatePoolSize: 2 }
+    } catch {
+      console.warn('[WebRTC] Could not parse VITE_ICE_SERVERS, using default STUN/TURN configuration')
+    }
+  }
+
+  return DEFAULT_ICE_SERVERS
 }
 
 function createFallbackVideoTrack(label: string): MediaStreamTrack {
@@ -213,20 +243,31 @@ export class WebRtcManager {
         const audioStream = await navigator.mediaDevices.getUserMedia({
           audio: HIGH_QUALITY_AUDIO_CONSTRAINTS,
         })
-        audioTrack = audioStream.getAudioTracks()[0] || null
       } catch (audioErr) {
-        console.warn('[WebRTC] Microphone unavailable, using silent audio fallback:', audioErr)
-        try {
-          audioTrack = createSilentAudioTrack()
-        } catch {
-          // WebAudio unavailable
+        const isDev = Boolean((import.meta as any).env?.DEV)
+        const allowFallback = this.callbacks.allowSyntheticFallback ?? isDev
+        if (allowFallback) {
+          console.warn('[WebRTC] Microphone unavailable, using silent audio fallback (dev mode):', audioErr)
+          try {
+            audioTrack = createSilentAudioTrack()
+          } catch {
+            // WebAudio unavailable
+          }
+        } else {
+          throw new Error('Microphone access failed: device unavailable or permission denied.')
         }
       }
 
-      // If call is video and videoTrack is still null, generate synthetic video stream
+      // If call is video and videoTrack is still null, check if synthetic fallback is allowed
+      const isDev = Boolean((import.meta as any).env?.DEV)
+      const allowFallback = this.callbacks.allowSyntheticFallback ?? isDev
       if (callType === 'video' && !videoTrack) {
-        console.info('[WebRTC] Generating synthetic camera feed (camera busy or unavailable)')
-        videoTrack = createFallbackVideoTrack('Camera Busy / Shared PC Test')
+        if (allowFallback) {
+          console.info('[WebRTC] Generating synthetic camera feed (dev mode: webcam busy or unavailable)')
+          videoTrack = createFallbackVideoTrack('Camera Busy / Shared PC Test')
+        } else {
+          throw new Error('Camera access failed: device unavailable or permission denied.')
+        }
       }
     }
 
@@ -253,7 +294,8 @@ export class WebRtcManager {
       return this.pc
     }
 
-    this.pc = new RTCPeerConnection(DEFAULT_ICE_SERVERS)
+    const iceConfig = getIceConfiguration(this.callbacks.iceServers)
+    this.pc = new RTCPeerConnection(iceConfig)
     this.remoteStream = new MediaStream()
     this.callbacks.onRemoteStream?.(this.remoteStream)
 

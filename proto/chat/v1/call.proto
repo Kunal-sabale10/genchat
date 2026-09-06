@@ -4,6 +4,25 @@ package chat.v1;
 
 option go_package = "github.com/genchat/proto/gen/chat/v1;chatv1";
 
+// ============================================================================
+// ARCHITECTURE NOTE: WebRTC Calling & SFrame Status
+// ============================================================================
+// 1. Peer-to-Peer 1:1 Calling:
+//    Currently implemented and operating in production via the Gateway's
+//    low-latency WebSocket JSON signaling relay (`action: "call_signal"`,
+//    supporting `offer`, `answer`, `ice_candidate`, `hangup`, `reject`, and
+//    `peer_offline`). Media is encrypted end-to-end via WebRTC's standard
+//    DTLS-SRTP stack, with STUN/TURN relay for symmetric NAT traversal.
+//
+// 2. CallService & SFrame (Selective Forwarding Unit / SFU Roadmap):
+//    The gRPC CallService and SFrame public key fields defined below represent
+//    the service contract for future multi-party group calling via an SFU/MCU
+//    media router. When an SFU is introduced to route packets among N > 2
+//    participants, client-crypto's SFrame X25519 frame-level encryption will
+//    be hooked up via WebRTC Insertable Streams so the SFU cannot inspect
+//    raw media payloads.
+// ============================================================================
+
 import "google/protobuf/timestamp.proto";
 
 enum CallType {

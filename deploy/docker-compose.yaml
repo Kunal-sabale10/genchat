@@ -183,6 +183,23 @@ services:
       minio-init:
         condition: service_completed_successfully
 
+  coturn:
+    image: coturn/coturn:latest
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      - "49152-49160:49152-49160/udp"
+    command:
+      - -n
+      - --log-file=stdout
+      - --lt-cred-mech
+      - --fingerprint
+      - --realm=genchat.local
+      - --user=genchat:dev_turn_password
+      - --min-port=49152
+      - --max-port=49160
+    restart: unless-stopped
+
 volumes:
   pgdata:
   scylladata:
