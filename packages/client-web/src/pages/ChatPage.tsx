@@ -6,6 +6,10 @@ import { MediaCryptoService } from '@/lib/media-crypto'
 import { E2eeService } from '@/lib/e2ee-ratchet'
 import { localDb, StoredMessage, StoredConversation, SearchSnippetResult } from '@/lib/local-storage-db'
 import { CallModal } from '@/components/CallModal'
+import { CameraModal } from '@/components/CameraModal'
+import { ImageViewerModal } from '@/components/ImageViewerModal'
+import { FileAttachmentCard } from '@/components/FileAttachmentCard'
+import { AttachmentStaging } from '@/components/AttachmentStaging'
 import { WebRtcManager } from '@/lib/webrtc-manager'
 import { 
   ShieldCheck, 
@@ -28,7 +32,10 @@ import {
   Key,
   Radio,
   Phone,
-  Video
+  Video,
+  Camera,
+  FolderOpen,
+  Maximize2
 } from 'lucide-react'
 
 interface MessageItem {
@@ -103,9 +110,19 @@ export default function ChatPage() {
   const activeCallIdRef = useRef<string>('')
   useEffect(() => { activeCallIdRef.current = activeCallId }, [activeCallId])
 
+  // Media Attachment & Camera states
+  const [stagedFile, setStagedFile] = useState<File | null>(null)
+  const [showCameraModal, setShowCameraModal] = useState(false)
+  const [showAttachmentMenu, setShowAttachmentMenu] = useState(false)
+  const [viewerImage, setViewerImage] = useState<{ url: string; fileName?: string; fileSize?: number } | null>(null)
+  const [isDraggingFile, setIsDraggingFile] = useState(false)
+
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const photoInputRef = useRef<HTMLInputElement>(null)
+  const docInputRef = useRef<HTMLInputElement>(null)
+  const attachmentMenuRef = useRef<HTMLDivElement>(null)
   const gatewayRef = useRef<GatewayClient | null>(null)
-  const mediaClientRef = useRef<MediaClient>(new MediaClient('http://localhost:8082'))
+  const mediaClientRef = useRef<MediaClient>(new MediaClient('/media'))
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastTypingSentRef = useRef<number>(0)
@@ -114,6 +131,36 @@ export default function ChatPage() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, activeChannelId, peerTypingUser])
+
+  // Clipboard Paste Listener (Ctrl+V for images / screenshots)
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      if (e.clipboardData && e.clipboardData.files && e.clipboardData.files.length > 0) {
+        const file = e.clipboardData.files[0]
+        setStagedFile(file)
+      }
+    }
+
+    window.addEventListener('paste', handlePaste)
+    return () => window.removeEventListener('paste', handlePaste)
+  }, [])
+
+  // Close attachment dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        attachmentMenuRef.current &&
+        !attachmentMenuRef.current.contains(e.target as Node)
+      ) {
+        setShowAttachmentMenu(false)
+      }
+    }
+
+    if (showAttachmentMenu) {
+      document.addEventListener('mousedown', handleClickOutside)
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showAttachmentMenu])
 
   // Keep a ref for current userId and activeChannelId so the subscribe closure always has the latest
   const userIdRef = useRef(user?.userId)
@@ -337,16 +384,24 @@ export default function ChatPage() {
             try {
               const parsed = JSON.parse(displayText)
               if (parsed.downloadUrl && parsed.encryptionKeyHex && parsed.ivHex) {
-                const res = await fetch(parsed.downloadUrl)
-                const cipherBuffer = await res.arrayBuffer()
-                const decryptedUrl = await MediaCryptoService.decryptFile(
-                  cipherBuffer,
-                  parsed.encryptionKeyHex,
-                  parsed.ivHex,
-                  parsed.mimeType
-                )
+                let decryptedUrl: string | undefined = undefined
+                try {
+                  const res = await fetch(parsed.downloadUrl)
+                  if (res.ok) {
+                    const cipherBuffer = await res.arrayBuffer()
+                    decryptedUrl = await MediaCryptoService.decryptFile(
+                      cipherBuffer,
+                      parsed.encryptionKeyHex,
+                      parsed.ivHex,
+                      parsed.mimeType
+                    )
+                  }
+                } catch (fetchErr) {
+                  console.warn('[Media] Direct download failed, will renew on demand:', fetchErr)
+                }
+
                 attachment = { ...parsed, decryptedUrl }
-                displayText = undefined
+                displayText = parsed.caption || undefined
               }
             } catch {
               // Plain text
@@ -469,23 +524,82 @@ export default function ChatPage() {
     }
   }
 
-  // --- 5. Message Dispatch with E2EE Ratchet Encryption ---
-  const handleSendMessage = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!inputText.trim() || !user) return
+  // --- 5. Message Dispatch with E2EE Ratchet & Encrypted Attachments ---
+  const handleSendMessage = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault()
+    if ((!inputText.trim() && !stagedFile) || !user) return
 
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
     gatewayRef.current?.sendTyping(activeChannelId, false)
     lastTypingSentRef.current = 0
 
+    const textToSend = inputText.trim()
     const clientMsgId = `cli_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
-    const rawText = inputText.trim()
+
+    // --- Case A: Sending an Encrypted Attachment (Photo, Video, Document) ---
+    if (stagedFile) {
+      setIsUploading(true)
+      const file = stagedFile
+      const caption = textToSend || undefined
+
+      try {
+        const attachment = await mediaClientRef.current.uploadEncryptedAttachment(file, caption)
+        const localPreviewUrl = URL.createObjectURL(file)
+
+        const optimisticMsg: MessageItem = {
+          id: clientMsgId,
+          clientMsgId,
+          channelId: activeChannelId,
+          senderId: user.userId,
+          text: caption,
+          attachment: { ...attachment, decryptedUrl: localPreviewUrl },
+          status: 'pending',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          isEncrypted: true,
+        }
+
+        setMessages((prev) => [...prev, optimisticMsg])
+        localDb.saveMessage({ ...optimisticMsg, createdAt: Date.now() })
+
+        // Clear staging & input
+        setStagedFile(null)
+        setInputText('')
+
+        // Encrypt attachment metadata envelope
+        const metaJson = JSON.stringify(attachment)
+        const encryptedMeta = await E2eeService.encrypt(metaJson, activeChannelId, user.userId)
+
+        if (gatewayRef.current) {
+          await gatewayRef.current.sendEnvelope({
+            type: 'message',
+            channelId: activeChannelId,
+            senderId: user.userId,
+            clientMsgId,
+            ciphertext: encryptedMeta,
+          })
+
+          setMessages((prev) =>
+            prev.map((m) => (m.clientMsgId === clientMsgId ? { ...m, status: 'sent' } : m))
+          )
+          localDb.updateMessageStatus(clientMsgId, 'sent')
+        }
+      } catch (err) {
+        console.error('[Media] Upload failed:', err)
+      } finally {
+        setIsUploading(false)
+        if (fileInputRef.current) fileInputRef.current.value = ''
+        if (photoInputRef.current) photoInputRef.current.value = ''
+        if (docInputRef.current) docInputRef.current.value = ''
+      }
+      return
+    }
+
+    // --- Case B: Normal Plaintext / Ratchet Encrypted Text Message ---
     setInputText('')
 
-    // 1. Encrypt message payload using client-side E2EE ratchet before transmission
-    let wireCiphertext = rawText
+    let wireCiphertext = textToSend
     try {
-      wireCiphertext = await E2eeService.encrypt(rawText, activeChannelId, user.userId)
+      wireCiphertext = await E2eeService.encrypt(textToSend, activeChannelId, user.userId)
     } catch (err) {
       console.warn('[E2EE] Ratchet encryption fallback:', err)
     }
@@ -495,7 +609,7 @@ export default function ChatPage() {
       clientMsgId,
       channelId: activeChannelId,
       senderId: user.userId,
-      text: rawText,
+      text: textToSend,
       status: 'pending',
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       isEncrypted: true,
@@ -530,55 +644,43 @@ export default function ChatPage() {
     }
   }
 
-  // --- 6. Media File Attachment Upload ---
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // --- 6. Media Attachment Handlers (Photo, Document, Camera, Drag & Drop) ---
+  const handleSelectFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (!file || !user) return
+    if (file) {
+      setStagedFile(file)
+      setShowAttachmentMenu(false)
+    }
+    e.target.value = ''
+  }
 
-    setIsUploading(true)
-    const clientMsgId = `media_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+  const handleCameraCapture = (file: File) => {
+    setStagedFile(file)
+    setShowCameraModal(false)
+    setShowAttachmentMenu(false)
+  }
 
-    try {
-      const attachment = await mediaClientRef.current.uploadEncryptedAttachment(file)
-      const localPreviewUrl = URL.createObjectURL(file)
+  // Drag and Drop handlers for chat pane
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDraggingFile(true)
+  }
 
-      const optimisticMsg: MessageItem = {
-        id: clientMsgId,
-        clientMsgId,
-        channelId: activeChannelId,
-        senderId: user.userId,
-        attachment: { ...attachment, decryptedUrl: localPreviewUrl },
-        status: 'pending',
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        isEncrypted: true,
-      }
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDraggingFile(false)
+  }
 
-      setMessages((prev) => [...prev, optimisticMsg])
-      localDb.saveMessage({ ...optimisticMsg, createdAt: Date.now() })
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDraggingFile(false)
 
-      // Encrypt attachment metadata envelope
-      const metaJson = JSON.stringify(attachment)
-      const encryptedMeta = await E2eeService.encrypt(metaJson, activeChannelId, user.userId)
-
-      if (gatewayRef.current) {
-        await gatewayRef.current.sendEnvelope({
-          type: 'message',
-          channelId: activeChannelId,
-          senderId: user.userId,
-          clientMsgId,
-          ciphertext: encryptedMeta,
-        })
-
-        setMessages((prev) =>
-          prev.map((m) => (m.clientMsgId === clientMsgId ? { ...m, status: 'sent' } : m))
-        )
-        localDb.updateMessageStatus(clientMsgId, 'sent')
-      }
-    } catch (err) {
-      console.error('[Media] Upload failed:', err)
-    } finally {
-      setIsUploading(false)
-      if (fileInputRef.current) fileInputRef.current.value = ''
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const file = e.dataTransfer.files[0]
+      setStagedFile(file)
     }
   }
 
@@ -1099,7 +1201,23 @@ export default function ChatPage() {
         )}
 
         {/* Message Stream */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+        <div
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className="relative flex-1 overflow-y-auto p-6 space-y-4"
+        >
+          {/* Drag and drop overlay */}
+          {isDraggingFile && (
+            <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-indigo-950/85 backdrop-blur-sm border-2 border-dashed border-indigo-400 rounded-2xl m-3 pointer-events-none animate-in fade-in">
+              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-500/20 text-indigo-300 mb-3 shadow-xl">
+                <Paperclip className="h-8 w-8 animate-bounce" />
+              </div>
+              <h3 className="text-base font-semibold text-white">Drop file to attach</h3>
+              <p className="text-xs text-indigo-200 mt-1">End-to-End Encrypted before upload to MinIO</p>
+            </div>
+          )}
+
           {currentMessages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-slate-500 space-y-2">
               <Lock className="h-8 w-8 text-slate-600" />
@@ -1138,23 +1256,53 @@ export default function ChatPage() {
 
                     {m.attachment && (
                       <div className="space-y-2">
-                        {m.attachment.mimeType.startsWith('image/') && m.attachment.decryptedUrl ? (
-                          <img
-                            src={m.attachment.decryptedUrl}
-                            alt="Encrypted attachment"
-                            className="max-h-60 rounded-lg object-cover shadow border border-white/10"
-                          />
+                        {m.attachment.mimeType.startsWith('image/') ? (
+                          m.attachment.decryptedUrl ? (
+                            <div
+                              onClick={() =>
+                                setViewerImage({
+                                  url: m.attachment!.decryptedUrl!,
+                                  fileName: m.attachment!.fileName,
+                                  fileSize: m.attachment!.originalSize,
+                                })
+                              }
+                              className="group relative cursor-pointer overflow-hidden rounded-xl border border-white/10 shadow hover:opacity-95 transition mt-1"
+                            >
+                              <img
+                                src={m.attachment.decryptedUrl}
+                                alt={m.attachment.fileName || 'Encrypted attachment'}
+                                className="max-h-64 w-auto rounded-xl object-cover"
+                              />
+                              <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <span className="flex items-center space-x-1 rounded-lg bg-black/60 px-2.5 py-1 text-xs text-white backdrop-blur-xs">
+                                  <Maximize2 className="h-3.5 w-3.5" />
+                                  <span>View Fullscreen</span>
+                                </span>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex items-center space-x-2 p-3 bg-black/20 rounded-xl mt-1">
+                              <Loader2 className="h-4 w-4 animate-spin text-indigo-400" />
+                              <span className="text-xs text-slate-300">Decrypting photo...</span>
+                            </div>
+                          )
                         ) : (
-                          <div className="flex items-center space-x-2 p-2 bg-black/20 rounded-lg">
-                            <ImageIcon className="h-5 w-5" />
-                            <span className="text-xs truncate">{m.attachment.blobId}</span>
+                          <div className="mt-1">
+                            <FileAttachmentCard
+                              attachment={m.attachment}
+                              isMe={isMe}
+                              onRenewDownloadUrl={(blobId) => mediaClientRef.current.getDownloadUrl(blobId)}
+                            />
                           </div>
                         )}
+
                         <div className="flex items-center justify-between text-[10px] opacity-75">
-                          <span>{(m.attachment.originalSize / 1024).toFixed(1)} KB</span>
+                          <span className="truncate max-w-[180px]">
+                            {m.attachment.fileName || m.attachment.blobId}
+                          </span>
                           <span className="flex items-center space-x-1">
                             <Lock className="h-2.5 w-2.5" />
-                            <span>AES-256-GCM</span>
+                            <span>{(m.attachment.originalSize / 1024).toFixed(1)} KB</span>
                           </span>
                         </div>
                       </div>
@@ -1211,31 +1359,101 @@ export default function ChatPage() {
 
         {/* Input Bar */}
         <div className="p-4 border-t border-slate-800 bg-slate-900/30">
+          {/* Attachment Staging Preview */}
+          <AttachmentStaging
+            file={stagedFile}
+            isUploading={isUploading}
+            onRemove={() => setStagedFile(null)}
+          />
+
           <form onSubmit={handleSendMessage} className="flex items-center space-x-2">
+            {/* Hidden File Inputs */}
             <input
               type="file"
-              ref={fileInputRef}
-              onChange={handleFileUpload}
+              ref={photoInputRef}
+              onChange={handleSelectFile}
               className="hidden"
-              accept="image/*"
+              accept="image/*,video/*"
+            />
+            <input
+              type="file"
+              ref={docInputRef}
+              onChange={handleSelectFile}
+              className="hidden"
+              accept="*/*"
             />
 
-            <button
-              type="button"
-              disabled={isUploading}
-              onClick={() => fileInputRef.current?.click()}
-              className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-800 bg-slate-900 text-slate-400 hover:text-indigo-400 hover:border-slate-700 disabled:opacity-50 transition shrink-0"
-              title="Upload encrypted media"
-            >
-              {isUploading ? <Loader2 className="h-5 w-5 animate-spin text-indigo-400" /> : <Paperclip className="h-5 w-5" />}
-            </button>
+            {/* Attachment Plus Button & Menu */}
+            <div className="relative" ref={attachmentMenuRef}>
+              <button
+                type="button"
+                disabled={isUploading}
+                onClick={() => setShowAttachmentMenu((prev) => !prev)}
+                className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-800 bg-slate-900 text-slate-400 hover:text-indigo-400 hover:border-slate-700 disabled:opacity-50 transition shrink-0"
+                title="Attach photo, camera snapshot, or document"
+              >
+                {isUploading ? (
+                  <Loader2 className="h-5 w-5 animate-spin text-indigo-400" />
+                ) : (
+                  <Plus className="h-5 w-5" />
+                )}
+              </button>
+
+              {showAttachmentMenu && (
+                <div className="absolute bottom-14 left-0 z-40 w-52 rounded-2xl border border-slate-800 bg-slate-900/95 p-1.5 shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-2 duration-150">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowAttachmentMenu(false)
+                      setShowCameraModal(true)
+                    }}
+                    className="flex items-center space-x-2.5 w-full rounded-xl px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800/80 hover:text-white transition"
+                  >
+                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-500/20 text-indigo-400">
+                      <Camera className="h-4 w-4" />
+                    </div>
+                    <span>Take Photo</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowAttachmentMenu(false)
+                      photoInputRef.current?.click()
+                    }}
+                    className="flex items-center space-x-2.5 w-full rounded-xl px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800/80 hover:text-white transition"
+                  >
+                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-purple-500/20 text-purple-400">
+                      <ImageIcon className="h-4 w-4" />
+                    </div>
+                    <span>Photos & Videos</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowAttachmentMenu(false)
+                      docInputRef.current?.click()
+                    }}
+                    className="flex items-center space-x-2.5 w-full rounded-xl px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800/80 hover:text-white transition"
+                  >
+                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/20 text-emerald-400">
+                      <FolderOpen className="h-4 w-4" />
+                    </div>
+                    <span>Browse Documents</span>
+                  </button>
+                </div>
+              )}
+            </div>
 
             <input
               type="text"
               value={inputText}
               onChange={handleInputChange}
               placeholder={
-                activeConversation?.isDirect
+                stagedFile
+                  ? `Add a caption for ${stagedFile.name}...`
+                  : activeConversation?.isDirect
                   ? `Message @${activeConversation.name} (E2EE encrypted)...`
                   : `Message #${activeConversation?.name || 'channel'}...`
               }
@@ -1244,8 +1462,9 @@ export default function ChatPage() {
 
             <button
               type="submit"
-              disabled={!inputText.trim()}
+              disabled={(!inputText.trim() && !stagedFile) || isUploading}
               className="flex h-11 w-11 items-center justify-center rounded-xl bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 disabled:hover:bg-indigo-600 transition shrink-0 shadow-lg shadow-indigo-600/20"
+              title="Send message (Enter)"
             >
               <Send className="h-5 w-5" />
             </button>
@@ -1482,6 +1701,22 @@ export default function ChatPage() {
           onToggleMinimize={() => setIsCallMinimized((prev) => !prev)}
         />
       )}
+
+      {/* Live Camera Snapshot Modal */}
+      <CameraModal
+        isOpen={showCameraModal}
+        onClose={() => setShowCameraModal(false)}
+        onCapture={handleCameraCapture}
+      />
+
+      {/* Full-Screen Decrypted Image Lightbox */}
+      <ImageViewerModal
+        isOpen={Boolean(viewerImage)}
+        onClose={() => setViewerImage(null)}
+        imageUrl={viewerImage?.url || ''}
+        fileName={viewerImage?.fileName}
+        fileSize={viewerImage?.fileSize}
+      />
     </div>
   )
 }

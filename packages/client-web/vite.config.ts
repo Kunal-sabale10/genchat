@@ -21,6 +21,14 @@ export default defineConfig({
         ws: true,
         changeOrigin: true,
       },
+      '/media': {
+        target: 'http://localhost:8082',
+        changeOrigin: true,
+      },
+      '/v1/media': {
+        target: 'http://localhost:8082',
+        changeOrigin: true,
+      },
       '/presign': {
         target: 'http://localhost:8082',
         changeOrigin: true,

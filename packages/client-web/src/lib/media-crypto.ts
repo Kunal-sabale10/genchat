@@ -76,4 +76,37 @@ export class MediaCryptoService {
     const blob = new Blob([decryptedBuffer], { type: mimeType });
     return URL.createObjectURL(blob);
   }
+
+  /**
+   * Decrypts an encrypted blob fetched from MinIO and returns a raw Blob (useful for downloads)
+   */
+  public static async decryptToBlob(
+    ciphertextBuffer: ArrayBuffer,
+    keyHex: string,
+    ivHex: string,
+    mimeType: string
+  ): Promise<Blob> {
+    const keyBytes = new Uint8Array(
+      keyHex.match(/.{1,2}/g)!.map((byte) => parseInt(byte, 16))
+    );
+    const ivBytes = new Uint8Array(
+      ivHex.match(/.{1,2}/g)!.map((byte) => parseInt(byte, 16))
+    );
+
+    const key = await window.crypto.subtle.importKey(
+      'raw',
+      keyBytes,
+      { name: 'AES-GCM' },
+      false,
+      ['decrypt']
+    );
+
+    const decryptedBuffer = await window.crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: ivBytes },
+      key,
+      ciphertextBuffer
+    );
+
+    return new Blob([decryptedBuffer], { type: mimeType });
+  }
 }
