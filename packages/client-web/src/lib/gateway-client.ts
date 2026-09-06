@@ -138,6 +138,12 @@ export class GatewayClient {
           return
         }
 
+        // 4. Handle server errors
+        if (raw.type === 'error') {
+          console.warn('[Gateway] Server error frame:', raw.code, raw.message)
+          return
+        }
+
         // 4. Handle history response
         if (raw.type === 'history' && Array.isArray(raw.messages)) {
           console.log(`[Gateway] Received history for ${raw.channel_id}: ${raw.messages.length} messages`)

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -53,7 +54,20 @@ func main() {
 
 	jwtSecret := getEnv("JWT_SECRET", "dev-secret-change-in-production")
 
-	limiter := ratelimit.NewLimiter(60, 5) // 60/min, burst 5
+	// Sane production/dev rate limit: 1200/min (20/sec), burst 100 to easily accommodate typing events and message bursts
+	ratePerMin := 1200
+	burst := 100
+	if val := os.Getenv("WS_RATE_PER_MINUTE"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil {
+			ratePerMin = n
+		}
+	}
+	if val := os.Getenv("WS_RATE_BURST"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil {
+			burst = n
+		}
+	}
+	limiter := ratelimit.NewLimiter(ratePerMin, burst)
 	router := relay.NewRouter(hub, ledger)
 	wsHandler := ws.NewHandler(hub, router.Handle, limiter, jwtSecret)
 

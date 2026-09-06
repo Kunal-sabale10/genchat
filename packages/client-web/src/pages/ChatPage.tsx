@@ -85,6 +85,7 @@ export default function ChatPage() {
   const mediaClientRef = useRef<MediaClient>(new MediaClient('http://localhost:8082'))
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastTypingSentRef = useRef<number>(0)
 
   // Auto-scroll to bottom of message list
   useEffect(() => {
@@ -387,16 +388,21 @@ export default function ChatPage() {
     return false
   })
 
-  // --- 4. Typing Signal Emitter (Debounced 1.5s) ---
+  // --- 4. Typing Signal Emitter (Throttled 2s + Debounced 1.5s stop) ---
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setInputText(e.target.value)
 
     if (gatewayRef.current && activeChannelId) {
-      gatewayRef.current.sendTyping(activeChannelId, true)
+      const now = Date.now()
+      if (now - lastTypingSentRef.current > 2000) {
+        lastTypingSentRef.current = now
+        gatewayRef.current.sendTyping(activeChannelId, true)
+      }
 
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
       typingTimeoutRef.current = setTimeout(() => {
         gatewayRef.current?.sendTyping(activeChannelId, false)
+        lastTypingSentRef.current = 0
       }, 1500)
     }
   }
@@ -408,6 +414,7 @@ export default function ChatPage() {
 
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
     gatewayRef.current?.sendTyping(activeChannelId, false)
+    lastTypingSentRef.current = 0
 
     const clientMsgId = `cli_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
     const rawText = inputText.trim()

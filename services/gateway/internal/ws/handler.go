@@ -172,6 +172,15 @@ func (h *Handler) readPump(ctx context.Context, conn *Conn, wsConn *websocket.Co
 		// Check rate limit
 		if !h.limiter.Allow(conn.UserID) {
 			slog.Warn("rate limit exceeded", "user_id", conn.UserID)
+			errResp, _ := json.Marshal(map[string]string{
+				"type":    "error",
+				"code":    "RATE_LIMIT_EXCEEDED",
+				"message": "rate limit exceeded, please slow down",
+			})
+			select {
+			case conn.Send <- errResp:
+			default:
+			}
 			continue
 		}
 
