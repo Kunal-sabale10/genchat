@@ -27,18 +27,19 @@ export class E2eeService {
    * Isolated per conversation ID and user pairing.
    */
   public static async getConversationKey(conversationId: string, currentUserId: string): Promise<CryptoKey> {
-    const cacheKey = `${conversationId}:${currentUserId}`
-    if (this.keyCache.has(cacheKey)) {
-      return this.keyCache.get(cacheKey)!
-    }
-
     // Derive raw key material from conversation ID + deterministic pairing
-    const enc = new TextEncoder()
     let canonicalId = conversationId
     if (!conversationId.startsWith('chan_') && currentUserId) {
       const parts = conversationId.includes(':') ? conversationId.split(':') : [conversationId, currentUserId]
       canonicalId = parts.filter(Boolean).sort().join(':')
     }
+
+    const cacheKey = canonicalId
+    if (this.keyCache.has(cacheKey)) {
+      return this.keyCache.get(cacheKey)!
+    }
+
+    const enc = new TextEncoder()
     const ikm = enc.encode(`genchat_ikm_${canonicalId}`)
 
     const baseKey = await crypto.subtle.importKey(
@@ -54,7 +55,7 @@ export class E2eeService {
         name: 'HKDF',
         hash: 'SHA-256',
         salt: this.masterSalt,
-        info: enc.encode(`conversation_key_${conversationId}`),
+        info: enc.encode(`conversation_key_${canonicalId}`),
       },
       baseKey,
       { name: 'AES-GCM', length: 256 },
@@ -75,7 +76,13 @@ export class E2eeService {
     currentUserId: string,
     sequenceNum: number = 1
   ): Promise<string> {
-    const key = await this.getConversationKey(conversationId, currentUserId)
+    let canonicalId = conversationId
+    if (!conversationId.startsWith('chan_') && currentUserId) {
+      const parts = conversationId.includes(':') ? conversationId.split(':') : [conversationId, currentUserId]
+      canonicalId = parts.filter(Boolean).sort().join(':')
+    }
+
+    const key = await this.getConversationKey(canonicalId, currentUserId)
     const iv = crypto.getRandomValues(new Uint8Array(12))
     const encoded = new TextEncoder().encode(plaintext)
 
@@ -91,7 +98,7 @@ export class E2eeService {
 
     const envelope: EncryptedEnvelope = {
       protocol: 'genchat-pq-v1',
-      conversationId,
+      conversationId: canonicalId,
       sequenceNum,
       ivHex,
       ciphertextBase64,
@@ -119,7 +126,8 @@ export class E2eeService {
         return { text: rawCiphertext, isEncrypted: false }
       }
 
-      const key = await this.getConversationKey(conversationId, currentUserId)
+      const convToUse = envelope.conversationId || conversationId
+      const key = await this.getConversationKey(convToUse, currentUserId)
       const iv = new Uint8Array(envelope.ivHex.match(/.{1,2}/g)!.map((byte) => parseInt(byte, 16)))
 
       const binaryString = atob(envelope.ciphertextBase64)

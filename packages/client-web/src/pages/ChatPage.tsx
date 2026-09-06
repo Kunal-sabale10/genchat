@@ -91,9 +91,11 @@ export default function ChatPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, activeChannelId, peerTypingUser])
 
-  // Keep a ref for current userId so the subscribe closure always has the latest
+  // Keep a ref for current userId and activeChannelId so the subscribe closure always has the latest
   const userIdRef = useRef(user?.userId)
   useEffect(() => { userIdRef.current = user?.userId }, [user?.userId])
+  const activeChannelIdRef = useRef(activeChannelId)
+  useEffect(() => { activeChannelIdRef.current = activeChannelId }, [activeChannelId])
 
   // --- 1. Load cached messages and conversations from IndexedDB on startup ---
   useEffect(() => {
@@ -177,7 +179,12 @@ export default function ChatPage() {
 
     // Handle typing events from peers
     const unsubTyping = gateway.onTyping((ev) => {
-      if (ev.channelId === activeChannelId && ev.userId !== userIdRef.current) {
+      const activeId = activeChannelIdRef.current
+      if (
+        activeId &&
+        (ev.channelId === activeId || ev.channelId.toLowerCase() === activeId.toLowerCase()) &&
+        ev.userId !== userIdRef.current
+      ) {
         setPeerTypingUser(ev.isTyping ? ev.userId : null)
       }
     })
@@ -306,7 +313,12 @@ export default function ChatPage() {
         })
 
         // Automatically dispatch read receipt if this is the active channel
-        if (effectiveChannelId === activeChannelId && env.senderId && env.senderId !== myUserId) {
+        const currentActive = activeChannelIdRef.current || ''
+        const isActiveChat =
+          effectiveChannelId === currentActive ||
+          effectiveChannelId.toLowerCase() === currentActive.toLowerCase()
+
+        if (isActiveChat && env.senderId && env.senderId !== myUserId) {
           gateway.sendReadReceipt(effectiveChannelId, msgId, env.sequenceNum || 0)
         } else if (env.senderId && env.senderId !== myUserId) {
           // Message received for a background channel/DM: notify user and bump unread count
@@ -359,13 +371,18 @@ export default function ChatPage() {
 
   const activeConversation = conversations.find((c) => c.id === activeChannelId)
   
-  // Robust message filter: matches exact channelId OR peer user in 1:1 DMs
+  // Robust message filter: matches exact channelId OR peer user in 1:1 DMs (case-insensitive)
   const currentMessages = messages.filter((m) => {
-    if (m.channelId === activeChannelId) return true
-    const myId = userIdRef.current || user?.userId
-    if (activeConversation?.isDirect) {
-      if (m.senderId === activeChannelId && (m.channelId === myId || m.channelId === 'peer')) return true
-      if (m.senderId === myId && m.channelId === activeChannelId) return true
+    const activeId = (activeChannelId || '').toLowerCase()
+    const msgChan = (m.channelId || '').toLowerCase()
+    if (msgChan === activeId) return true
+
+    const myId = (userIdRef.current || user?.userId || '').toLowerCase()
+    const isDirectConv = activeConversation?.isDirect || !activeChannelId.startsWith('chan_')
+    if (isDirectConv) {
+      const sender = (m.senderId || '').toLowerCase()
+      if (sender === activeId && (msgChan === myId || msgChan === 'peer')) return true
+      if (sender === myId && msgChan === activeId) return true
     }
     return false
   })
