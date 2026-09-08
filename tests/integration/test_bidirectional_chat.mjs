@@ -79,6 +79,9 @@ let step1_bobReceived = false;
 let step2_bobHistoryReceived = false;
 let step3_aliceReceived = false;
 let step4_aliceHistoryReceived = false;
+let step5_retryDedupVerified = false;
+let aliceMsg1Ack = null;
+let bobPushCount = 0;
 
 function finish(success, msg) {
   clearTimeout(timer);
@@ -89,7 +92,7 @@ function finish(success, msg) {
 }
 
 const timer = setTimeout(() => {
-  finish(false, `Timeout! step1=${step1_bobReceived}, step2=${step2_bobHistoryReceived}, step3=${step3_aliceReceived}, step4=${step4_aliceHistoryReceived}`);
+  finish(false, `Timeout! step1=${step1_bobReceived}, step2=${step2_bobHistoryReceived}, step3=${step3_aliceReceived}, step4=${step4_aliceHistoryReceived}, step5=${step5_retryDedupVerified}`);
 }, 15000);
 
 let openCount = 0;
@@ -124,6 +127,10 @@ wsB.onmessage = async (event) => {
 
   // Bob receives push from Alice
   if (frame.type === 'push' && frame.channel_id === bobId && frame.sender_id === aliceId) {
+    bobPushCount++;
+    if (bobPushCount > 1 && !step5_retryDedupVerified) {
+      console.warn('  ⚠️ [Bob] Received duplicate push frame for retried message!');
+    }
     const rawEnvelope = Buffer.from(frame.ciphertext_base64, 'base64').toString();
     const decrypted = await decryptPayload(rawEnvelope, bobId, aliceId);
     step1_bobReceived = true;
@@ -167,6 +174,27 @@ wsA.onmessage = async (event) => {
   const text = typeof event.data === 'string' ? event.data : await event.data.text();
   const frame = JSON.parse(text);
 
+  // Alice receives ACK
+  if (frame.type === 'ack' && frame.client_msg_id === 'alice_msg_01') {
+    if (!aliceMsg1Ack) {
+      aliceMsg1Ack = frame;
+      console.log(`  → [Alice] Received initial ACK: server_id=${frame.message_id}, seq=${frame.sequence_num} ✓`);
+    } else {
+      // Step 5: Duplicate ACK check
+      console.log(`  → [Alice] Received retry ACK: server_id=${frame.message_id}, seq=${frame.sequence_num}`);
+      if (frame.message_id === aliceMsg1Ack.message_id && frame.sequence_num === aliceMsg1Ack.sequence_num && frame.message_id) {
+        step5_retryDedupVerified = true;
+        console.log('  → [Alice] Verified retried message dedup returns identical non-empty metadata ✓');
+        if (step1_bobReceived && step2_bobHistoryReceived && step3_aliceReceived && step4_aliceHistoryReceived) {
+          clearTimeout(timer);
+          finish(true, 'Bi-directional E2EE messaging, ScyllaDB history, and Dedup metadata preservation verified 100%!');
+        }
+      } else {
+        finish(false, `Dedup metadata mismatch or missing: expected (${aliceMsg1Ack.message_id}, ${aliceMsg1Ack.sequence_num}), got (${frame.message_id}, ${frame.sequence_num})`);
+      }
+    }
+  }
+
   // Alice receives reply from Bob
   if (frame.type === 'push' && frame.channel_id === aliceId && frame.sender_id === bobId) {
     const rawEnvelope = Buffer.from(frame.ciphertext_base64, 'base64').toString();
@@ -191,10 +219,20 @@ wsA.onmessage = async (event) => {
     step4_aliceHistoryReceived = true;
     console.log(`  → [Alice] Received history for Bob: ${frame.messages?.length} message(s) stored in ScyllaDB ✓`);
 
-    if (step1_bobReceived && step2_bobHistoryReceived && step3_aliceReceived && step4_aliceHistoryReceived) {
-      clearTimeout(timer);
-      finish(true, 'Bi-directional E2EE messaging and shared ScyllaDB history both verified 100%!');
-    }
+    // Step 5: Test duplicate message retry
+    setTimeout(async () => {
+      console.log('\n--- Step 5: Alice retrying message alice_msg_01 (deduplication check) ---');
+      const text = 'Hello Bob, this is Alice!';
+      const encrypted = await encryptPayload(text, aliceId, bobId);
+
+      wsA.send(JSON.stringify({
+        action: 'send_message',
+        channel_id: bobId,
+        client_msg_id: 'alice_msg_01',
+        ciphertext_base64: Buffer.from(encrypted).toString('base64'),
+        message_type: 1
+      }));
+    }, 200);
   }
 };
 

@@ -32,7 +32,26 @@ message UnregisterPushTokenResponse {
   bool success = 1;
 }
 
+message GetPushTokensRequest {
+  string user_id = 1;
+}
+
+message PushTokenRecord {
+  string device_id = 1;
+  PushPlatform platform = 2;
+  string token = 3;
+  string endpoint = 4;
+  bytes p256dh = 5;
+  bytes auth = 6;
+}
+
+message GetPushTokensResponse {
+  repeated PushTokenRecord tokens = 1;
+}
+
 service PushService {
   rpc RegisterPushToken(RegisterPushTokenRequest) returns (RegisterPushTokenResponse);
   rpc UnregisterPushToken(UnregisterPushTokenRequest) returns (UnregisterPushTokenResponse);
+  rpc GetPushTokens(GetPushTokensRequest) returns (GetPushTokensResponse);
 }
+

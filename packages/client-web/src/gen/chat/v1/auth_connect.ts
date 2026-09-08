@@ -26,7 +26,7 @@ export interface ListUsersResponse {
   users: UserSummary[]
 }
 
-const BASE_URL = import.meta.env.DEV ? 'http://localhost:8080' : ''
+const BASE_URL = import.meta.env.VITE_AUTH_URL || ''
 
 async function grpcUnary<TReq, TRes>(service: string, method: string, request: TReq, token?: string): Promise<TRes> {
   const body = JSON.stringify(request)

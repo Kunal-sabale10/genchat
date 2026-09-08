@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 )
 
@@ -29,6 +30,12 @@ type PushToken struct {
 
 type PushNotification struct {
 	DeviceID  string    `json:"device_id"`
+	UserID    string    `json:"user_id,omitempty"`
+	Platform  Platform  `json:"platform,omitempty"`
+	Token     string    `json:"token,omitempty"`
+	Endpoint  string    `json:"endpoint,omitempty"`
+	P256dh    []byte    `json:"p256dh,omitempty"`
+	Auth      []byte    `json:"auth,omitempty"`
 	ChannelID string    `json:"channel_id"`
 	Sequence  uint64    `json:"sequence"`
 	Timestamp time.Time `json:"timestamp"`
@@ -55,9 +62,10 @@ type FCMSilentPayload struct {
 }
 
 type Dispatcher struct {
-	httpClient *http.Client
-	queue      chan PushNotification
-	workers    int
+	httpClient      *http.Client
+	queue           chan PushNotification
+	workers         int
+	dispatchedCount atomic.Uint64
 }
 
 func NewDispatcher(workers int, queueSize int) *Dispatcher {
@@ -66,6 +74,10 @@ func NewDispatcher(workers int, queueSize int) *Dispatcher {
 		queue:      make(chan PushNotification, queueSize),
 		workers:    workers,
 	}
+}
+
+func (d *Dispatcher) DispatchedTotal() uint64 {
+	return d.dispatchedCount.Load()
 }
 
 func (d *Dispatcher) Start(ctx context.Context) {
@@ -98,27 +110,46 @@ func (d *Dispatcher) worker(ctx context.Context, id int) {
 }
 
 func (d *Dispatcher) dispatch(ctx context.Context, notif PushNotification) error {
-	// Build sanitized silent payload (RFC 9420 content-available: 1)
-	apnsPayload := APNsSilentPayload{
-		APS: APNSApsData{
-			ContentAvailable: 1,
-			Priority:         5,
-		},
-		CID: notif.ChannelID,
-		Seq: notif.Sequence,
-	}
+	d.dispatchedCount.Add(1)
 
-	payloadBytes, err := json.Marshal(apnsPayload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal push payload: %w", err)
+	switch notif.Platform {
+	case PlatformAPNs:
+		payload, err := BuildAPNsPayload(notif.ChannelID, notif.Sequence)
+		if err != nil {
+			return err
+		}
+		slog.Info("dispatched APNs silent push notification",
+			"device_id", notif.DeviceID,
+			"channel_id", notif.ChannelID,
+			"seq", notif.Sequence,
+			"payload_size", len(payload),
+		)
+	case PlatformFCM:
+		payload, err := BuildFCMPayload(notif.Token, notif.ChannelID, notif.Sequence)
+		if err != nil {
+			return err
+		}
+		slog.Info("dispatched FCM silent push notification",
+			"device_id", notif.DeviceID,
+			"channel_id", notif.ChannelID,
+			"seq", notif.Sequence,
+			"payload_size", len(payload),
+		)
+	case PlatformWebPush:
+		slog.Info("dispatched WebPush silent push notification",
+			"device_id", notif.DeviceID,
+			"endpoint", notif.Endpoint,
+			"channel_id", notif.ChannelID,
+			"seq", notif.Sequence,
+		)
+	default:
+		slog.Info("dispatched silent push notification",
+			"device_id", notif.DeviceID,
+			"platform", notif.Platform,
+			"channel_id", notif.ChannelID,
+			"seq", notif.Sequence,
+		)
 	}
-
-	slog.Info("dispatched silent push notification",
-		"device_id", notif.DeviceID,
-		"channel_id", notif.ChannelID,
-		"seq", notif.Sequence,
-		"payload_size", len(payloadBytes),
-	)
 
 	return nil
 }

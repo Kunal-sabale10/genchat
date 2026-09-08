@@ -3,7 +3,7 @@ package e2e
 import (
 	"context"
 	"encoding/json"
-	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
@@ -35,24 +35,19 @@ func TestGroupMessagingAndPresenceLifecycle(t *testing.T) {
 
 	channelID := uuid.New().String()
 
-	// 1. Alice connects via WebSocket
-	aliceConn, _, err := websocket.Dial(ctx, "ws://localhost:8081/ws", &websocket.DialOptions{
-		HTTPHeader: http.Header{
-			"X-User-ID": []string{"alice-user-uuid"},
-		},
-	})
+	aliceToken := signTestJWT("alice-user-uuid", "alice-device-uuid")
+	bobToken := signTestJWT("bob-user-uuid", "bob-device-uuid")
+
+	// 1. Alice connects via WebSocket with signed JWT
+	aliceConn, _, err := websocket.Dial(ctx, "ws://localhost:8081/ws?token="+url.QueryEscape(aliceToken), nil)
 	if err != nil {
 		t.Logf("Gateway WebSocket connection: %v (gateway container not running locally)", err)
 		return
 	}
 	defer aliceConn.Close(websocket.StatusNormalClosure, "alice disconnected")
 
-	// 2. Bob connects via WebSocket
-	bobConn, _, err := websocket.Dial(ctx, "ws://localhost:8081/ws", &websocket.DialOptions{
-		HTTPHeader: http.Header{
-			"X-User-ID": []string{"bob-user-uuid"},
-		},
-	})
+	// 2. Bob connects via WebSocket with signed JWT
+	bobConn, _, err := websocket.Dial(ctx, "ws://localhost:8081/ws?token="+url.QueryEscape(bobToken), nil)
 	if err != nil {
 		t.Logf("Bob WebSocket connection: %v", err)
 		return

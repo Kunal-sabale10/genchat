@@ -225,6 +225,7 @@ type StoreMessageResponse struct {
 	unknownFields protoimpl.UnknownFields
 
 	Message *StoredMessageResponse `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	Deduplicated bool `protobuf:"varint,2,opt,name=deduplicated,proto3" json:"deduplicated,omitempty"`
 }
 
 func (x *StoreMessageResponse) Reset() {
@@ -264,6 +265,13 @@ func (x *StoreMessageResponse) GetMessage() *StoredMessageResponse {
 		return x.Message
 	}
 	return nil
+}
+
+func (x *StoreMessageResponse) GetDeduplicated() bool {
+	if x != nil {
+		return x.Deduplicated
+	}
+	return false
 }
 
 type FetchMessagesRequest struct {

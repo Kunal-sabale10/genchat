@@ -33,7 +33,7 @@ jobs:
         working-directory: crypto/genchat-crypto
         run: cargo check --verbose
 
-      - name: Test genchat-crypto
+      - name: Test genchat-crypto (including adversarial tests)
         working-directory: crypto/genchat-crypto
         run: cargo test --verbose
 
@@ -44,6 +44,12 @@ jobs:
       - name: Test genchat-crypto-ffi
         working-directory: crypto/genchat-crypto-ffi
         run: cargo test --verbose
+
+      - name: Run Rust Security Audit (cargo audit)
+        run: |
+          which cargo-audit || cargo install cargo-audit
+          (cd crypto/genchat-crypto && cargo audit)
+          (cd crypto/genchat-crypto-ffi && cargo audit)
 
   go-services:
     name: Go Backend Services
@@ -65,6 +71,11 @@ jobs:
           go vet ./services/media/...
           go vet ./services/msgledger/...
 
+      - name: Run Go Vulnerability Scanner (govulncheck)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
       - name: Build All Go Service Daemons
         run: |
           mkdir -p bin
@@ -73,12 +84,12 @@ jobs:
           go build -v -o bin/ledgerd ./services/msgledger/cmd/ledgerd
           go build -v -o bin/mediad ./services/media/cmd/mediad
 
-      - name: Run Go Unit Tests
+      - name: Run Go Unit Tests across Services
         run: |
-          go test -v ./services/auth/internal/token/...
-          go test -v ./services/gateway/internal/metrics/...
-          go test -v ./services/gateway/internal/push/...
-          go test -v ./services/msgledger/internal/sequence/...
+          go test -v ./services/auth/...
+          go test -v ./services/gateway/...
+          go test -v ./services/media/...
+          go test -v ./services/msgledger/...
 
   client-web:
     name: Web Client (TypeScript & Vite)
@@ -97,6 +108,10 @@ jobs:
       - name: Install dependencies
         working-directory: packages/client-web
         run: npm ci
+
+      - name: Security Audit (npm audit)
+        working-directory: packages/client-web
+        run: npm audit --audit-level=high
 
       - name: Typecheck TypeScript
         working-directory: packages/client-web
@@ -133,13 +148,16 @@ jobs:
       - name: Run System Security Verification
         run: node tests/integration/test_security_hardening.mjs
 
-      - name: Run Media Pipeline & MinIO S3 Verification
+      - name: Run Push Notifications Verification
+        run: node tests/integration/test_push_notifications.mjs
+
+      - name: Run Media Pipeline, MinIO S3 & SigV4 Tamper Verification
         run: node tests/integration/test_media_pipeline.mjs
 
       - name: Run WebRTC Call Signaling Verification
         run: node tests/integration/test_call_signaling.mjs
 
-      - name: Run Bi-directional Chat & ScyllaDB Persistence Verification
+      - name: Run Bi-directional Chat, Dedup & ScyllaDB Persistence Verification
         run: node tests/integration/test_bidirectional_chat.mjs
 
       - name: Collect Container Logs on Failure

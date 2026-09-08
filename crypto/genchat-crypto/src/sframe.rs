@@ -5,6 +5,7 @@ use aes_gcm::{
 use hkdf::Hkdf;
 use sha2::Sha256;
 use std::collections::HashMap;
+use zeroize::Zeroize;
 
 use crate::error::CryptoError;
 
@@ -126,5 +127,19 @@ impl SFrameTransformer {
         }
 
         Ok(plaintext)
+    }
+}
+
+impl Zeroize for SFrameTransformer {
+    fn zeroize(&mut self) {
+        self.base_secret.zeroize();
+        self.encryption_key.zeroize();
+        self.salt.zeroize();
+    }
+}
+
+impl Drop for SFrameTransformer {
+    fn drop(&mut self) {
+        self.zeroize();
     }
 }

@@ -63,7 +63,7 @@ func (s *MinIOStorage) GenerateUploadURL(ctx context.Context, contentType string
 	objectKey := fmt.Sprintf("attachments/%s/%s", time.Now().Format("2006-01-02"), uuid.New().String())
 	expiresAt := time.Now().Add(time.Duration(s.cfg.URLValidityMins) * time.Minute)
 
-	// Pre-signed S3 V4 Signature Stub
+	// Compute RFC-compliant AWS SigV4 presigned PUT URL
 	signedURL := s.signURL("PUT", objectKey, expiresAt, contentType)
 
 	return &PreSignedURLResult{

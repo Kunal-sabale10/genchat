@@ -435,3 +435,10 @@ func (s *PostgresStore) GetPushTokensForUser(ctx context.Context, userID uuid.UU
 	}
 	return tokens, nil
 }
+
+func (s *PostgresStore) UnregisterPushToken(ctx context.Context, deviceID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx,
+		`DELETE FROM device_push_tokens WHERE device_id = $1`, deviceID)
+	return err
+}
+

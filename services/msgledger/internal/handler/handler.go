@@ -57,16 +57,28 @@ func (h *LedgerHandler) StoreMessage(ctx context.Context, req *chatv1.StoreMessa
 			MessageIndex:     uint32(storedMsg.MessageIndex),
 			CreatedAt:        timestamppb.New(storedMsg.CreatedAt),
 		},
+		Deduplicated: storedMsg.Deduplicated,
 	}, nil
 }
 
 func (h *LedgerHandler) StoreMessageDirect(ctx context.Context, msg *store.Message) (*store.StoredMessage, error) {
-	exists, err := h.store.CheckDedup(ctx, msg.ConversationID, msg.ClientMsgID)
+	dedup, err := h.store.GetDedup(ctx, msg.ConversationID, msg.ClientMsgID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to check dedup: %v", err)
 	}
-	if exists {
-		return nil, status.Errorf(codes.AlreadyExists, "message already processed")
+	if dedup != nil {
+		return &store.StoredMessage{
+			ConversationID:   msg.ConversationID,
+			MessageID:        dedup.MessageID,
+			SequenceNum:      dedup.SequenceNum,
+			SenderID:         msg.SenderID,
+			ClientMsgID:      msg.ClientMsgID,
+			EncryptedPayload: msg.EncryptedPayload,
+			SenderRatchetKey: msg.SenderRatchetKey,
+			MessageIndex:     msg.MessageIndex,
+			CreatedAt:        dedup.CreatedAt,
+			Deduplicated:     true,
+		}, nil
 	}
 
 	seq, err := h.seqGen.Next(ctx, msg.ConversationID)
@@ -93,6 +105,7 @@ func (h *LedgerHandler) StoreMessageDirect(ctx context.Context, msg *store.Messa
 		SenderRatchetKey: msg.SenderRatchetKey,
 		MessageIndex:     msg.MessageIndex,
 		CreatedAt:        now,
+		Deduplicated:     false,
 	}
 
 	if err := h.store.InsertMessage(ctx, storedMsg); err != nil {
@@ -100,7 +113,7 @@ func (h *LedgerHandler) StoreMessageDirect(ctx context.Context, msg *store.Messa
 	}
 
 	gocqlMsgID, _ := gocql.ParseUUID(msgID.String())
-	if err := h.store.InsertDedup(ctx, msg.ConversationID, msg.ClientMsgID, gocqlMsgID); err != nil {
+	if err := h.store.InsertDedup(ctx, msg.ConversationID, msg.ClientMsgID, gocqlMsgID, seq); err != nil {
 		// Log error but proceed
 	}
 

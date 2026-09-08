@@ -87,12 +87,11 @@ func parseAndValidateJWT(tokenStr, secret string) (*jwtClaims, error) {
 // ServeHTTP upgrades to WebSocket
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 1. Extract auth token from query param or Authorization header.
-	// NOTE: the X-User-ID header fallback that used to exist here is gone —
-	// it let any caller declare an arbitrary identity with zero
-	// verification. It's still used by the local dev docker-compose and by
-	// tests/e2e/messaging_test.go; both need to switch to real signed JWTs
-	// (see the /dev-token issuance TODO below) for this fix to be usable
-	// end-to-end.
+	// Cryptographic JWT authentication is strictly enforced. Any unauthenticated
+	// spoofing headers (e.g. legacy X-User-ID) are completely ignored. All clients
+	// must supply a valid HMAC-SHA256 signed JWT via query param `?token=` or
+	// `Authorization: Bearer <token>`. Local dev and tests acquire signed tokens
+	// via authd's /dev-token endpoint.
 	token := r.URL.Query().Get("token")
 	if token == "" {
 		authHeader := r.Header.Get("Authorization")

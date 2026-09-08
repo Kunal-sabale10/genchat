@@ -9,7 +9,9 @@ import (
 	"strings"
 	"time"
 
+	chatv1 "github.com/genchat/proto/gen/chat/v1"
 	"github.com/genchat/services/gateway/internal/ledgerclient"
+	"github.com/genchat/services/gateway/internal/push"
 	"github.com/genchat/services/gateway/internal/ws"
 )
 
@@ -129,16 +131,20 @@ type CallSignalPushFrame struct {
 
 // Router handles message routing between connected clients.
 type Router struct {
-	hub    *ws.Hub
-	ledger *ledgerclient.Client
+	hub        *ws.Hub
+	ledger     *ledgerclient.Client
+	pushClient chatv1.PushServiceClient
+	dispatcher *push.Dispatcher
 }
 
-// NewRouter builds a Router. ledger may be nil (e.g. in unit tests that
-// don't need persistence), in which case handleSendMessage falls back to
-// in-memory relay only and logs a warning — this should never happen in a
-// real deployment, where gatewayd always dials msgledger at startup.
-func NewRouter(hub *ws.Hub, ledger *ledgerclient.Client) *Router {
-	return &Router{hub: hub, ledger: ledger}
+// NewRouter builds a Router. ledger, pushClient, or dispatcher may be nil in tests.
+func NewRouter(hub *ws.Hub, ledger *ledgerclient.Client, pushClient chatv1.PushServiceClient, dispatcher *push.Dispatcher) *Router {
+	return &Router{
+		hub:        hub,
+		ledger:     ledger,
+		pushClient: pushClient,
+		dispatcher: dispatcher,
+	}
 }
 
 // Handle satisfies ws.MessageHandler — entry point for every inbound WebSocket frame.
@@ -203,15 +209,9 @@ func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []by
 
 	serverID := stored.MessageID
 	seqNum := stored.SequenceNum
-	if stored.Deduplicated {
-		// Client retried a client_msg_id we already stored. We don't have
-		// the original message_id/seq handy from a dedup response (see
-		// grpc_adapter.go); ACK with what we have so the client stops
-		// retrying, but this is a known gap — see StoreMessage's TODO.
-		slog.Debug("duplicate client_msg_id, not re-storing", "client_msg_id", frame.ClientMsgID)
-	}
 
-	// 1. ACK the sender — only sent after successful persistence above.
+	// 1. ACK the sender — only sent after durable persistence above.
+	// On retried client_msg_id, this returns the original durable serverID and seqNum.
 	ack, _ := json.Marshal(AckFrame{
 		Type:        "ack",
 		ClientMsgID: frame.ClientMsgID,
@@ -219,6 +219,12 @@ func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []by
 		SequenceNum: seqNum,
 	})
 	r.hub.SendToUser(conn.UserID, ack)
+
+	if stored.Deduplicated {
+		slog.Debug("duplicate client_msg_id retried; ACKed with original metadata, skipping duplicate push",
+			"client_msg_id", frame.ClientMsgID, "server_id", serverID, "seq", seqNum)
+		return nil
+	}
 
 	// 2. Push to channel members
 	push, _ := json.Marshal(PushFrame{
@@ -242,6 +248,11 @@ func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []by
 			slog.Debug("self-send loopback", "user_id", conn.UserID)
 		}
 		r.hub.SendToUser(recipientUserID, push)
+
+		// If recipient is offline, dispatch silent background push notification
+		if !r.hub.IsOnline(recipientUserID) && r.dispatcher != nil {
+			go r.notifyOfflineRecipient(recipientUserID, frame.ChannelID, uint64(seqNum))
+		}
 	}
 
 	slog.Info("message routed",
@@ -250,6 +261,37 @@ func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []by
 		"server_id", serverID,
 	)
 	return nil
+}
+
+func (r *Router) notifyOfflineRecipient(recipientUserID, channelID string, seqNum uint64) {
+	if r.pushClient == nil || r.dispatcher == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := r.pushClient.GetPushTokens(ctx, &chatv1.GetPushTokensRequest{
+		UserId: recipientUserID,
+	})
+	if err != nil {
+		slog.Debug("failed to fetch push tokens for offline recipient", "recipient", recipientUserID, "error", err)
+		return
+	}
+
+	for _, token := range resp.Tokens {
+		r.dispatcher.Enqueue(push.PushNotification{
+			DeviceID:  token.DeviceId,
+			UserID:    recipientUserID,
+			Platform:  push.Platform(strings.ToLower(token.Platform.String())),
+			Token:     token.Token,
+			Endpoint:  token.Endpoint,
+			P256dh:    token.P256Dh,
+			Auth:      token.Auth,
+			ChannelID: channelID,
+			Sequence:  seqNum,
+			Timestamp: time.Now(),
+		})
+	}
 }
 
 func (r *Router) handleFetchHistory(ctx context.Context, conn *ws.Conn, data []byte) error {

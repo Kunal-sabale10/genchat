@@ -36,6 +36,7 @@ message StoredMessageResponse {
 
 message StoreMessageResponse {
   StoredMessageResponse message = 1;
+  bool deduplicated = 2;
 }
 
 message FetchMessagesRequest {

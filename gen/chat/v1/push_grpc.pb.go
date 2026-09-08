@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion7
 const (
 	PushService_RegisterPushToken_FullMethodName   = "/chat.v1.PushService/RegisterPushToken"
 	PushService_UnregisterPushToken_FullMethodName = "/chat.v1.PushService/UnregisterPushToken"
+	PushService_GetPushTokens_FullMethodName       = "/chat.v1.PushService/GetPushTokens"
 )
 
 // PushServiceClient is the client API for PushService service.
@@ -29,6 +30,7 @@ const (
 type PushServiceClient interface {
 	RegisterPushToken(ctx context.Context, in *RegisterPushTokenRequest, opts ...grpc.CallOption) (*RegisterPushTokenResponse, error)
 	UnregisterPushToken(ctx context.Context, in *UnregisterPushTokenRequest, opts ...grpc.CallOption) (*UnregisterPushTokenResponse, error)
+	GetPushTokens(ctx context.Context, in *GetPushTokensRequest, opts ...grpc.CallOption) (*GetPushTokensResponse, error)
 }
 
 type pushServiceClient struct {
@@ -57,12 +59,22 @@ func (c *pushServiceClient) UnregisterPushToken(ctx context.Context, in *Unregis
 	return out, nil
 }
 
+func (c *pushServiceClient) GetPushTokens(ctx context.Context, in *GetPushTokensRequest, opts ...grpc.CallOption) (*GetPushTokensResponse, error) {
+	out := new(GetPushTokensResponse)
+	err := c.cc.Invoke(ctx, PushService_GetPushTokens_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PushServiceServer is the server API for PushService service.
 // All implementations must embed UnimplementedPushServiceServer
 // for forward compatibility
 type PushServiceServer interface {
 	RegisterPushToken(context.Context, *RegisterPushTokenRequest) (*RegisterPushTokenResponse, error)
 	UnregisterPushToken(context.Context, *UnregisterPushTokenRequest) (*UnregisterPushTokenResponse, error)
+	GetPushTokens(context.Context, *GetPushTokensRequest) (*GetPushTokensResponse, error)
 	mustEmbedUnimplementedPushServiceServer()
 }
 
@@ -75,6 +87,9 @@ func (UnimplementedPushServiceServer) RegisterPushToken(context.Context, *Regist
 }
 func (UnimplementedPushServiceServer) UnregisterPushToken(context.Context, *UnregisterPushTokenRequest) (*UnregisterPushTokenResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UnregisterPushToken not implemented")
+}
+func (UnimplementedPushServiceServer) GetPushTokens(context.Context, *GetPushTokensRequest) (*GetPushTokensResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetPushTokens not implemented")
 }
 func (UnimplementedPushServiceServer) mustEmbedUnimplementedPushServiceServer() {}
 
@@ -125,6 +140,24 @@ func _PushService_UnregisterPushToken_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PushService_GetPushTokens_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPushTokensRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PushServiceServer).GetPushTokens(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PushService_GetPushTokens_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PushServiceServer).GetPushTokens(ctx, req.(*GetPushTokensRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PushService_ServiceDesc is the grpc.ServiceDesc for PushService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -139,6 +172,10 @@ var PushService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "UnregisterPushToken",
 			Handler:    _PushService_UnregisterPushToken_Handler,
+		},
+		{
+			MethodName: "GetPushTokens",
+			Handler:    _PushService_GetPushTokens_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

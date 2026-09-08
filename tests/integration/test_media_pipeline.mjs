@@ -89,7 +89,35 @@ async function testMediaPipeline() {
     throw new Error('Integrity check failed: Decrypted text does not match original plaintext!')
   }
 
-  console.log('\n✅ PASS: Zero-Knowledge Media Upload & MinIO S3 Pipeline verified end-to-end!')
+  // 8. S3 SigV4 Tamper Resistance Verification directly against MinIO
+  console.log('8. Testing MinIO SigV4 tamper resistance...')
+
+  // 8a. Tampered Signature on PUT
+  const tamperedUploadUrl = new URL(uploadRes.upload_url)
+  const origPutSig = tamperedUploadUrl.searchParams.get('X-Amz-Signature')
+  const corruptedPutSig = (origPutSig[0] === 'a' ? 'b' : 'a') + origPutSig.slice(1)
+  tamperedUploadUrl.searchParams.set('X-Amz-Signature', corruptedPutSig)
+
+  const tamperedPutRes = await fetch(tamperedUploadUrl.toString(), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: encryptedBytes,
+  })
+  if (tamperedPutRes.status !== 403) {
+    throw new Error(`MinIO must reject tampered PUT signature with 403 Forbidden, got: ${tamperedPutRes.status}`)
+  }
+  console.log('   -> [8a] Tampered PUT signature rejected with HTTP 403 Forbidden ✓')
+
+  // 8b. Tampered Expiry parameter on GET
+  const tamperedGetUrl = new URL(dlRes.download_url)
+  tamperedGetUrl.searchParams.set('X-Amz-Expires', '99999')
+  const tamperedGetRes = await fetch(tamperedGetUrl.toString())
+  if (tamperedGetRes.status !== 403) {
+    throw new Error(`MinIO must reject tampered GET query parameter with 403 Forbidden, got: ${tamperedGetRes.status}`)
+  }
+  console.log('   -> [8b] Tampered GET query parameter rejected with HTTP 403 Forbidden ✓')
+
+  console.log('\n✅ PASS: Zero-Knowledge Media Upload, MinIO S3 Pipeline, and SigV4 Tamper Resistance verified end-to-end!')
 }
 
 testMediaPipeline().catch((err) => {

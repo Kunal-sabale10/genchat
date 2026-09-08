@@ -21,9 +21,7 @@ export interface MediaEnvelope {
   size: number
 }
 
-const MEDIA_SERVICE_URL = import.meta.env.DEV
-  ? 'http://localhost:8082'
-  : ''
+const MEDIA_SERVICE_URL = import.meta.env.VITE_MEDIA_URL || ''
 
 /** Generate an ephemeral AES-256-GCM key for one upload */
 async function generateMediaKey(): Promise<CryptoKey> {

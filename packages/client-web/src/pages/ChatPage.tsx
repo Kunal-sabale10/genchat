@@ -12,6 +12,7 @@ import { FileAttachmentCard } from '@/components/FileAttachmentCard'
 import { AttachmentStaging } from '@/components/AttachmentStaging'
 import { WebRtcManager, fetchDynamicIceServers } from '@/lib/webrtc-manager'
 import { AuthService } from '@/lib/grpc-client'
+import { PushClient } from '@/lib/push-client'
 import { 
   ShieldCheck, 
   Send, 
@@ -516,6 +517,15 @@ export default function ChatPage() {
       gateway.disconnect()
     }
   }, [accessToken])
+
+  // Automatic push notification registration for offline wake-up
+  useEffect(() => {
+    const token = accessToken || sessionStorage.getItem('genchat_access_token')
+    const deviceId = user?.deviceId || sessionStorage.getItem('genchat_device_id')
+    if (token && deviceId) {
+      PushClient.registerBrowserPush(deviceId, token).catch(() => {})
+    }
+  }, [accessToken, user?.deviceId])
 
   // Fetch message history when connected or when switching conversation
   useEffect(() => {

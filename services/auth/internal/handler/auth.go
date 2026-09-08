@@ -25,6 +25,7 @@ import (
 
 type AuthHandler struct {
 	chatv1.UnimplementedAuthServiceServer
+	chatv1.UnimplementedPushServiceServer
 	store            *store.PostgresStore
 	wa               *waconfig.Config
 	jwtSecret        string

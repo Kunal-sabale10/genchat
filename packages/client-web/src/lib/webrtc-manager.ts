@@ -52,7 +52,7 @@ export async function fetchDynamicIceServers(accessToken?: string): Promise<RTCI
     return DEFAULT_ICE_SERVERS.iceServers || []
   }
 
-  const authBaseUrl = (import.meta as any).env?.DEV ? 'http://localhost:8080' : ''
+  const authBaseUrl = (import.meta as any).env?.VITE_AUTH_URL || ''
   try {
     const res = await fetch(`${authBaseUrl}/chat.v1.AuthService/GetIceServers`, {
       method: 'GET',

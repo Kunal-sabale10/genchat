@@ -61,13 +61,8 @@ type StoreMessageResult struct {
 
 // StoreMessage persists a 1:1 message synchronously and returns the durable
 // message ID + sequence number the ledger assigned. Idempotent: a retry with
-// the same (conversation_id, client_msg_id) gets back Deduplicated=true
-// (the ledger signals this via a gRPC AlreadyExists status, not a response
-// field — see services/msgledger/internal/handler/handler.go's
-// StoreMessageDirect) rather than erroring or double-writing. Note: on a
-// dedup hit we don't have the original message_id/sequence_num — the
-// ledger's AlreadyExists error doesn't carry them. Until that's added,
-// callers get Deduplicated=true with an empty MessageID.
+// the same (conversation_id, client_msg_id) gets back Deduplicated=true along
+// with the original message_id and sequence_num assigned on first store.
 func (c *Client) StoreMessage(ctx context.Context, conversationID, senderID, clientMsgID string, encryptedPayload, senderRatchetKey []byte, messageIndex uint32) (*StoreMessageResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -88,8 +83,9 @@ func (c *Client) StoreMessage(ctx context.Context, conversationID, senderID, cli
 	}
 
 	return &StoreMessageResult{
-		MessageID:   resp.GetMessage().GetMessageId(),
-		SequenceNum: resp.GetMessage().GetSequenceNum(),
+		MessageID:    resp.GetMessage().GetMessageId(),
+		SequenceNum:  resp.GetMessage().GetSequenceNum(),
+		Deduplicated: resp.GetDeduplicated(),
 	}, nil
 }
 

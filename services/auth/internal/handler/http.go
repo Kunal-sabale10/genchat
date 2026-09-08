@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/base64"
@@ -10,10 +11,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	chatv1 "github.com/genchat/proto/gen/chat/v1"
+	"github.com/google/uuid"
 )
 
 func writeErrorJSON(w http.ResponseWriter, r *http.Request, publicMsg string, statusCode int, internalErr error) {
@@ -410,5 +413,217 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 		})
 	}))
 
+	// Push Token Registration
+	mux.HandleFunc("/chat.v1.PushService/RegisterPushToken", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+		if !h.authLimiter.Allow(GetClientIP(r)) {
+			writeErrorJSON(w, r, "rate limit exceeded, please slow down", http.StatusTooManyRequests, nil)
+			return
+		}
+
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, nil)
+			return
+		}
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		claims, err := h.VerifyJWT(token)
+		if err != nil {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, err)
+			return
+		}
+
+		var req struct {
+			DeviceID string `json:"deviceId"`
+			Platform int    `json:"platform"`
+			Token    string `json:"token"`
+			Endpoint string `json:"endpoint"`
+			P256dh   string `json:"p256dh"`
+			Auth     string `json:"auth"`
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil || json.Unmarshal(body, &req) != nil {
+			writeErrorJSON(w, r, "invalid request payload", http.StatusBadRequest, err)
+			return
+		}
+
+		if req.DeviceID == "" {
+			req.DeviceID = claims.DeviceID
+		}
+		p256dhBytes, _ := base64.StdEncoding.DecodeString(req.P256dh)
+		authBytes, _ := base64.StdEncoding.DecodeString(req.Auth)
+
+		ctx := context.WithValue(r.Context(), "user_id", claims.Sub)
+		_, err = h.RegisterPushToken(ctx, &chatv1.RegisterPushTokenRequest{
+			DeviceId: req.DeviceID,
+			Platform: chatv1.PushPlatform(req.Platform),
+			Token:    req.Token,
+			Endpoint: req.Endpoint,
+			P256Dh:   p256dhBytes,
+			Auth:     authBytes,
+		})
+		if err != nil {
+			writeErrorJSON(w, r, "failed to register push token", http.StatusInternalServerError, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
+	}))
+
+	// Push Token Unregistration
+	mux.HandleFunc("/chat.v1.PushService/UnregisterPushToken", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+		if !h.authLimiter.Allow(GetClientIP(r)) {
+			writeErrorJSON(w, r, "rate limit exceeded, please slow down", http.StatusTooManyRequests, nil)
+			return
+		}
+
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, nil)
+			return
+		}
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		claims, err := h.VerifyJWT(token)
+		if err != nil {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, err)
+			return
+		}
+
+		var req struct {
+			DeviceID string `json:"deviceId"`
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil || json.Unmarshal(body, &req) != nil {
+			writeErrorJSON(w, r, "invalid request payload", http.StatusBadRequest, err)
+			return
+		}
+
+		if req.DeviceID == "" {
+			req.DeviceID = claims.DeviceID
+		}
+
+		_, err = h.UnregisterPushToken(r.Context(), &chatv1.UnregisterPushTokenRequest{
+			DeviceId: req.DeviceID,
+		})
+		if err != nil {
+			writeErrorJSON(w, r, "failed to unregister push token", http.StatusInternalServerError, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
+	}))
+
+	// Internal/Authorized GetPushTokens for Gateway
+	mux.HandleFunc("/chat.v1.PushService/GetPushTokens", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost && r.Method != http.MethodGet {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+
+		var targetUserID string
+		if r.Method == http.MethodGet {
+			targetUserID = r.URL.Query().Get("userId")
+		} else {
+			var req struct {
+				UserID string `json:"userId"`
+			}
+			body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			_ = json.Unmarshal(body, &req)
+			targetUserID = req.UserID
+		}
+
+		if targetUserID == "" {
+			writeErrorJSON(w, r, "userId is required", http.StatusBadRequest, nil)
+			return
+		}
+
+		resp, err := h.GetPushTokens(r.Context(), &chatv1.GetPushTokensRequest{
+			UserId: targetUserID,
+		})
+		if err != nil {
+			writeErrorJSON(w, r, "failed to get push tokens", http.StatusInternalServerError, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+
+	// Dev Token Issuance - ONLY active in non-production environments
+	devTokenHandler := cors(func(w http.ResponseWriter, r *http.Request) {
+		env := os.Getenv("ENV")
+		if env == "" {
+			env = os.Getenv("ENVIRONMENT")
+		}
+		if strings.EqualFold(env, "production") {
+			writeErrorJSON(w, r, "dev-token endpoint is disabled in production", http.StatusForbidden, nil)
+			return
+		}
+
+		if r.Method != http.MethodPost && r.Method != http.MethodGet {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+
+		var targetUserID, targetDeviceID string
+		if r.Method == http.MethodGet {
+			targetUserID = r.URL.Query().Get("user_id")
+			if targetUserID == "" {
+				targetUserID = r.URL.Query().Get("userId")
+			}
+			targetDeviceID = r.URL.Query().Get("device_id")
+			if targetDeviceID == "" {
+				targetDeviceID = r.URL.Query().Get("deviceId")
+			}
+		} else {
+			var req struct {
+				UserID   string `json:"user_id"`
+				DeviceID string `json:"device_id"`
+				UserId   string `json:"userId"`
+				DeviceId string `json:"deviceId"`
+			}
+			body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			_ = json.Unmarshal(body, &req)
+			targetUserID = req.UserID
+			if targetUserID == "" {
+				targetUserID = req.UserId
+			}
+			targetDeviceID = req.DeviceID
+			if targetDeviceID == "" {
+				targetDeviceID = req.DeviceId
+			}
+		}
+
+		if targetUserID == "" {
+			targetUserID = uuid.New().String()
+		}
+		if targetDeviceID == "" {
+			targetDeviceID = uuid.New().String()
+		}
+
+		token := generateJWT(targetUserID, targetDeviceID, h.jwtSecret, 15*time.Minute)
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": token,
+			"user_id":      targetUserID,
+			"device_id":    targetDeviceID,
+			"expires_in":   900,
+		})
+	})
+
+	mux.HandleFunc("/dev-token", devTokenHandler)
+	mux.HandleFunc("/chat.v1.AuthService/DevToken", devTokenHandler)
+
 	return mux
 }
+

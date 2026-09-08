@@ -13,9 +13,13 @@ import (
 
 	"github.com/genchat/services/gateway/internal/ledgerclient"
 	"github.com/genchat/services/gateway/internal/metrics"
+	"github.com/genchat/services/gateway/internal/push"
 	"github.com/genchat/services/gateway/internal/ratelimit"
 	"github.com/genchat/services/gateway/internal/relay"
 	"github.com/genchat/services/gateway/internal/ws"
+	chatv1 "github.com/genchat/proto/gen/chat/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func main() {
@@ -68,7 +72,21 @@ func main() {
 		}
 	}
 	limiter := ratelimit.NewLimiter(ratePerMin, burst)
-	router := relay.NewRouter(hub, ledger)
+
+	authAddr := getEnv("AUTH_ADDR", "auth:50051")
+	var pushClient chatv1.PushServiceClient
+	authConn, err := grpc.Dial(authAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		slog.Warn("could not connect to auth service for push notifications", "addr", authAddr, "error", err)
+	} else {
+		pushClient = chatv1.NewPushServiceClient(authConn)
+		defer authConn.Close()
+	}
+
+	dispatcher := push.NewDispatcher(4, 1024)
+	dispatcher.Start(context.Background())
+
+	router := relay.NewRouter(hub, ledger, pushClient, dispatcher)
 	wsHandler := ws.NewHandler(hub, router.Handle, limiter, jwtSecret)
 
 	mux := http.NewServeMux()

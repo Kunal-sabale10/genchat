@@ -36,6 +36,13 @@ type StoredMessage struct {
 	SenderRatchetKey []byte
 	MessageIndex     int
 	CreatedAt        time.Time
+	Deduplicated     bool
+}
+
+type DedupRecord struct {
+	MessageID   uuid.UUID
+	SequenceNum int64
+	CreatedAt   time.Time
 }
 
 type Receipt struct {
@@ -64,22 +71,53 @@ func (s *ScyllaStore) InsertMessage(ctx context.Context, msg *StoredMessage) err
 	).WithContext(ctx).Exec()
 }
 
-func (s *ScyllaStore) CheckDedup(ctx context.Context, conversationID, clientMsgID string) (bool, error) {
-	var count int
+func (s *ScyllaStore) GetDedup(ctx context.Context, conversationID, clientMsgID string) (*DedupRecord, error) {
+	var msgID gocql.UUID
+	var seqNum int64
+	var createdAt time.Time
 	err := s.session.Query(
-		`SELECT count(*) FROM genchat.client_dedup WHERE conversation_id = ? AND client_msg_id = ? LIMIT 1`,
+		`SELECT message_id, sequence_num, created_at FROM genchat.client_dedup WHERE conversation_id = ? AND client_msg_id = ? LIMIT 1`,
 		conversationID, clientMsgID,
-	).WithContext(ctx).Scan(&count)
+	).WithContext(ctx).Scan(&msgID, &seqNum, &createdAt)
+	if err != nil {
+		if err == gocql.ErrNotFound {
+			return nil, nil
+		}
+		// Fallback for legacy tables where sequence_num was not yet present
+		errScan := s.session.Query(
+			`SELECT message_id, created_at FROM genchat.client_dedup WHERE conversation_id = ? AND client_msg_id = ? LIMIT 1`,
+			conversationID, clientMsgID,
+		).WithContext(ctx).Scan(&msgID, &createdAt)
+		if errScan != nil {
+			if errScan == gocql.ErrNotFound {
+				return nil, nil
+			}
+			return nil, err
+		}
+	}
+	parsedID, err := uuid.Parse(msgID.String())
+	if err != nil {
+		return nil, err
+	}
+	return &DedupRecord{
+		MessageID:   parsedID,
+		SequenceNum: seqNum,
+		CreatedAt:   createdAt,
+	}, nil
+}
+
+func (s *ScyllaStore) CheckDedup(ctx context.Context, conversationID, clientMsgID string) (bool, error) {
+	rec, err := s.GetDedup(ctx, conversationID, clientMsgID)
 	if err != nil {
 		return false, err
 	}
-	return count > 0, nil
+	return rec != nil, nil
 }
 
-func (s *ScyllaStore) InsertDedup(ctx context.Context, conversationID, clientMsgID string, messageID gocql.UUID) error {
+func (s *ScyllaStore) InsertDedup(ctx context.Context, conversationID, clientMsgID string, messageID gocql.UUID, sequenceNum int64) error {
 	return s.session.Query(
-		`INSERT INTO genchat.client_dedup (conversation_id, client_msg_id, message_id, created_at) VALUES (?, ?, ?, ?)`,
-		conversationID, clientMsgID, messageID, time.Now(),
+		`INSERT INTO genchat.client_dedup (conversation_id, client_msg_id, message_id, sequence_num, created_at) VALUES (?, ?, ?, ?, ?)`,
+		conversationID, clientMsgID, messageID, sequenceNum, time.Now(),
 	).WithContext(ctx).Exec()
 }
 

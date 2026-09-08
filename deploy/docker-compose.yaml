@@ -88,11 +88,11 @@ services:
       # update this to match or every WebAuthn ceremony will fail with an
       # origin mismatch.
       - WEBAUTHN_RP_ID=localhost
-      - WEBAUTHN_RP_ORIGIN=http://localhost:3000
+      - WEBAUTHN_RP_ORIGIN=http://localhost:5134
       - TURN_SHARED_SECRET=dev_turn_shared_secret_32b_change_in_prod
       - TURN_REALM=genchat.local
       - TURN_URLS=turn:localhost:3478?transport=udp,turn:localhost:3478?transport=tcp
-      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - ALLOWED_ORIGINS=http://localhost:5134,http://localhost:3000,http://localhost:5173
     depends_on:
       postgres:
         condition: service_healthy
@@ -107,6 +107,7 @@ services:
     environment:
       - JWT_SECRET=dev-secret-change-in-production
       - LEDGER_ADDR=ledger:50052
+      - AUTH_ADDR=auth:50051
       # Local dev only — do not set this in any deployed environment. It
       # disables the WebSocket Origin/CSRF check.
       - WS_ALLOW_ANY_ORIGIN=true
@@ -114,6 +115,8 @@ services:
       redis:
         condition: service_healthy
       ledger:
+        condition: service_started
+      auth:
         condition: service_started
 
   ledger:
@@ -183,7 +186,7 @@ services:
       - MINIO_ROOT_USER=minioadmin
       - MINIO_ROOT_PASSWORD=minioadmin_secret
       - PORT=8082
-      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - ALLOWED_ORIGINS=http://localhost:5134,http://localhost:3000,http://localhost:5173
     depends_on:
       minio-init:
         condition: service_completed_successfully
@@ -204,6 +207,19 @@ services:
       - dev_turn_shared_secret_32b_change_in_prod
       - --min-port=49152
       - --max-port=49160
+    restart: unless-stopped
+
+  web:
+    image: nginx:alpine
+    ports:
+      - "5134:80"
+    volumes:
+      - ../packages/client-web/dist:/usr/share/nginx/html:ro
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - auth
+      - gateway
+      - media
     restart: unless-stopped
 
 volumes:

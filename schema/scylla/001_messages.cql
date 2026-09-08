@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS genchat.client_dedup (
     conversation_id TEXT,
     client_msg_id   TEXT,
     message_id      TIMEUUID,
+    sequence_num    BIGINT,
     created_at      TIMESTAMP,
     PRIMARY KEY ((conversation_id), client_msg_id)
 ) WITH default_time_to_live = 86400;
