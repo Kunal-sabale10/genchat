@@ -558,6 +558,493 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
 
+	// ============================================================
+	// ChannelService Endpoints (Phase 2)
+	// ============================================================
+
+	mux.HandleFunc("/chat.v1.ChannelService/CreateChannel", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, nil)
+			return
+		}
+		claims, err := h.VerifyJWT(strings.TrimPrefix(authHeader, "Bearer "))
+		if err != nil {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, err)
+			return
+		}
+
+		var req struct {
+			Name          string   `json:"name"`
+			MemberUserIds []string `json:"memberUserIds"`
+			MemberIds     []string `json:"member_user_ids"`
+			Type          int32    `json:"type"`
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil || json.Unmarshal(body, &req) != nil {
+			writeErrorJSON(w, r, "invalid request payload", http.StatusBadRequest, err)
+			return
+		}
+
+		members := req.MemberUserIds
+		if len(members) == 0 {
+			members = req.MemberIds
+		}
+
+		cType := chatv1.ChannelType_CHANNEL_TYPE_GROUP
+		if req.Type != 0 {
+			cType = chatv1.ChannelType(req.Type)
+		}
+
+		ctx := context.WithValue(r.Context(), "user_id", claims.Sub)
+		resp, err := h.CreateChannel(ctx, &chatv1.CreateChannelRequest{
+			Name:          req.Name,
+			Type:          cType,
+			MemberUserIds: members,
+		})
+		if err != nil {
+			writeErrorJSON(w, r, "failed to create channel", http.StatusInternalServerError, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+
+	mux.HandleFunc("/chat.v1.ChannelService/ListChannels", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, nil)
+			return
+		}
+		claims, err := h.VerifyJWT(strings.TrimPrefix(authHeader, "Bearer "))
+		if err != nil {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, err)
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), "user_id", claims.Sub)
+		resp, err := h.ListChannels(ctx, &chatv1.ListChannelsRequest{Limit: 50})
+		if err != nil {
+			writeErrorJSON(w, r, "failed to list channels", http.StatusInternalServerError, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+
+	mux.HandleFunc("/chat.v1.ChannelService/GetChannelMembers", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+
+		var channelID string
+		if r.Method == http.MethodGet {
+			channelID = r.URL.Query().Get("channel_id")
+			if channelID == "" {
+				channelID = r.URL.Query().Get("channelId")
+			}
+		} else {
+			var req struct {
+				ChannelID string `json:"channel_id"`
+				ChannelId string `json:"channelId"`
+			}
+			body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			_ = json.Unmarshal(body, &req)
+			channelID = req.ChannelID
+			if channelID == "" {
+				channelID = req.ChannelId
+			}
+		}
+
+		if channelID == "" {
+			writeErrorJSON(w, r, "channel_id is required", http.StatusBadRequest, nil)
+			return
+		}
+
+		resp, err := h.GetChannelMembers(r.Context(), &chatv1.GetChannelMembersRequest{
+			ChannelId: channelID,
+		})
+		if err != nil {
+			writeErrorJSON(w, r, "failed to get channel members", http.StatusInternalServerError, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+
+	mux.HandleFunc("/chat.v1.ChannelService/JoinChannel", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, nil)
+			return
+		}
+		claims, err := h.VerifyJWT(strings.TrimPrefix(authHeader, "Bearer "))
+		if err != nil {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, err)
+			return
+		}
+
+		var req struct {
+			ChannelID string `json:"channel_id"`
+			ChannelId string `json:"channelId"`
+		}
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		_ = json.Unmarshal(body, &req)
+		channelID := req.ChannelID
+		if channelID == "" {
+			channelID = req.ChannelId
+		}
+
+		ctx := context.WithValue(r.Context(), "user_id", claims.Sub)
+		resp, err := h.JoinChannel(ctx, &chatv1.JoinChannelRequest{ChannelId: channelID})
+		if err != nil {
+			writeErrorJSON(w, r, "failed to join channel", http.StatusInternalServerError, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+
+	mux.HandleFunc("/chat.v1.ChannelService/LeaveChannel", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, nil)
+			return
+		}
+		claims, err := h.VerifyJWT(strings.TrimPrefix(authHeader, "Bearer "))
+		if err != nil {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, err)
+			return
+		}
+
+		var req struct {
+			ChannelID string `json:"channel_id"`
+			ChannelId string `json:"channelId"`
+		}
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		_ = json.Unmarshal(body, &req)
+		channelID := req.ChannelID
+		if channelID == "" {
+			channelID = req.ChannelId
+		}
+
+		ctx := context.WithValue(r.Context(), "user_id", claims.Sub)
+		resp, err := h.LeaveChannel(ctx, &chatv1.LeaveChannelRequest{ChannelId: channelID})
+		if err != nil {
+			writeErrorJSON(w, r, "failed to leave channel", http.StatusInternalServerError, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+
+	// ============================================================
+	// KeyService Endpoints (Phase 2: Pre-Key Replenishment)
+	// ============================================================
+
+	mux.HandleFunc("/chat.v1.KeyService/UploadPreKeyBundle", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, nil)
+			return
+		}
+		claims, err := h.VerifyJWT(strings.TrimPrefix(authHeader, "Bearer "))
+		if err != nil {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, err)
+			return
+		}
+
+		var raw map[string]any
+		body, err := io.ReadAll(io.LimitReader(r.Body, 2<<20)) // 2MB limit
+		if err != nil || json.Unmarshal(body, &raw) != nil {
+			writeErrorJSON(w, r, "invalid request payload", http.StatusBadRequest, err)
+			return
+		}
+
+		deviceID, _ := raw["deviceId"].(string)
+		if deviceID == "" {
+			deviceID, _ = raw["device_id"].(string)
+		}
+		if deviceID == "" {
+			deviceID = claims.DeviceID
+		}
+
+		pbReq := &chatv1.UploadPreKeyBundleRequest{
+			DeviceId: deviceID,
+		}
+
+		if spkMap, ok := raw["signedPreKey"].(map[string]any); ok {
+			var spkID uint32
+			if idNum, ok := spkMap["keyId"].(float64); ok {
+				spkID = uint32(idNum)
+			}
+			var spkPub, spkSig []byte
+			if s, ok := spkMap["publicKey"].(string); ok {
+				spkPub, _ = base64.StdEncoding.DecodeString(s)
+			}
+			if s, ok := spkMap["signature"].(string); ok {
+				spkSig, _ = base64.StdEncoding.DecodeString(s)
+			}
+			pbReq.SignedPreKey = &chatv1.SignedPreKey{
+				KeyId:     spkID,
+				PublicKey: spkPub,
+				Signature: spkSig,
+			}
+		}
+
+		if pqMap, ok := raw["pqPreKey"].(map[string]any); ok {
+			var pqID uint32
+			if idNum, ok := pqMap["keyId"].(float64); ok {
+				pqID = uint32(idNum)
+			}
+			var pqPub, pqSig []byte
+			if s, ok := pqMap["publicKey"].(string); ok {
+				pqPub, _ = base64.StdEncoding.DecodeString(s)
+			}
+			if s, ok := pqMap["signature"].(string); ok {
+				pqSig, _ = base64.StdEncoding.DecodeString(s)
+			}
+			pbReq.PqPreKey = &chatv1.PqPreKey{
+				KeyId:     pqID,
+				PublicKey: pqPub,
+				Signature: pqSig,
+			}
+		}
+
+		if otksArr, ok := raw["oneTimePreKeys"].([]any); ok {
+			for _, item := range otksArr {
+				if itemMap, ok := item.(map[string]any); ok {
+					var kID uint32
+					if num, ok := itemMap["keyId"].(float64); ok {
+						kID = uint32(num)
+					}
+					var kPub []byte
+					if s, ok := itemMap["publicKey"].(string); ok {
+						kPub, _ = base64.StdEncoding.DecodeString(s)
+					}
+					pbReq.OneTimePreKeys = append(pbReq.OneTimePreKeys, &chatv1.OneTimePreKey{
+						KeyId:     kID,
+						PublicKey: kPub,
+					})
+				}
+			}
+		}
+
+		resp, err := h.UploadPreKeyBundle(r.Context(), pbReq)
+		if err != nil {
+			writeErrorJSON(w, r, "failed to upload prekey bundle", http.StatusInternalServerError, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+
+	mux.HandleFunc("/chat.v1.KeyService/UploadOneTimeKeys", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, nil)
+			return
+		}
+		claims, err := h.VerifyJWT(strings.TrimPrefix(authHeader, "Bearer "))
+		if err != nil {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, err)
+			return
+		}
+
+		var raw map[string]any
+		body, err := io.ReadAll(io.LimitReader(r.Body, 2<<20))
+		if err != nil || json.Unmarshal(body, &raw) != nil {
+			writeErrorJSON(w, r, "invalid request payload", http.StatusBadRequest, err)
+			return
+		}
+
+		deviceID, _ := raw["deviceId"].(string)
+		if deviceID == "" {
+			deviceID, _ = raw["device_id"].(string)
+		}
+		if deviceID == "" {
+			deviceID = claims.DeviceID
+		}
+
+		var keys []*chatv1.OneTimePreKey
+		if otksArr, ok := raw["keys"].([]any); ok {
+			for _, item := range otksArr {
+				if itemMap, ok := item.(map[string]any); ok {
+					var kID uint32
+					if num, ok := itemMap["keyId"].(float64); ok {
+						kID = uint32(num)
+					}
+					var kPub []byte
+					if s, ok := itemMap["publicKey"].(string); ok {
+						kPub, _ = base64.StdEncoding.DecodeString(s)
+					}
+					keys = append(keys, &chatv1.OneTimePreKey{
+						KeyId:     kID,
+						PublicKey: kPub,
+					})
+				}
+			}
+		}
+
+		resp, err := h.UploadOneTimeKeys(r.Context(), &chatv1.UploadOneTimeKeysRequest{
+			DeviceId: deviceID,
+			Keys:     keys,
+		})
+		if err != nil {
+			writeErrorJSON(w, r, "failed to upload one-time keys", http.StatusInternalServerError, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+
+	mux.HandleFunc("/chat.v1.KeyService/GetKeyCount", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, nil)
+			return
+		}
+		claims, err := h.VerifyJWT(strings.TrimPrefix(authHeader, "Bearer "))
+		if err != nil {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, err)
+			return
+		}
+
+		deviceID := r.URL.Query().Get("deviceId")
+		if deviceID == "" {
+			deviceID = r.URL.Query().Get("device_id")
+		}
+		if deviceID == "" {
+			deviceID = claims.DeviceID
+		}
+
+		resp, err := h.GetKeyCount(r.Context(), &chatv1.GetKeyCountRequest{DeviceId: deviceID})
+		if err != nil {
+			writeErrorJSON(w, r, "failed to get key count", http.StatusInternalServerError, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"oneTimeKeyCount":    resp.OneTimeKeyCount,
+			"one_time_key_count": resp.OneTimeKeyCount,
+		})
+	}))
+
+	mux.HandleFunc("/chat.v1.KeyService/FetchPreKeyBundle", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+
+		var targetUserID, targetDeviceID string
+		if r.Method == http.MethodGet {
+			targetUserID = r.URL.Query().Get("userId")
+			if targetUserID == "" {
+				targetUserID = r.URL.Query().Get("user_id")
+			}
+			targetDeviceID = r.URL.Query().Get("deviceId")
+			if targetDeviceID == "" {
+				targetDeviceID = r.URL.Query().Get("device_id")
+			}
+		} else {
+			var req struct {
+				UserID   string `json:"userId"`
+				UserId   string `json:"user_id"`
+				DeviceID string `json:"deviceId"`
+				DeviceId string `json:"device_id"`
+			}
+			body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			_ = json.Unmarshal(body, &req)
+			targetUserID = req.UserID
+			if targetUserID == "" {
+				targetUserID = req.UserId
+			}
+			targetDeviceID = req.DeviceID
+			if targetDeviceID == "" {
+				targetDeviceID = req.DeviceId
+			}
+		}
+
+		if targetDeviceID == "" {
+			writeErrorJSON(w, r, "deviceId is required", http.StatusBadRequest, nil)
+			return
+		}
+
+		resp, err := h.FetchPreKeyBundle(r.Context(), &chatv1.FetchPreKeyBundleRequest{
+			UserId:   targetUserID,
+			DeviceId: targetDeviceID,
+		})
+		if err != nil {
+			writeErrorJSON(w, r, "bundle not found", http.StatusNotFound, err)
+			return
+		}
+
+		// Format bundle nicely for JSON clients with base64 strings
+		out := map[string]any{
+			"bundle": map[string]any{
+				"identityKey": base64.StdEncoding.EncodeToString(resp.Bundle.IdentityKey),
+				"signedPreKey": map[string]any{
+					"keyId":     resp.Bundle.SignedPreKey.KeyId,
+					"publicKey": base64.StdEncoding.EncodeToString(resp.Bundle.SignedPreKey.PublicKey),
+					"signature": base64.StdEncoding.EncodeToString(resp.Bundle.SignedPreKey.Signature),
+				},
+			},
+		}
+		if resp.Bundle.PqPreKey != nil {
+			out["bundle"].(map[string]any)["pqPreKey"] = map[string]any{
+				"keyId":     resp.Bundle.PqPreKey.KeyId,
+				"publicKey": base64.StdEncoding.EncodeToString(resp.Bundle.PqPreKey.PublicKey),
+				"signature": base64.StdEncoding.EncodeToString(resp.Bundle.PqPreKey.Signature),
+			}
+		}
+		if resp.Bundle.OneTimePreKey != nil {
+			out["bundle"].(map[string]any)["oneTimePreKey"] = map[string]any{
+				"keyId":     resp.Bundle.OneTimePreKey.KeyId,
+				"publicKey": base64.StdEncoding.EncodeToString(resp.Bundle.OneTimePreKey.PublicKey),
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
+	}))
+
 	// Dev Token Issuance - ONLY active in non-production environments
 	devTokenHandler := cors(func(w http.ResponseWriter, r *http.Request) {
 		env := os.Getenv("ENV")
@@ -574,7 +1061,7 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			return
 		}
 
-		var targetUserID, targetDeviceID string
+		var targetUserID, targetDeviceID, targetDisplayName string
 		if r.Method == http.MethodGet {
 			targetUserID = r.URL.Query().Get("user_id")
 			if targetUserID == "" {
@@ -584,12 +1071,17 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			if targetDeviceID == "" {
 				targetDeviceID = r.URL.Query().Get("deviceId")
 			}
+			targetDisplayName = r.URL.Query().Get("display_name")
+			if targetDisplayName == "" {
+				targetDisplayName = r.URL.Query().Get("displayName")
+			}
 		} else {
 			var req struct {
-				UserID   string `json:"user_id"`
-				DeviceID string `json:"device_id"`
-				UserId   string `json:"userId"`
-				DeviceId string `json:"deviceId"`
+				UserID      string `json:"user_id"`
+				DeviceID    string `json:"device_id"`
+				UserId      string `json:"userId"`
+				DeviceId    string `json:"deviceId"`
+				DisplayName string `json:"display_name"`
 			}
 			body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 			_ = json.Unmarshal(body, &req)
@@ -601,13 +1093,28 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			if targetDeviceID == "" {
 				targetDeviceID = req.DeviceId
 			}
+			targetDisplayName = req.DisplayName
 		}
 
-		if targetUserID == "" {
-			targetUserID = uuid.New().String()
+		uID, err := uuid.Parse(targetUserID)
+		if err != nil {
+			uID = uuid.New()
+			targetUserID = uID.String()
 		}
-		if targetDeviceID == "" {
-			targetDeviceID = uuid.New().String()
+		dID, err := uuid.Parse(targetDeviceID)
+		if err != nil {
+			dID = uuid.New()
+			targetDeviceID = dID.String()
+		}
+		if targetDisplayName == "" {
+			targetDisplayName = "Dev User " + targetUserID[:8]
+		}
+
+		if h.store != nil {
+			if err := h.store.EnsureDevUserAndDevice(r.Context(), uID, dID, targetDisplayName); err != nil {
+				writeErrorJSON(w, r, "failed to provision dev user in database", http.StatusInternalServerError, err)
+				return
+			}
 		}
 
 		token := generateJWT(targetUserID, targetDeviceID, h.jwtSecret, 15*time.Minute)

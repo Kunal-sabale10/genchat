@@ -75,18 +75,20 @@ func main() {
 
 	authAddr := getEnv("AUTH_ADDR", "auth:50051")
 	var pushClient chatv1.PushServiceClient
+	var channelClient chatv1.ChannelServiceClient
 	authConn, err := grpc.Dial(authAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		slog.Warn("could not connect to auth service for push notifications", "addr", authAddr, "error", err)
+		slog.Warn("could not connect to auth service for push/channels", "addr", authAddr, "error", err)
 	} else {
 		pushClient = chatv1.NewPushServiceClient(authConn)
+		channelClient = chatv1.NewChannelServiceClient(authConn)
 		defer authConn.Close()
 	}
 
 	dispatcher := push.NewDispatcher(4, 1024)
 	dispatcher.Start(context.Background())
 
-	router := relay.NewRouter(hub, ledger, pushClient, dispatcher)
+	router := relay.NewRouter(hub, ledger, pushClient, channelClient, dispatcher)
 	wsHandler := ws.NewHandler(hub, router.Handle, limiter, jwtSecret)
 
 	mux := http.NewServeMux()

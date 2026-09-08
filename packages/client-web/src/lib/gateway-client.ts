@@ -19,7 +19,9 @@ export interface ReadReceiptEvent {
   userId: string
   serverId: string
   sequenceNum: number
+  receiptType?: 'delivered' | 'read'
 }
+
 
 export interface CallSignalEvent {
   signalType: 'offer' | 'answer' | 'ice_candidate' | 'hangup' | 'reject' | 'peer_offline'
@@ -137,18 +139,21 @@ export class GatewayClient {
           return
         }
 
-        // 3. Handle read receipts
-        if (raw.type === 'read_receipt') {
+        // 3. Handle read & delivery receipts
+        if (raw.type === 'read_receipt' || raw.type === 'receipt') {
+          const rType = raw.receipt_type || (raw.type === 'read_receipt' ? 'read' : 'delivered')
           this.readReceiptHandlers.forEach((h) =>
             h({
               channelId: raw.channel_id,
               userId: raw.user_id,
-              serverId: raw.server_id,
+              serverId: raw.server_id || raw.message_id,
               sequenceNum: raw.sequence_num ?? 0,
+              receiptType: rType,
             })
           )
           return
         }
+
 
         // 4. Handle server errors
         if (raw.type === 'error') {
@@ -334,6 +339,19 @@ export class GatewayClient {
       sequence_num: sequenceNum,
     }))
   }
+
+  public sendDeliveryReceipt(channelId: string, serverId: string, sequenceNum: number = 0): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+    this.ws.send(JSON.stringify({
+      action: 'ack_receipt',
+      receipt_type: 'delivered',
+      channel_id: channelId,
+      server_id: serverId,
+      message_id: serverId,
+      sequence_num: sequenceNum,
+    }))
+  }
+
 
   public onCallSignal(handler: CallSignalHandler): () => void {
     this.callSignalHandlers.add(handler)

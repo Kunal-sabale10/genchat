@@ -140,3 +140,22 @@ func (c *Client) FetchMessages(ctx context.Context, conversationID, bucket strin
 	}
 	return msgs, nil
 }
+
+// UpdateReceipt records a message delivery or read state in the ledger durable store.
+func (c *Client) UpdateReceipt(ctx context.Context, conversationID, userID, receiptType, messageID string, sequenceNum int64) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	_, err := c.rpc.UpdateReceipt(ctx, &chatv1.UpdateReceiptRequest{
+		ConversationId: conversationID,
+		UserId:         userID,
+		ReceiptType:    receiptType,
+		MessageId:      messageID,
+		SequenceNum:    sequenceNum,
+	})
+	if err != nil {
+		return fmt.Errorf("ledgerclient: UpdateReceipt: %w", err)
+	}
+	return nil
+}
+

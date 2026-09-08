@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"time"
 
@@ -393,6 +394,69 @@ func (s *PostgresStore) GetChannelMembers(ctx context.Context, channelID uuid.UU
 	return members, nil
 }
 
+func (s *PostgresStore) ListUserChannels(ctx context.Context, userID uuid.UUID, limit int) ([]Channel, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT c.id, c.channel_type, c.name, c.creator_id, c.created_at, c.updated_at
+		 FROM channels c
+		 JOIN channel_members m ON c.id = m.channel_id
+		 WHERE m.user_id = $1 AND m.left_at IS NULL
+		 ORDER BY c.updated_at DESC
+		 LIMIT $2`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var channels []Channel
+	for rows.Next() {
+		var c Channel
+		if err := rows.Scan(&c.ID, &c.ChannelType, &c.Name, &c.CreatorID, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		channels = append(channels, c)
+	}
+	return channels, nil
+}
+
+func (s *PostgresStore) GetChannel(ctx context.Context, channelID uuid.UUID) (*Channel, error) {
+	var c Channel
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, channel_type, name, creator_id, created_at, updated_at
+		 FROM channels WHERE id = $1`, channelID).
+		Scan(&c.ID, &c.ChannelType, &c.Name, &c.CreatorID, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (s *PostgresStore) JoinChannel(ctx context.Context, channelID, userID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO channel_members (channel_id, user_id, role, joined_at, last_read_seq)
+		 VALUES ($1, $2, 'member', now(), 0)
+		 ON CONFLICT (channel_id, user_id) DO UPDATE SET left_at = NULL, joined_at = now()`,
+		channelID, userID)
+	return err
+}
+
+func (s *PostgresStore) LeaveChannel(ctx context.Context, channelID, userID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE channel_members SET left_at = now() WHERE channel_id = $1 AND user_id = $2`,
+		channelID, userID)
+	return err
+}
+
+func (s *PostgresStore) IsChannelMember(ctx context.Context, channelID, userID uuid.UUID) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM channel_members WHERE channel_id = $1 AND user_id = $2 AND left_at IS NULL)`,
+		channelID, userID).Scan(&exists)
+	return exists, err
+}
+
 func (s *PostgresStore) GetRemainingOneTimeKeyCount(ctx context.Context, deviceID uuid.UUID) (int, error) {
 	var count int
 	err := s.pool.QueryRow(ctx,
@@ -441,4 +505,35 @@ func (s *PostgresStore) UnregisterPushToken(ctx context.Context, deviceID uuid.U
 		`DELETE FROM device_push_tokens WHERE device_id = $1`, deviceID)
 	return err
 }
+
+func (s *PostgresStore) EnsureDevUserAndDevice(ctx context.Context, userID, deviceID uuid.UUID, displayName string) error {
+	if displayName == "" {
+		displayName = "Dev User"
+	}
+	userIdentKey := sha256.Sum256([]byte("user:" + userID.String()))
+	deviceIdentKey := sha256.Sum256([]byte("device:" + deviceID.String()))
+
+	now := time.Now()
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO users (id, display_name, identity_key, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $4)
+		 ON CONFLICT (id) DO UPDATE SET display_name = EXCLUDED.display_name`,
+		userID, displayName, userIdentKey[:], now,
+	)
+	if err != nil {
+		return fmt.Errorf("ensure dev user failed: %w", err)
+	}
+
+	_, err = s.pool.Exec(ctx,
+		`INSERT INTO user_devices (id, user_id, identity_key, device_label, last_seen_at, created_at)
+		 VALUES ($1, $2, $3, 'Dev Device', $4, $4)
+		 ON CONFLICT (id) DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at`,
+		deviceID, userID, deviceIdentKey[:], now,
+	)
+	if err != nil {
+		return fmt.Errorf("ensure dev device failed: %w", err)
+	}
+	return nil
+}
+
 

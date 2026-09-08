@@ -13,6 +13,8 @@ import { AttachmentStaging } from '@/components/AttachmentStaging'
 import { WebRtcManager, fetchDynamicIceServers } from '@/lib/webrtc-manager'
 import { AuthService } from '@/lib/grpc-client'
 import { PushClient } from '@/lib/push-client'
+import { PreKeyManager } from '@/lib/prekey-manager'
+import { LocalEncryptedCache } from '@/lib/local-cache'
 import { 
   ShieldCheck, 
   Send, 
@@ -27,6 +29,7 @@ import {
   Loader2,
   UserPlus,
   User,
+  Users,
   Copy,
   Plus,
   X,
@@ -78,6 +81,7 @@ export default function ChatPage() {
   const [userSearchQuery, setUserSearchQuery] = useState('')
   const [showNewChanModal, setShowNewChanModal] = useState(false)
   const [newChanName, setNewChanName] = useState('')
+  const [selectedGroupMembers, setSelectedGroupMembers] = useState<string[]>([])
   const [showSafetyModal, setShowSafetyModal] = useState(false)
   const [safetyNumber, setSafetyNumber] = useState('')
   const [safetyPeerId, setSafetyPeerId] = useState('')
@@ -170,13 +174,12 @@ export default function ChatPage() {
   const activeChannelIdRef = useRef(activeChannelId)
   useEffect(() => { activeChannelIdRef.current = activeChannelId }, [activeChannelId])
 
-  // --- 1. Load cached messages and conversations from IndexedDB on startup ---
+  // --- 1. Load cached messages and conversations from IndexedDB with AES-256-GCM decryption ---
   useEffect(() => {
     async function loadLocalCache() {
       // Load conversations
       const cachedConvs = await localDb.getConversations()
       if (cachedConvs && cachedConvs.length > 0) {
-        // Filter out legacy mock channels
         const cleanConvs = cachedConvs.filter(
           (c) =>
             c.id !== 'general' &&
@@ -190,12 +193,11 @@ export default function ChatPage() {
         }
       }
 
-      // Load messages for current channel
+      // Load encrypted messages for current channel and decrypt them
       if (activeChannelId) {
-        const cachedMsgs = await localDb.getMessagesByChannel(activeChannelId)
+        const cachedMsgs = await LocalEncryptedCache.loadMessages(activeChannelId)
         if (cachedMsgs && cachedMsgs.length > 0) {
           setMessages((prev) => {
-            // Merge avoiding duplicates
             const ids = new Set(cachedMsgs.map((m) => m.id))
             const existingNotInCache = prev.filter((m) => !ids.has(m.id))
             return [...cachedMsgs, ...existingNotInCache].map((m: any) => ({
@@ -209,9 +211,51 @@ export default function ChatPage() {
     loadLocalCache()
   }, [activeChannelId])
 
-  // Fetch registered users when New DM / Start Conversation modal opens
+  // --- 2. Synchronize remote channels from ChannelService ---
   useEffect(() => {
-    if (!showNewDmModal) return
+    const token = accessToken || sessionStorage.getItem('genchat_access_token')
+    if (!token) return
+    async function syncChannels() {
+      try {
+        const res = await fetch('/chat.v1.ChannelService/ListChannels', {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (res.ok) {
+          const data = await res.json()
+          if (data.channels && Array.isArray(data.channels)) {
+            setConversations((prev) => {
+              const map = new Map<string, ConversationItem>()
+              prev.forEach((c) => map.set(c.id, c))
+              data.channels.forEach((ch: any) => {
+                const chanId = `chan_${ch.id}`
+                map.set(chanId, {
+                  id: chanId,
+                  name: ch.name || 'Group Chat',
+                  isDirect: false,
+                })
+              })
+              return Array.from(map.values())
+            })
+          }
+        }
+      } catch (err) {
+        console.warn('[ChatPage] Channel sync failed:', err)
+      }
+    }
+    syncChannels()
+  }, [accessToken])
+
+  // --- 3. Anti-exhaustion OTK prekey replenishment ---
+  useEffect(() => {
+    const token = accessToken || sessionStorage.getItem('genchat_access_token')
+    if (token && user?.deviceId) {
+      PreKeyManager.checkAndReplenish(token, user.deviceId)
+    }
+  }, [accessToken, user?.deviceId])
+
+  // Fetch registered users when New DM or Create Group modal opens
+  useEffect(() => {
+    if (!showNewDmModal && !showNewChanModal) return
     let active = true
     async function fetchUsers() {
       setIsLoadingUsers(true)
@@ -231,7 +275,7 @@ export default function ChatPage() {
     return () => {
       active = false
     }
-  }, [showNewDmModal, accessToken])
+  }, [showNewDmModal, showNewChanModal, accessToken])
 
   // Save conversations to IndexedDB when updated
   useEffect(() => {
@@ -299,17 +343,19 @@ export default function ChatPage() {
       }
     })
 
-    // Handle read receipts from peers
+    // Handle delivery & read receipts from peers
     const unsubReceipts = gateway.onReadReceipt((ev) => {
+      const newStatus = ev.receiptType === 'delivered' ? 'delivered' : 'read'
       setMessages((prev) =>
         prev.map((m) => {
           if (m.id === ev.serverId || m.clientMsgId === ev.serverId) {
-            return { ...m, status: 'read' }
+            if (m.status === 'read') return m
+            return { ...m, status: newStatus }
           }
           return m
         })
       )
-      localDb.updateMessageStatus(ev.serverId, 'read')
+      localDb.updateMessageStatus(ev.serverId, newStatus)
     })
 
     // Handle WebRTC call signals from peers
@@ -462,33 +508,39 @@ export default function ChatPage() {
           senderFingerprint,
         }
 
-        // Write to local IndexedDB
-        localDb.saveMessage({
+        // Write to local IndexedDB with AES-256-GCM encryption at rest
+        LocalEncryptedCache.saveMessage({
           ...newMsg,
           createdAt: Date.now(),
         })
+        if (env.sequenceNum) {
+          LocalEncryptedCache.setLastReadSeq(effectiveChannelId, env.sequenceNum)
+        }
 
-        // Automatically dispatch read receipt if this is the active channel
+        // Automatically dispatch read or delivery receipt
         const currentActive = activeChannelIdRef.current || ''
         const isActiveChat =
           effectiveChannelId === currentActive ||
           effectiveChannelId.toLowerCase() === currentActive.toLowerCase()
 
-        if (isActiveChat && env.senderId && env.senderId !== myUserId) {
-          gateway.sendReadReceipt(effectiveChannelId, msgId, env.sequenceNum || 0)
-        } else if (env.senderId && env.senderId !== myUserId) {
-          // Message received for a background channel/DM: notify user and bump unread count
-          setUnreadCounts((prev) => ({
-            ...prev,
-            [effectiveChannelId]: (prev[effectiveChannelId] || 0) + 1,
-          }))
-          setIncomingToast({
-            senderId: env.senderId,
-            channelId: effectiveChannelId,
-            preview: (displayText || 'Sent an attachment').slice(0, 50),
-          })
-          setTimeout(() => setIncomingToast(null), 6000)
+        if (env.senderId && env.senderId !== myUserId) {
+          if (isActiveChat) {
+            gateway.sendReadReceipt(effectiveChannelId, msgId, env.sequenceNum || 0)
+          } else {
+            gateway.sendDeliveryReceipt(effectiveChannelId, msgId, env.sequenceNum || 0)
+            setUnreadCounts((prev) => ({
+              ...prev,
+              [effectiveChannelId]: (prev[effectiveChannelId] || 0) + 1,
+            }))
+            setIncomingToast({
+              senderId: env.senderId,
+              channelId: effectiveChannelId,
+              preview: (displayText || 'Sent an attachment').slice(0, 50),
+            })
+            setTimeout(() => setIncomingToast(null), 6000)
+          }
         }
+
 
         setMessages((prev) => {
           const exists = prev.some(
@@ -959,11 +1011,44 @@ export default function ChatPage() {
     handleSelectUser(target)
   }
 
-  const handleCreateChannel = (e: React.FormEvent) => {
+  const handleCreateChannel = async (e: React.FormEvent) => {
     e.preventDefault()
-    const raw = newChanName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
-    if (!raw) return
+    const name = newChanName.trim()
+    if (!name) return
 
+    try {
+      const token = accessToken || sessionStorage.getItem('genchat_access_token')
+      const res = await fetch('/chat.v1.ChannelService/CreateChannel', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          name: name,
+          memberUserIds: selectedGroupMembers,
+          type: 2,
+        }),
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        const chanId = `chan_${data.channel.id}`
+        setConversations((prev) => [
+          ...prev,
+          { id: chanId, name: data.channel.name || name, isDirect: false },
+        ])
+        setActiveChannelId(chanId)
+        setNewChanName('')
+        setSelectedGroupMembers([])
+        setShowNewChanModal(false)
+        return
+      }
+    } catch (err) {
+      console.warn('[ChatPage] Channel creation error:', err)
+    }
+
+    const raw = name.toLowerCase().replace(/[^a-z0-9_-]/g, '')
     const chanId = `chan_${raw}`
     if (!conversations.some((c) => c.id === chanId)) {
       setConversations((prev) => [
@@ -973,6 +1058,7 @@ export default function ChatPage() {
     }
     setActiveChannelId(chanId)
     setNewChanName('')
+    setSelectedGroupMembers([])
     setShowNewChanModal(false)
   }
 
@@ -1050,19 +1136,19 @@ export default function ChatPage() {
               </p>
             </div>
           )}
-          {/* Channels */}
+          {/* Groups & Channels */}
           <div className="space-y-1">
             <div className="flex items-center justify-between px-2 py-1">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                Channels
+                Groups & Channels
               </p>
               <button
                 onClick={() => setShowNewChanModal(true)}
-                className="flex items-center space-x-1 text-[11px] text-indigo-400 hover:text-indigo-300 transition"
-                title="Create new channel"
+                className="flex items-center space-x-1 text-[11px] text-cyan-400 hover:text-cyan-300 transition"
+                title="Create new encrypted group chat"
               >
                 <Plus className="h-3.5 w-3.5" />
-                <span>New</span>
+                <span>New Group</span>
               </button>
             </div>
             {channelConversations.map((chan) => (
@@ -1075,16 +1161,16 @@ export default function ChatPage() {
                 }}
                 className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
                   activeChannelId === chan.id
-                    ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30'
+                    ? 'bg-cyan-600/20 text-cyan-300 border border-cyan-500/30'
                     : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
                 }`}
               >
                 <div className="flex items-center space-x-2 truncate">
-                  <Hash className="h-4 w-4 shrink-0 text-slate-500" />
+                  <Users className="h-4 w-4 shrink-0 text-cyan-400" />
                   <span className="truncate">{chan.name}</span>
                 </div>
                 {unreadCounts[chan.id] > 0 && (
-                  <span className="rounded-full bg-indigo-600 px-1.5 py-0.5 text-[10px] font-bold text-white shrink-0">
+                  <span className="rounded-full bg-cyan-600 px-1.5 py-0.5 text-[10px] font-bold text-white shrink-0">
                     {unreadCounts[chan.id]}
                   </span>
                 )}
@@ -1674,14 +1760,14 @@ export default function ChatPage() {
         </div>
       )}
 
-      {/* --- Create Channel Modal --- */}
+      {/* --- Create Encrypted Group Chat Modal --- */}
       {showNewChanModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4">
           <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center space-x-2">
-                <Hash className="h-5 w-5 text-indigo-400" />
-                <h3 className="font-semibold text-slate-100">Create New Channel</h3>
+                <Users className="h-5 w-5 text-cyan-400" />
+                <h3 className="font-semibold text-slate-100">Create Encrypted Group Chat</h3>
               </div>
               <button onClick={() => setShowNewChanModal(false)} className="text-slate-400 hover:text-slate-200">
                 <X className="h-5 w-5" />
@@ -1691,19 +1777,68 @@ export default function ChatPage() {
             <form onSubmit={handleCreateChannel} className="space-y-4">
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1">
-                  Channel Name
+                  Group Name
                 </label>
                 <div className="flex items-center rounded-xl border border-slate-800 bg-slate-950 px-3">
                   <span className="text-slate-500 text-sm">#</span>
                   <input
                     type="text"
                     required
-                    placeholder="e.g. security-team or project-nexus"
+                    placeholder="e.g. Engineering Guild or Incident Response"
                     value={newChanName}
                     onChange={(e) => setNewChanName(e.target.value)}
                     className="w-full bg-transparent px-2 py-2.5 text-sm text-slate-100 placeholder-slate-600 focus:outline-none"
                     autoFocus
                   />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Invite Members ({selectedGroupMembers.length} selected)
+                </label>
+                <div className="max-h-44 overflow-y-auto rounded-xl border border-slate-800 bg-slate-950 p-2 space-y-1">
+                  {isLoadingUsers ? (
+                    <div className="flex items-center justify-center py-4 text-xs text-slate-500 space-x-2">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      <span>Loading user directory...</span>
+                    </div>
+                  ) : availableUsers.filter((u) => !u.isSelf).length === 0 ? (
+                    <p className="text-xs text-slate-500 p-2 text-center">No other users registered yet.</p>
+                  ) : (
+                    availableUsers
+                      .filter((u) => !u.isSelf)
+                      .map((u) => {
+                        const isSelected = selectedGroupMembers.includes(u.userId)
+                        return (
+                          <label
+                            key={u.userId}
+                            className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition text-xs ${
+                              isSelected
+                                ? 'bg-cyan-600/20 text-cyan-200 border border-cyan-500/30'
+                                : 'text-slate-300 hover:bg-slate-900'
+                            }`}
+                          >
+                            <div className="flex items-center space-x-2 truncate">
+                              <User className="h-3.5 w-3.5 text-slate-400" />
+                              <span className="truncate font-medium">{u.displayName || u.userId.slice(0, 8)}</span>
+                            </div>
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedGroupMembers((prev) => [...prev, u.userId])
+                                } else {
+                                  setSelectedGroupMembers((prev) => prev.filter((id) => id !== u.userId))
+                                }
+                              }}
+                              className="rounded border-slate-700 bg-slate-900 text-cyan-600 focus:ring-0"
+                            />
+                          </label>
+                        )
+                      })
+                  )}
                 </div>
               </div>
 
@@ -1717,9 +1852,9 @@ export default function ChatPage() {
                 </button>
                 <button
                   type="submit"
-                  className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-500 transition"
+                  className="rounded-xl bg-cyan-600 px-4 py-2 text-xs font-medium text-white hover:bg-cyan-500 transition"
                 >
-                  Create Channel
+                  Create Group
                 </button>
               </div>
             </form>

@@ -66,6 +66,8 @@ func main() {
 	authHandler := handler.NewAuthHandler(pgStore, waConf, jwtSecret, turnSharedSecret, turnRealm, turnURLs, allowedOrigins)
 	chatv1.RegisterAuthServiceServer(grpcServer, authHandler)
 	chatv1.RegisterPushServiceServer(grpcServer, authHandler)
+	chatv1.RegisterChannelServiceServer(grpcServer, authHandler)
+	chatv1.RegisterKeyServiceServer(grpcServer, authHandler)
 	reflection.Register(grpcServer)
 
 	lis, err := net.Listen("tcp", listenAddr)

@@ -131,19 +131,21 @@ type CallSignalPushFrame struct {
 
 // Router handles message routing between connected clients.
 type Router struct {
-	hub        *ws.Hub
-	ledger     *ledgerclient.Client
-	pushClient chatv1.PushServiceClient
-	dispatcher *push.Dispatcher
+	hub           *ws.Hub
+	ledger        *ledgerclient.Client
+	pushClient    chatv1.PushServiceClient
+	channelClient chatv1.ChannelServiceClient
+	dispatcher    *push.Dispatcher
 }
 
-// NewRouter builds a Router. ledger, pushClient, or dispatcher may be nil in tests.
-func NewRouter(hub *ws.Hub, ledger *ledgerclient.Client, pushClient chatv1.PushServiceClient, dispatcher *push.Dispatcher) *Router {
+// NewRouter builds a Router. ledger, pushClient, channelClient, or dispatcher may be nil in tests.
+func NewRouter(hub *ws.Hub, ledger *ledgerclient.Client, pushClient chatv1.PushServiceClient, channelClient chatv1.ChannelServiceClient, dispatcher *push.Dispatcher) *Router {
 	return &Router{
-		hub:        hub,
-		ledger:     ledger,
-		pushClient: pushClient,
-		dispatcher: dispatcher,
+		hub:           hub,
+		ledger:        ledger,
+		pushClient:    pushClient,
+		channelClient: channelClient,
+		dispatcher:    dispatcher,
 	}
 }
 
@@ -164,8 +166,8 @@ func (r *Router) Handle(ctx context.Context, conn *ws.Conn, data []byte) error {
 		return r.handleFetchHistory(ctx, conn, data)
 	case "typing":
 		return r.handleTyping(conn, data)
-	case "read_receipt":
-		return r.handleReadReceipt(conn, data)
+	case "read_receipt", "ack_receipt":
+		return r.handleReadReceipt(ctx, conn, data)
 	case "call_signal":
 		return r.handleCallSignal(conn, data)
 	case "ping":
@@ -238,8 +240,44 @@ func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []by
 	})
 
 	if strings.HasPrefix(frame.ChannelID, "chan_") {
-		// Public channel: broadcast to all connected users except sender
-		r.hub.BroadcastAll(conn.UserID, push)
+		cleanID := strings.TrimPrefix(frame.ChannelID, "chan_")
+		var memberIDs []string
+
+		if r.channelClient != nil {
+			resp, err := r.channelClient.GetChannelMembers(ctx, &chatv1.GetChannelMembersRequest{
+				ChannelId: cleanID,
+			})
+			if err == nil && len(resp.GetMembers()) > 0 {
+				isMember := false
+				for _, m := range resp.GetMembers() {
+					if m.GetUserId() == conn.UserID {
+						isMember = true
+					}
+					memberIDs = append(memberIDs, m.GetUserId())
+				}
+				if !isMember {
+					return r.sendError(conn, "FORBIDDEN", "user is not a member of this channel")
+				}
+			} else {
+				slog.Debug("channel member lookup skipped or failed; using broadcast", "channel", frame.ChannelID, "error", err)
+			}
+		}
+
+		if len(memberIDs) > 0 {
+			for _, uid := range memberIDs {
+				if uid == conn.UserID {
+					continue
+				}
+				if r.hub.IsOnline(uid) {
+					r.hub.SendToUser(uid, push)
+				} else if r.dispatcher != nil {
+					go r.notifyOfflineRecipient(uid, frame.ChannelID, uint64(seqNum))
+				}
+			}
+		} else {
+			// Broadcast fallback (e.g. chan_public)
+			r.hub.BroadcastAll(conn.UserID, push)
+		}
 	} else {
 		// 1:1 Direct Message: route to recipient
 		recipientUserID := frame.ChannelID
@@ -360,28 +398,80 @@ func (r *Router) handleTyping(conn *ws.Conn, data []byte) error {
 	return nil
 }
 
-func (r *Router) handleReadReceipt(conn *ws.Conn, data []byte) error {
-	var frame ReadReceiptFrame
+func (r *Router) handleReadReceipt(ctx context.Context, conn *ws.Conn, data []byte) error {
+	var frame struct {
+		Action      string `json:"action"`
+		ChannelID   string `json:"channel_id"`
+		ServerID    string `json:"server_id"`
+		MessageID   string `json:"message_id"`
+		SequenceNum int64  `json:"sequence_num"`
+		ReceiptType string `json:"receipt_type"`
+	}
 	if err := json.Unmarshal(data, &frame); err != nil {
 		return nil
 	}
-	if frame.ChannelID == "" || frame.ServerID == "" {
+	if frame.ChannelID == "" {
 		return nil
 	}
+	msgID := frame.ServerID
+	if msgID == "" {
+		msgID = frame.MessageID
+	}
+	receiptType := frame.ReceiptType
+	if receiptType == "" {
+		if frame.Action == "read_receipt" {
+			receiptType = "read"
+		} else {
+			receiptType = "delivered"
+		}
+	}
 
-	push, _ := json.Marshal(ReadReceiptPushFrame{
-		Type:        "read_receipt",
-		ChannelID:   frame.ChannelID,
-		UserID:      conn.UserID,
-		ServerID:    frame.ServerID,
-		SequenceNum: frame.SequenceNum,
+	// Persist to ScyllaDB ledger if configured
+	if r.ledger != nil && msgID != "" {
+		conversationID := getConversationID(conn.UserID, frame.ChannelID)
+		if err := r.ledger.UpdateReceipt(ctx, conversationID, conn.UserID, receiptType, msgID, frame.SequenceNum); err != nil {
+			slog.Debug("failed to persist receipt in ledger", "error", err, "user", conn.UserID)
+		}
+	}
+
+	receiptPush, _ := json.Marshal(map[string]any{
+		"type":         "receipt",
+		"channel_id":   frame.ChannelID,
+		"user_id":      conn.UserID,
+		"server_id":    msgID,
+		"message_id":   msgID,
+		"sequence_num": frame.SequenceNum,
+		"receipt_type": receiptType,
+		"timestamp":    time.Now().Unix(),
 	})
 
 	if strings.HasPrefix(frame.ChannelID, "chan_") {
-		r.hub.BroadcastAll(conn.UserID, push)
+		cleanID := strings.TrimPrefix(frame.ChannelID, "chan_")
+		var memberIDs []string
+		if r.channelClient != nil {
+			resp, err := r.channelClient.GetChannelMembers(ctx, &chatv1.GetChannelMembersRequest{
+				ChannelId: cleanID,
+			})
+			if err == nil {
+				for _, m := range resp.GetMembers() {
+					memberIDs = append(memberIDs, m.GetUserId())
+				}
+			}
+		}
+		if len(memberIDs) > 0 {
+			for _, uid := range memberIDs {
+				if uid != conn.UserID {
+					r.hub.SendToUser(uid, receiptPush)
+				}
+			}
+		} else {
+			r.hub.BroadcastAll(conn.UserID, receiptPush)
+		}
 	} else {
-		r.hub.SendToUser(frame.ChannelID, push)
+		// DM: send receipt to original sender
+		r.hub.SendToUser(frame.ChannelID, receiptPush)
 	}
+
 	return nil
 }
 
