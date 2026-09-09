@@ -158,7 +158,6 @@ func TestUnaryAuthInterceptor_Enforcement(t *testing.T) {
 			"/chat.v1.AuthService/FinishLogin",
 			"/chat.v1.AuthService/RefreshToken",
 			"/chat.v1.AuthService/DevToken",
-			"/chat.v1.KeyService/FetchPreKeyBundle",
 			"/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo",
 		}
 

@@ -11,6 +11,30 @@ import (
 	"github.com/genchat/services/auth/internal/store"
 )
 
+// verifyDeviceOwnership verifies that the authenticated caller in ctx owns the specified devUUID.
+//
+// SECURITY CRITICAL:
+// In PQXDH, allowing an attacker to upload pre-keys for another user's device enables
+// pre-key substitution / MITM: the attacker plants their own signed pre-key and can
+// decrypt initial session establishment messages intended for the victim.
+func (h *AuthHandler) verifyDeviceOwnership(ctx context.Context, devUUID uuid.UUID) (uuid.UUID, error) {
+	callerUserID, err := getUserIDFromCtx(ctx)
+	if err != nil || callerUserID == uuid.Nil {
+		return uuid.Nil, status.Error(codes.Unauthenticated, "missing or invalid user authentication")
+	}
+
+	if h.store != nil {
+		device, err := h.store.GetDeviceByID(ctx, devUUID)
+		if err != nil {
+			return uuid.Nil, status.Errorf(codes.NotFound, "device not found: %v", err)
+		}
+		if device.UserID != callerUserID {
+			return uuid.Nil, status.Error(codes.PermissionDenied, "permission denied: caller does not own target device")
+		}
+	}
+	return callerUserID, nil
+}
+
 func (h *AuthHandler) UploadPreKeyBundle(ctx context.Context, req *chatv1.UploadPreKeyBundleRequest) (*chatv1.UploadPreKeyBundleResponse, error) {
 	if req.DeviceId == "" {
 		return nil, status.Error(codes.InvalidArgument, "device_id is required")
@@ -20,20 +44,8 @@ func (h *AuthHandler) UploadPreKeyBundle(ctx context.Context, req *chatv1.Upload
 		return nil, status.Error(codes.InvalidArgument, "invalid device_id")
 	}
 
-	if callerUserID, err := getUserIDFromCtx(ctx); err == nil && callerUserID != uuid.Nil {
-		devices, devErr := h.store.GetDevicesByUser(ctx, callerUserID)
-		if devErr == nil && len(devices) > 0 {
-			ownsDevice := false
-			for _, d := range devices {
-				if d.ID == devUUID {
-					ownsDevice = true
-					break
-				}
-			}
-			if !ownsDevice {
-				return nil, status.Error(codes.PermissionDenied, "cannot upload pre-key bundle for another user's device")
-			}
-		}
+	if _, err := h.verifyDeviceOwnership(ctx, devUUID); err != nil {
+		return nil, err
 	}
 
 	if req.SignedPreKey == nil {
@@ -79,6 +91,12 @@ func (h *AuthHandler) UploadPreKeyBundle(ctx context.Context, req *chatv1.Upload
 }
 
 func (h *AuthHandler) FetchPreKeyBundle(ctx context.Context, req *chatv1.FetchPreKeyBundleRequest) (*chatv1.FetchPreKeyBundleResponse, error) {
+	// SECURITY: Pre-key bundle discovery is open to any authenticated peer to establish
+	// PQXDH ratchet sessions, but unauthenticated/anonymous callers are strictly rejected.
+	if _, err := getUserIDFromCtx(ctx); err != nil {
+		return nil, status.Error(codes.Unauthenticated, "missing or invalid user authentication")
+	}
+
 	if req.DeviceId == "" {
 		return nil, status.Error(codes.InvalidArgument, "device_id is required")
 	}
@@ -136,20 +154,8 @@ func (h *AuthHandler) GetKeyCount(ctx context.Context, req *chatv1.GetKeyCountRe
 		return nil, status.Error(codes.InvalidArgument, "invalid device_id")
 	}
 
-	if callerUserID, err := getUserIDFromCtx(ctx); err == nil && callerUserID != uuid.Nil {
-		devices, devErr := h.store.GetDevicesByUser(ctx, callerUserID)
-		if devErr == nil && len(devices) > 0 {
-			ownsDevice := false
-			for _, d := range devices {
-				if d.ID == devUUID {
-					ownsDevice = true
-					break
-				}
-			}
-			if !ownsDevice {
-				return nil, status.Error(codes.PermissionDenied, "cannot query key count for another user's device")
-			}
-		}
+	if _, err := h.verifyDeviceOwnership(ctx, devUUID); err != nil {
+		return nil, err
 	}
 
 	count, err := h.store.GetRemainingOneTimeKeyCount(ctx, devUUID)
@@ -171,20 +177,8 @@ func (h *AuthHandler) UploadOneTimeKeys(ctx context.Context, req *chatv1.UploadO
 		return nil, status.Error(codes.InvalidArgument, "invalid device_id")
 	}
 
-	if callerUserID, err := getUserIDFromCtx(ctx); err == nil && callerUserID != uuid.Nil {
-		devices, devErr := h.store.GetDevicesByUser(ctx, callerUserID)
-		if devErr == nil && len(devices) > 0 {
-			ownsDevice := false
-			for _, d := range devices {
-				if d.ID == devUUID {
-					ownsDevice = true
-					break
-				}
-			}
-			if !ownsDevice {
-				return nil, status.Error(codes.PermissionDenied, "cannot upload one-time keys for another user's device")
-			}
-		}
+	if _, err := h.verifyDeviceOwnership(ctx, devUUID); err != nil {
+		return nil, err
 	}
 
 	if len(req.Keys) == 0 {

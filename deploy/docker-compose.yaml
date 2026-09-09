@@ -77,7 +77,6 @@ services:
       dockerfile: Dockerfile
       target: auth
     ports:
-      - "50051:50051"
       - "8080:8080"
     environment:
       - POSTGRES_URL=postgres://genchat:dev_password@postgres:5432/genchat?sslmode=disable

@@ -77,8 +77,7 @@ func isPublicMethod(fullMethod string) bool {
 		"/chat.v1.AuthService/BeginLogin",
 		"/chat.v1.AuthService/FinishLogin",
 		"/chat.v1.AuthService/RefreshToken",
-		"/chat.v1.AuthService/DevToken",
-		"/chat.v1.KeyService/FetchPreKeyBundle":
+		"/chat.v1.AuthService/DevToken":
 		return true
 	default:
 		return false

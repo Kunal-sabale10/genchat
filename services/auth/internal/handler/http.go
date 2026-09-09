@@ -16,6 +16,8 @@ import (
 
 	chatv1 "github.com/genchat/proto/gen/chat/v1"
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func writeErrorJSON(w http.ResponseWriter, r *http.Request, publicMsg string, statusCode int, internalErr error) {
@@ -859,6 +861,11 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 		ctx := WithUserAndDevice(r.Context(), claims.Sub, claims.DeviceID)
 		resp, err := h.UploadPreKeyBundle(ctx, pbReq)
 		if err != nil {
+			st, _ := status.FromError(err)
+			if st.Code() == codes.PermissionDenied {
+				writeErrorJSON(w, r, "permission denied: cannot upload pre-key bundle for another user's device", http.StatusForbidden, err)
+				return
+			}
 			writeErrorJSON(w, r, "failed to upload prekey bundle", http.StatusInternalServerError, err)
 			return
 		}
@@ -924,6 +931,11 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			Keys:     keys,
 		})
 		if err != nil {
+			st, _ := status.FromError(err)
+			if st.Code() == codes.PermissionDenied {
+				writeErrorJSON(w, r, "permission denied: cannot upload keys for another user's device", http.StatusForbidden, err)
+				return
+			}
 			writeErrorJSON(w, r, "failed to upload one-time keys", http.StatusInternalServerError, err)
 			return
 		}
@@ -959,6 +971,11 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 		ctx := WithUserAndDevice(r.Context(), claims.Sub, deviceID)
 		resp, err := h.GetKeyCount(ctx, &chatv1.GetKeyCountRequest{DeviceId: deviceID})
 		if err != nil {
+			st, _ := status.FromError(err)
+			if st.Code() == codes.PermissionDenied {
+				writeErrorJSON(w, r, "permission denied: cannot query key count for another user's device", http.StatusForbidden, err)
+				return
+			}
 			writeErrorJSON(w, r, "failed to get key count", http.StatusInternalServerError, err)
 			return
 		}
@@ -973,6 +990,18 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 	mux.HandleFunc("/chat.v1.KeyService/FetchPreKeyBundle", cors(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodPost {
 			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" || !strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+			writeErrorJSON(w, r, "missing authorization header", http.StatusUnauthorized, nil)
+			return
+		}
+		token := strings.TrimSpace(authHeader[7:])
+		claims, err := h.VerifyJWT(token)
+		if err != nil {
+			writeErrorJSON(w, r, "invalid or expired authorization token", http.StatusUnauthorized, err)
 			return
 		}
 
@@ -1010,12 +1039,23 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			return
 		}
 
-		resp, err := h.FetchPreKeyBundle(r.Context(), &chatv1.FetchPreKeyBundleRequest{
+		ctx := WithUserAndDevice(r.Context(), claims.Sub, claims.DeviceID)
+		resp, err := h.FetchPreKeyBundle(ctx, &chatv1.FetchPreKeyBundleRequest{
 			UserId:   targetUserID,
 			DeviceId: targetDeviceID,
 		})
 		if err != nil {
-			writeErrorJSON(w, r, "bundle not found", http.StatusNotFound, err)
+			st, _ := status.FromError(err)
+			switch st.Code() {
+			case codes.Unauthenticated:
+				writeErrorJSON(w, r, "unauthenticated", http.StatusUnauthorized, err)
+			case codes.PermissionDenied:
+				writeErrorJSON(w, r, "permission denied", http.StatusForbidden, err)
+			case codes.InvalidArgument:
+				writeErrorJSON(w, r, "invalid argument", http.StatusBadRequest, err)
+			default:
+				writeErrorJSON(w, r, "bundle not found", http.StatusNotFound, err)
+			}
 			return
 		}
 

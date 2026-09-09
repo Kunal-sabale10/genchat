@@ -155,6 +155,16 @@ func (s *PostgresStore) GetDevicesByUser(ctx context.Context, userID uuid.UUID) 
 	return devices, rows.Err()
 }
 
+func (s *PostgresStore) GetDeviceByID(ctx context.Context, id uuid.UUID) (*Device, error) {
+	d := &Device{}
+	err := s.pool.QueryRow(ctx, `SELECT id, user_id, identity_key, device_label, webauthn_cred, last_seen_at, created_at FROM user_devices WHERE id = $1`, id).
+		Scan(&d.ID, &d.UserID, &d.IdentityKey, &d.Label, &d.WebauthnCred, &d.LastSeenAt, &d.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get device by id failed: %w", err)
+	}
+	return d, nil
+}
+
 func (s *PostgresStore) UpdateDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error {
 	_, err := s.pool.Exec(ctx, `UPDATE user_devices SET last_seen_at = $1 WHERE id = $2`, time.Now(), deviceID)
 	return err

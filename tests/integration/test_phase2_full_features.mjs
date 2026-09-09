@@ -453,11 +453,32 @@ async function runPhase2Tests() {
   const unauthCountRes = await fetch(`${AUTH_URL}/chat.v1.KeyService/GetKeyCount?deviceId=${aliceDevId}`)
   assert(unauthCountRes.status === 401, 'Unauthenticated GetKeyCount rejected with HTTP 401')
 
-  // 5f. Attempting to query/upload keys for another user's device fails with 403 Forbidden
+  // 5f. Attempting to query keys for another user's device fails with 403 Forbidden
   const crossUserCountRes = await fetch(`${AUTH_URL}/chat.v1.KeyService/GetKeyCount?deviceId=${bobDevId}`, {
     headers: { Authorization: `Bearer ${aliceToken}` },
   })
-  assert(crossUserCountRes.status === 403 || crossUserCountRes.status === 500, 'Cross-user device key manipulation rejected')
+  assert(crossUserCountRes.status === 403, 'Cross-user device key count query rejected with HTTP 403 Forbidden')
+
+  // 5g. Attempting to fetch pre-key bundle without token fails with 401 Unauthorized
+  const unauthFetchRes = await fetch(`${AUTH_URL}/chat.v1.KeyService/FetchPreKeyBundle?deviceId=${aliceDevId}`)
+  assert(unauthFetchRes.status === 401, 'Unauthenticated FetchPreKeyBundle rejected with HTTP 401')
+
+  // 5h. Attempting to upload one-time keys for another user's device fails with 403 Forbidden
+  const crossUserUploadOTKRes = await fetch(`${AUTH_URL}/chat.v1.KeyService/UploadOneTimeKeys`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${aliceToken}`,
+    },
+    body: JSON.stringify({ deviceId: bobDevId, keys: [] }),
+  })
+  assert(crossUserUploadOTKRes.status === 403, 'Cross-user OTK upload rejected with HTTP 403 Forbidden')
+
+  // 5i. Authenticated peer fetching another user's pre-key bundle succeeds with 200
+  const authFetchPeerRes = await fetch(`${AUTH_URL}/chat.v1.KeyService/FetchPreKeyBundle?deviceId=${aliceDevId}`, {
+    headers: { Authorization: `Bearer ${bobToken}` },
+  })
+  assert(authFetchPeerRes.status === 200, 'Authenticated peer FetchPreKeyBundle succeeds with HTTP 200')
 
   // =========================================================================
   // SUMMARY

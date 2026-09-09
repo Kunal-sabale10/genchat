@@ -23,12 +23,49 @@ import (
 	waconfig "github.com/genchat/services/auth/internal/webauthn"
 )
 
+type AuthStore interface {
+	CreateUser(ctx context.Context, displayName string, identityKey []byte) (uuid.UUID, error)
+	GetUserByID(ctx context.Context, id uuid.UUID) (*store.User, error)
+	GetUserByIdentityKey(ctx context.Context, key []byte) (*store.User, error)
+	ListUsers(ctx context.Context, limit int) ([]*store.User, error)
+
+	CreateDevice(ctx context.Context, userID uuid.UUID, identityKey []byte, label string, webauthnCred []byte) (uuid.UUID, error)
+	GetDeviceByID(ctx context.Context, id uuid.UUID) (*store.Device, error)
+	GetDevicesByUser(ctx context.Context, userID uuid.UUID) ([]*store.Device, error)
+	UpdateDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error
+
+	UploadPreKeyBundle(ctx context.Context, deviceID uuid.UUID, spk, spkSig []byte, spkID uint32, pqpk, pqpkSig []byte, pqpkID uint32) error
+	UploadOneTimeKeys(ctx context.Context, deviceID uuid.UUID, keys []store.OTK) error
+	FetchPreKeyBundle(ctx context.Context, userID, deviceID uuid.UUID) (*store.PreKeyBundle, error)
+	GetRemainingOneTimeKeyCount(ctx context.Context, deviceID uuid.UUID) (int, error)
+
+	CreateAuthSession(ctx context.Context, userID, deviceID uuid.UUID, refreshTokenHash []byte, expiresAt time.Time) error
+	GetAuthSession(ctx context.Context, refreshTokenHash []byte) (*store.AuthSession, error)
+	RevokeAuthSession(ctx context.Context, sessionID uuid.UUID) error
+
+	SaveCeremony(ctx context.Context, sessionID, ceremonyType string, sessionData, userID []byte, displayName string, expiresAt time.Time) error
+	GetCeremony(ctx context.Context, sessionID string) (*store.Ceremony, error)
+	DeleteCeremony(ctx context.Context, sessionID string) error
+
+	CreateChannel(ctx context.Context, channelType, name string, creatorID *uuid.UUID, memberIDs []uuid.UUID) (*store.Channel, error)
+	JoinChannel(ctx context.Context, channelID, userID uuid.UUID) error
+	LeaveChannel(ctx context.Context, channelID, userID uuid.UUID) error
+	ListUserChannels(ctx context.Context, userID uuid.UUID, limit int) ([]store.Channel, error)
+	GetChannelMembers(ctx context.Context, channelID uuid.UUID) ([]store.ChannelMember, error)
+
+	RegisterPushToken(ctx context.Context, pt *store.PushToken) error
+	UnregisterPushToken(ctx context.Context, deviceID uuid.UUID) error
+	GetPushTokensForUser(ctx context.Context, userID uuid.UUID) ([]store.PushToken, error)
+
+	EnsureDevUserAndDevice(ctx context.Context, userID, deviceID uuid.UUID, displayName string) error
+}
+
 type AuthHandler struct {
 	chatv1.UnimplementedAuthServiceServer
 	chatv1.UnimplementedPushServiceServer
 	chatv1.UnimplementedChannelServiceServer
 	chatv1.UnimplementedKeyServiceServer
-	store            *store.PostgresStore
+	store            AuthStore
 	wa               *waconfig.Config
 	jwtSecret        string
 	turnSharedSecret string
@@ -40,7 +77,7 @@ type AuthHandler struct {
 }
 
 func NewAuthHandler(
-	store *store.PostgresStore,
+	store AuthStore,
 	wa *waconfig.Config,
 	jwtSecret, turnSharedSecret, turnRealm string,
 	turnURLs, allowedOrigins []string,
