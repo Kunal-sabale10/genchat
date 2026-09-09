@@ -5,26 +5,11 @@ import (
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	chatv1 "github.com/genchat/proto/gen/chat/v1"
 )
-
-func getUserIDFromCtx(ctx context.Context) (uuid.UUID, error) {
-	if val := ctx.Value("user_id"); val != nil {
-		if s, ok := val.(string); ok && s != "" {
-			return uuid.Parse(s)
-		}
-	}
-	if md, ok := metadata.FromIncomingContext(ctx); ok {
-		if vals := md.Get("x-user-id"); len(vals) > 0 && vals[0] != "" {
-			return uuid.Parse(vals[0])
-		}
-	}
-	return uuid.Nil, status.Error(codes.Unauthenticated, "missing user authentication")
-}
 
 func (h *AuthHandler) CreateChannel(ctx context.Context, req *chatv1.CreateChannelRequest) (*chatv1.CreateChannelResponse, error) {
 	creatorID, err := getUserIDFromCtx(ctx)

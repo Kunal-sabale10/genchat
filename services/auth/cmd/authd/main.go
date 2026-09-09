@@ -62,8 +62,11 @@ func main() {
 	pgStore := store.NewPostgresStore(pool)
 	waConf := waconfig.NewConfig(rpID, rpOrigin, "GenChat")
 
-	grpcServer := grpc.NewServer()
 	authHandler := handler.NewAuthHandler(pgStore, waConf, jwtSecret, turnSharedSecret, turnRealm, turnURLs, allowedOrigins)
+	grpcServer := grpc.NewServer(
+		grpc.UnaryInterceptor(authHandler.UnaryAuthInterceptor()),
+		grpc.StreamInterceptor(authHandler.StreamAuthInterceptor()),
+	)
 	chatv1.RegisterAuthServiceServer(grpcServer, authHandler)
 	chatv1.RegisterPushServiceServer(grpcServer, authHandler)
 	chatv1.RegisterChannelServiceServer(grpcServer, authHandler)

@@ -20,6 +20,22 @@ func (h *AuthHandler) UploadPreKeyBundle(ctx context.Context, req *chatv1.Upload
 		return nil, status.Error(codes.InvalidArgument, "invalid device_id")
 	}
 
+	if callerUserID, err := getUserIDFromCtx(ctx); err == nil && callerUserID != uuid.Nil {
+		devices, devErr := h.store.GetDevicesByUser(ctx, callerUserID)
+		if devErr == nil && len(devices) > 0 {
+			ownsDevice := false
+			for _, d := range devices {
+				if d.ID == devUUID {
+					ownsDevice = true
+					break
+				}
+			}
+			if !ownsDevice {
+				return nil, status.Error(codes.PermissionDenied, "cannot upload pre-key bundle for another user's device")
+			}
+		}
+	}
+
 	if req.SignedPreKey == nil {
 		return nil, status.Error(codes.InvalidArgument, "signed_pre_key is required")
 	}
@@ -120,6 +136,22 @@ func (h *AuthHandler) GetKeyCount(ctx context.Context, req *chatv1.GetKeyCountRe
 		return nil, status.Error(codes.InvalidArgument, "invalid device_id")
 	}
 
+	if callerUserID, err := getUserIDFromCtx(ctx); err == nil && callerUserID != uuid.Nil {
+		devices, devErr := h.store.GetDevicesByUser(ctx, callerUserID)
+		if devErr == nil && len(devices) > 0 {
+			ownsDevice := false
+			for _, d := range devices {
+				if d.ID == devUUID {
+					ownsDevice = true
+					break
+				}
+			}
+			if !ownsDevice {
+				return nil, status.Error(codes.PermissionDenied, "cannot query key count for another user's device")
+			}
+		}
+	}
+
 	count, err := h.store.GetRemainingOneTimeKeyCount(ctx, devUUID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to get one-time key count: %v", err)
@@ -137,6 +169,22 @@ func (h *AuthHandler) UploadOneTimeKeys(ctx context.Context, req *chatv1.UploadO
 	devUUID, err := uuid.Parse(req.DeviceId)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid device_id")
+	}
+
+	if callerUserID, err := getUserIDFromCtx(ctx); err == nil && callerUserID != uuid.Nil {
+		devices, devErr := h.store.GetDevicesByUser(ctx, callerUserID)
+		if devErr == nil && len(devices) > 0 {
+			ownsDevice := false
+			for _, d := range devices {
+				if d.ID == devUUID {
+					ownsDevice = true
+					break
+				}
+			}
+			if !ownsDevice {
+				return nil, status.Error(codes.PermissionDenied, "cannot upload one-time keys for another user's device")
+			}
+		}
 	}
 
 	if len(req.Keys) == 0 {

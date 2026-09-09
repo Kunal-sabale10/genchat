@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/base64"
@@ -456,7 +455,7 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 		p256dhBytes, _ := base64.StdEncoding.DecodeString(req.P256dh)
 		authBytes, _ := base64.StdEncoding.DecodeString(req.Auth)
 
-		ctx := context.WithValue(r.Context(), "user_id", claims.Sub)
+		ctx := WithUserAndDevice(r.Context(), claims.Sub, req.DeviceID)
 		_, err = h.RegisterPushToken(ctx, &chatv1.RegisterPushTokenRequest{
 			DeviceId: req.DeviceID,
 			Platform: chatv1.PushPlatform(req.Platform),
@@ -510,7 +509,8 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			req.DeviceID = claims.DeviceID
 		}
 
-		_, err = h.UnregisterPushToken(r.Context(), &chatv1.UnregisterPushTokenRequest{
+		ctx := WithUserAndDevice(r.Context(), claims.Sub, req.DeviceID)
+		_, err = h.UnregisterPushToken(ctx, &chatv1.UnregisterPushTokenRequest{
 			DeviceId: req.DeviceID,
 		})
 		if err != nil {
@@ -600,7 +600,7 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			cType = chatv1.ChannelType(req.Type)
 		}
 
-		ctx := context.WithValue(r.Context(), "user_id", claims.Sub)
+		ctx := WithUserAndDevice(r.Context(), claims.Sub, claims.DeviceID)
 		resp, err := h.CreateChannel(ctx, &chatv1.CreateChannelRequest{
 			Name:          req.Name,
 			Type:          cType,
@@ -631,7 +631,7 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), "user_id", claims.Sub)
+		ctx := WithUserAndDevice(r.Context(), claims.Sub, claims.DeviceID)
 		resp, err := h.ListChannels(ctx, &chatv1.ListChannelsRequest{Limit: 50})
 		if err != nil {
 			writeErrorJSON(w, r, "failed to list channels", http.StatusInternalServerError, err)
@@ -711,7 +711,7 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			channelID = req.ChannelId
 		}
 
-		ctx := context.WithValue(r.Context(), "user_id", claims.Sub)
+		ctx := WithUserAndDevice(r.Context(), claims.Sub, claims.DeviceID)
 		resp, err := h.JoinChannel(ctx, &chatv1.JoinChannelRequest{ChannelId: channelID})
 		if err != nil {
 			writeErrorJSON(w, r, "failed to join channel", http.StatusInternalServerError, err)
@@ -749,7 +749,7 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			channelID = req.ChannelId
 		}
 
-		ctx := context.WithValue(r.Context(), "user_id", claims.Sub)
+		ctx := WithUserAndDevice(r.Context(), claims.Sub, claims.DeviceID)
 		resp, err := h.LeaveChannel(ctx, &chatv1.LeaveChannelRequest{ChannelId: channelID})
 		if err != nil {
 			writeErrorJSON(w, r, "failed to leave channel", http.StatusInternalServerError, err)
@@ -856,7 +856,8 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			}
 		}
 
-		resp, err := h.UploadPreKeyBundle(r.Context(), pbReq)
+		ctx := WithUserAndDevice(r.Context(), claims.Sub, claims.DeviceID)
+		resp, err := h.UploadPreKeyBundle(ctx, pbReq)
 		if err != nil {
 			writeErrorJSON(w, r, "failed to upload prekey bundle", http.StatusInternalServerError, err)
 			return
@@ -917,7 +918,8 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			}
 		}
 
-		resp, err := h.UploadOneTimeKeys(r.Context(), &chatv1.UploadOneTimeKeysRequest{
+		ctx := WithUserAndDevice(r.Context(), claims.Sub, deviceID)
+		resp, err := h.UploadOneTimeKeys(ctx, &chatv1.UploadOneTimeKeysRequest{
 			DeviceId: deviceID,
 			Keys:     keys,
 		})
@@ -954,7 +956,8 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			deviceID = claims.DeviceID
 		}
 
-		resp, err := h.GetKeyCount(r.Context(), &chatv1.GetKeyCountRequest{DeviceId: deviceID})
+		ctx := WithUserAndDevice(r.Context(), claims.Sub, deviceID)
+		resp, err := h.GetKeyCount(ctx, &chatv1.GetKeyCountRequest{DeviceId: deviceID})
 		if err != nil {
 			writeErrorJSON(w, r, "failed to get key count", http.StatusInternalServerError, err)
 			return

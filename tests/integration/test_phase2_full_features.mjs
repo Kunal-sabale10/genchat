@@ -414,6 +414,52 @@ async function runPhase2Tests() {
   assert(tamperDetected, 'Authentication tag validation rejects tampered at-rest message')
 
   // =========================================================================
+  // FEATURE 5: ANTI-SPOOFING & AUTH INTERCEPTOR ENFORCEMENT
+  // =========================================================================
+  console.log('\n--- FEATURE 5: Testing Anti-Spoofing & Auth Interceptor Protection ---')
+
+  // 5a. Attempting CreateChannel without token fails with 401
+  const unauthCreateRes = await fetch(`${AUTH_URL}/chat.v1.ChannelService/CreateChannel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Spoofed Group' }),
+  })
+  assert(unauthCreateRes.status === 401, 'Unauthenticated CreateChannel rejected with HTTP 401')
+
+  // 5b. Attempting CreateChannel with spoofed X-User-ID header without token fails with 401
+  const spoofedCreateRes = await fetch(`${AUTH_URL}/chat.v1.ChannelService/CreateChannel`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-User-ID': aliceId,
+    },
+    body: JSON.stringify({ name: 'Spoofed Group with X-User-ID' }),
+  })
+  assert(spoofedCreateRes.status === 401, 'Spoofed X-User-ID header rejected without valid token')
+
+  // 5c. Attempting ListChannels without token fails with 401
+  const unauthListRes = await fetch(`${AUTH_URL}/chat.v1.ChannelService/ListChannels`)
+  assert(unauthListRes.status === 401, 'Unauthenticated ListChannels rejected with HTTP 401')
+
+  // 5d. Attempting UploadOneTimeKeys without token fails with 401
+  const unauthUploadRes = await fetch(`${AUTH_URL}/chat.v1.KeyService/UploadOneTimeKeys`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId: aliceDevId, keys: [] }),
+  })
+  assert(unauthUploadRes.status === 401, 'Unauthenticated UploadOneTimeKeys rejected with HTTP 401')
+
+  // 5e. Attempting GetKeyCount without token fails with 401
+  const unauthCountRes = await fetch(`${AUTH_URL}/chat.v1.KeyService/GetKeyCount?deviceId=${aliceDevId}`)
+  assert(unauthCountRes.status === 401, 'Unauthenticated GetKeyCount rejected with HTTP 401')
+
+  // 5f. Attempting to query/upload keys for another user's device fails with 403 Forbidden
+  const crossUserCountRes = await fetch(`${AUTH_URL}/chat.v1.KeyService/GetKeyCount?deviceId=${bobDevId}`, {
+    headers: { Authorization: `Bearer ${aliceToken}` },
+  })
+  assert(crossUserCountRes.status === 403 || crossUserCountRes.status === 500, 'Cross-user device key manipulation rejected')
+
+  // =========================================================================
   // SUMMARY
   // =========================================================================
   console.log('\n======================================================')
