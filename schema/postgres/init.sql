@@ -140,3 +140,43 @@ CREATE TABLE IF NOT EXISTS device_push_tokens (
 );
 
 CREATE INDEX IF NOT EXISTS idx_push_tokens_user ON device_push_tokens(user_id);
+
+-- 006: MLS KeyPackages, Welcomes, and Commits
+CREATE TABLE IF NOT EXISTS user_mls_key_packages (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    device_id       UUID NOT NULL REFERENCES user_devices(id) ON DELETE CASCADE,
+    key_package     BYTEA NOT NULL,
+    is_consumed     BOOLEAN NOT NULL DEFAULT false,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mls_key_packages_lookup 
+    ON user_mls_key_packages(user_id, is_consumed) 
+    WHERE NOT is_consumed;
+
+CREATE TABLE IF NOT EXISTS channel_mls_welcomes (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    channel_id      UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    welcome_data    BYTEA NOT NULL,
+    epoch           BIGINT NOT NULL DEFAULT 0,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(channel_id, user_id, epoch)
+);
+
+CREATE INDEX IF NOT EXISTS idx_channel_welcomes_user 
+    ON channel_mls_welcomes(channel_id, user_id, epoch DESC);
+
+CREATE TABLE IF NOT EXISTS channel_mls_commits (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    channel_id      UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    sender_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    epoch           BIGINT NOT NULL,
+    commit_data     BYTEA NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(channel_id, epoch)
+);
+
+CREATE INDEX IF NOT EXISTS idx_channel_commits_epoch 
+    ON channel_mls_commits(channel_id, epoch DESC);

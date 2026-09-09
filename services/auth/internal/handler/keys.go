@@ -199,3 +199,61 @@ func (h *AuthHandler) UploadOneTimeKeys(ctx context.Context, req *chatv1.UploadO
 
 	return &chatv1.UploadOneTimeKeysResponse{}, nil
 }
+
+func (h *AuthHandler) UploadMlsKeyPackage(ctx context.Context, req *chatv1.UploadMlsKeyPackageRequest) (*chatv1.UploadMlsKeyPackageResponse, error) {
+	if req.DeviceId == "" {
+		return nil, status.Error(codes.InvalidArgument, "device_id is required")
+	}
+	devUUID, err := uuid.Parse(req.DeviceId)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid device_id")
+	}
+	if len(req.KeyPackageData) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "key_package_data is required")
+	}
+
+	callerUserID, err := h.verifyDeviceOwnership(ctx, devUUID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := h.store.SaveMlsKeyPackage(ctx, callerUserID, devUUID, req.KeyPackageData); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to save mls key package: %v", err)
+	}
+
+	return &chatv1.UploadMlsKeyPackageResponse{}, nil
+}
+
+func (h *AuthHandler) FetchMlsKeyPackage(ctx context.Context, req *chatv1.FetchMlsKeyPackageRequest) (*chatv1.FetchMlsKeyPackageResponse, error) {
+	// SECURITY: Pre-key discovery requires authenticated caller
+	if _, err := getUserIDFromCtx(ctx); err != nil {
+		return nil, status.Error(codes.Unauthenticated, "missing or invalid user authentication")
+	}
+
+	if req.UserId == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id is required")
+	}
+	targetUserID, err := uuid.Parse(req.UserId)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid user_id")
+	}
+
+	var targetDevID *uuid.UUID
+	if req.DeviceId != "" {
+		devUUID, err := uuid.Parse(req.DeviceId)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, "invalid device_id")
+		}
+		targetDevID = &devUUID
+	}
+
+	kpData, err := h.store.GetActiveMlsKeyPackage(ctx, targetUserID, targetDevID)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "failed to fetch mls key package: %v", err)
+	}
+
+	return &chatv1.FetchMlsKeyPackageResponse{
+		KeyPackageData: kpData,
+	}, nil
+}
+

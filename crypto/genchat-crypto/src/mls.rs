@@ -526,4 +526,51 @@ impl MlsGroup {
         cipher.decrypt(nonce, payload)
             .map_err(|e| CryptoError::DecryptionFailed(e.to_string()))
     }
+
+    /// Export local group state for client-side persistence
+    pub fn export_state(&self) -> MlsGroupState {
+        MlsGroupState {
+            group_id: self.group_id.clone(),
+            epoch: self.epoch,
+            my_leaf_index: self.my_leaf_index,
+            my_identity_secret: self.my_identity.secret_key_bytes(),
+            my_hpke_secret: self.my_hpke_secret.to_bytes(),
+            tree: self.tree.clone(),
+            epoch_secret: self.epoch_secret,
+            application_secret: self.application_secret,
+            message_generation: self.message_generation,
+        }
+    }
+
+    /// Restore local group state from persisted state
+    pub fn import_state(state: &MlsGroupState) -> Result<Self, CryptoError> {
+        let identity = IdentityKeyPair::from_bytes(&state.my_identity_secret)?;
+        let hpke_secret = StaticSecret::from(state.my_hpke_secret);
+
+        Ok(Self {
+            group_id: state.group_id.clone(),
+            epoch: state.epoch,
+            my_leaf_index: state.my_leaf_index,
+            my_identity: identity,
+            my_hpke_secret: hpke_secret,
+            tree: state.tree.clone(),
+            epoch_secret: state.epoch_secret,
+            application_secret: state.application_secret,
+            message_generation: state.message_generation,
+        })
+    }
+}
+
+/// Serialized state of an MlsGroup for persisting in client local storage
+#[derive(Clone, Serialize, Deserialize)]
+pub struct MlsGroupState {
+    pub group_id: String,
+    pub epoch: u64,
+    pub my_leaf_index: usize,
+    pub my_identity_secret: [u8; 32],
+    pub my_hpke_secret: [u8; 32],
+    pub tree: TreeKemTree,
+    pub epoch_secret: [u8; 32],
+    pub application_secret: [u8; 32],
+    pub message_generation: u32,
 }

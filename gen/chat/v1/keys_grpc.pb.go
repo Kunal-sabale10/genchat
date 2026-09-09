@@ -19,10 +19,12 @@ import (
 const _ = grpc.SupportPackageIsVersion7
 
 const (
-	KeyService_UploadPreKeyBundle_FullMethodName = "/chat.v1.KeyService/UploadPreKeyBundle"
-	KeyService_FetchPreKeyBundle_FullMethodName  = "/chat.v1.KeyService/FetchPreKeyBundle"
-	KeyService_GetKeyCount_FullMethodName        = "/chat.v1.KeyService/GetKeyCount"
-	KeyService_UploadOneTimeKeys_FullMethodName  = "/chat.v1.KeyService/UploadOneTimeKeys"
+	KeyService_UploadPreKeyBundle_FullMethodName  = "/chat.v1.KeyService/UploadPreKeyBundle"
+	KeyService_FetchPreKeyBundle_FullMethodName   = "/chat.v1.KeyService/FetchPreKeyBundle"
+	KeyService_GetKeyCount_FullMethodName         = "/chat.v1.KeyService/GetKeyCount"
+	KeyService_UploadOneTimeKeys_FullMethodName   = "/chat.v1.KeyService/UploadOneTimeKeys"
+	KeyService_UploadMlsKeyPackage_FullMethodName = "/chat.v1.KeyService/UploadMlsKeyPackage"
+	KeyService_FetchMlsKeyPackage_FullMethodName  = "/chat.v1.KeyService/FetchMlsKeyPackage"
 )
 
 // KeyServiceClient is the client API for KeyService service.
@@ -33,6 +35,8 @@ type KeyServiceClient interface {
 	FetchPreKeyBundle(ctx context.Context, in *FetchPreKeyBundleRequest, opts ...grpc.CallOption) (*FetchPreKeyBundleResponse, error)
 	GetKeyCount(ctx context.Context, in *GetKeyCountRequest, opts ...grpc.CallOption) (*GetKeyCountResponse, error)
 	UploadOneTimeKeys(ctx context.Context, in *UploadOneTimeKeysRequest, opts ...grpc.CallOption) (*UploadOneTimeKeysResponse, error)
+	UploadMlsKeyPackage(ctx context.Context, in *UploadMlsKeyPackageRequest, opts ...grpc.CallOption) (*UploadMlsKeyPackageResponse, error)
+	FetchMlsKeyPackage(ctx context.Context, in *FetchMlsKeyPackageRequest, opts ...grpc.CallOption) (*FetchMlsKeyPackageResponse, error)
 }
 
 type keyServiceClient struct {
@@ -79,6 +83,24 @@ func (c *keyServiceClient) UploadOneTimeKeys(ctx context.Context, in *UploadOneT
 	return out, nil
 }
 
+func (c *keyServiceClient) UploadMlsKeyPackage(ctx context.Context, in *UploadMlsKeyPackageRequest, opts ...grpc.CallOption) (*UploadMlsKeyPackageResponse, error) {
+	out := new(UploadMlsKeyPackageResponse)
+	err := c.cc.Invoke(ctx, KeyService_UploadMlsKeyPackage_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *keyServiceClient) FetchMlsKeyPackage(ctx context.Context, in *FetchMlsKeyPackageRequest, opts ...grpc.CallOption) (*FetchMlsKeyPackageResponse, error) {
+	out := new(FetchMlsKeyPackageResponse)
+	err := c.cc.Invoke(ctx, KeyService_FetchMlsKeyPackage_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // KeyServiceServer is the server API for KeyService service.
 // All implementations must embed UnimplementedKeyServiceServer
 // for forward compatibility
@@ -87,6 +109,8 @@ type KeyServiceServer interface {
 	FetchPreKeyBundle(context.Context, *FetchPreKeyBundleRequest) (*FetchPreKeyBundleResponse, error)
 	GetKeyCount(context.Context, *GetKeyCountRequest) (*GetKeyCountResponse, error)
 	UploadOneTimeKeys(context.Context, *UploadOneTimeKeysRequest) (*UploadOneTimeKeysResponse, error)
+	UploadMlsKeyPackage(context.Context, *UploadMlsKeyPackageRequest) (*UploadMlsKeyPackageResponse, error)
+	FetchMlsKeyPackage(context.Context, *FetchMlsKeyPackageRequest) (*FetchMlsKeyPackageResponse, error)
 	mustEmbedUnimplementedKeyServiceServer()
 }
 
@@ -105,6 +129,12 @@ func (UnimplementedKeyServiceServer) GetKeyCount(context.Context, *GetKeyCountRe
 }
 func (UnimplementedKeyServiceServer) UploadOneTimeKeys(context.Context, *UploadOneTimeKeysRequest) (*UploadOneTimeKeysResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UploadOneTimeKeys not implemented")
+}
+func (UnimplementedKeyServiceServer) UploadMlsKeyPackage(context.Context, *UploadMlsKeyPackageRequest) (*UploadMlsKeyPackageResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UploadMlsKeyPackage not implemented")
+}
+func (UnimplementedKeyServiceServer) FetchMlsKeyPackage(context.Context, *FetchMlsKeyPackageRequest) (*FetchMlsKeyPackageResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FetchMlsKeyPackage not implemented")
 }
 func (UnimplementedKeyServiceServer) mustEmbedUnimplementedKeyServiceServer() {}
 
@@ -191,6 +221,42 @@ func _KeyService_UploadOneTimeKeys_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _KeyService_UploadMlsKeyPackage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UploadMlsKeyPackageRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KeyServiceServer).UploadMlsKeyPackage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KeyService_UploadMlsKeyPackage_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KeyServiceServer).UploadMlsKeyPackage(ctx, req.(*UploadMlsKeyPackageRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KeyService_FetchMlsKeyPackage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FetchMlsKeyPackageRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KeyServiceServer).FetchMlsKeyPackage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KeyService_FetchMlsKeyPackage_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KeyServiceServer).FetchMlsKeyPackage(ctx, req.(*FetchMlsKeyPackageRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // KeyService_ServiceDesc is the grpc.ServiceDesc for KeyService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -213,6 +279,14 @@ var KeyService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "UploadOneTimeKeys",
 			Handler:    _KeyService_UploadOneTimeKeys_Handler,
+		},
+		{
+			MethodName: "UploadMlsKeyPackage",
+			Handler:    _KeyService_UploadMlsKeyPackage_Handler,
+		},
+		{
+			MethodName: "FetchMlsKeyPackage",
+			Handler:    _KeyService_FetchMlsKeyPackage_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

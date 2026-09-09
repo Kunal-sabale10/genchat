@@ -1,5 +1,5 @@
 export interface GatewayEnvelope {
-  type: 'message' | 'ack' | 'presence' | 'heartbeat' | 'push' | 'error' | 'pong' | 'typing' | 'read_receipt'
+  type: 'message' | 'ack' | 'presence' | 'heartbeat' | 'push' | 'error' | 'pong' | 'typing' | 'read_receipt' | 'group_commit'
   channelId?: string
   senderId?: string
   clientMsgId?: string
@@ -7,6 +7,7 @@ export interface GatewayEnvelope {
   messageType?: number
   ciphertext?: string
 }
+
 
 export interface TypingEvent {
   channelId: string
@@ -178,8 +179,23 @@ export class GatewayClient {
           return
         }
 
+        // 3b. Handle group_commit frame
+        if (raw.type === 'group_commit') {
+
+          const commitEnvelope: GatewayEnvelope = {
+            type: 'group_commit',
+            channelId: raw.channel_id || raw.channelId,
+            senderId: raw.sender_id || raw.senderId,
+            sequenceNum: raw.epoch,
+            ciphertext: raw.commit_data || raw.commitData,
+          }
+          this.messageHandlers.forEach((handler) => handler(commitEnvelope))
+          return
+        }
+
         // 4. Handle history response
         if (raw.type === 'history' && Array.isArray(raw.messages)) {
+
           console.log(`[Gateway] Received history for ${raw.channel_id}: ${raw.messages.length} messages`)
           // Scylla messages are ordered DESC by time; reverse so oldest is first
           const chronological = [...raw.messages].reverse()
@@ -261,6 +277,20 @@ export class GatewayClient {
     this.messageHandlers.add(handler)
     return () => this.messageHandlers.delete(handler)
   }
+
+  public sendGroupCommit(channelId: string, epoch: number, commitDataBase64: string): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn('[Gateway] Cannot send group commit: WebSocket not open')
+      return
+    }
+    this.ws.send(JSON.stringify({
+      action: 'group_commit',
+      channel_id: channelId,
+      epoch,
+      commit_data: commitDataBase64,
+    }))
+  }
+
 
   public async sendEnvelope(envelope: GatewayEnvelope): Promise<number> {
     return new Promise((resolve, reject) => {

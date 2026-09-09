@@ -462,10 +462,14 @@ func (s *PostgresStore) LeaveChannel(ctx context.Context, channelID, userID uuid
 func (s *PostgresStore) IsChannelMember(ctx context.Context, channelID, userID uuid.UUID) (bool, error) {
 	var exists bool
 	err := s.pool.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM channel_members WHERE channel_id = $1 AND user_id = $2 AND left_at IS NULL)`,
-		channelID, userID).Scan(&exists)
+		`SELECT EXISTS(
+			SELECT 1 FROM channel_members
+			WHERE channel_id = $1 AND user_id = $2 AND left_at IS NULL
+		)`, channelID, userID).Scan(&exists)
 	return exists, err
 }
+
+
 
 func (s *PostgresStore) GetRemainingOneTimeKeyCount(ctx context.Context, deviceID uuid.UUID) (int, error) {
 	var count int
@@ -545,5 +549,111 @@ func (s *PostgresStore) EnsureDevUserAndDevice(ctx context.Context, userID, devi
 	}
 	return nil
 }
+
+// ---------------------------------------------------------------------
+// MLS (Messaging Layer Security) Storage Methods
+// ---------------------------------------------------------------------
+
+func (s *PostgresStore) SaveMlsKeyPackage(ctx context.Context, userID, deviceID uuid.UUID, keyPackage []byte) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO user_mls_key_packages (id, user_id, device_id, key_package, is_consumed, created_at)
+		 VALUES ($1, $2, $3, $4, false, now())`,
+		uuid.New(), userID, deviceID, keyPackage,
+	)
+	if err != nil {
+		return fmt.Errorf("save mls key package failed: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetActiveMlsKeyPackage(ctx context.Context, userID uuid.UUID, deviceID *uuid.UUID) ([]byte, error) {
+	var kp []byte
+	var err error
+	if deviceID != nil && *deviceID != uuid.Nil {
+		err = s.pool.QueryRow(ctx,
+			`SELECT key_package FROM user_mls_key_packages
+			 WHERE user_id = $1 AND device_id = $2 AND is_consumed = false
+			 ORDER BY created_at DESC LIMIT 1`,
+			userID, *deviceID,
+		).Scan(&kp)
+	} else {
+		err = s.pool.QueryRow(ctx,
+			`SELECT key_package FROM user_mls_key_packages
+			 WHERE user_id = $1 AND is_consumed = false
+			 ORDER BY created_at DESC LIMIT 1`,
+			userID,
+		).Scan(&kp)
+	}
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, fmt.Errorf("no active mls key package found for user %s", userID)
+		}
+		return nil, fmt.Errorf("get active mls key package failed: %w", err)
+	}
+	return kp, nil
+}
+
+func (s *PostgresStore) SaveMlsWelcome(ctx context.Context, channelID, userID uuid.UUID, epoch uint64, welcomeData []byte) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO channel_mls_welcomes (id, channel_id, user_id, welcome_data, epoch, created_at)
+		 VALUES ($1, $2, $3, $4, $5, now())
+		 ON CONFLICT (channel_id, user_id, epoch) DO UPDATE SET welcome_data = EXCLUDED.welcome_data`,
+		uuid.New(), channelID, userID, welcomeData, epoch,
+	)
+	if err != nil {
+		return fmt.Errorf("save mls welcome failed: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetMlsWelcome(ctx context.Context, channelID, userID uuid.UUID) ([]byte, uint64, error) {
+	var welcome []byte
+	var epoch int64
+	err := s.pool.QueryRow(ctx,
+		`SELECT welcome_data, epoch FROM channel_mls_welcomes
+		 WHERE channel_id = $1 AND user_id = $2
+		 ORDER BY epoch DESC, created_at DESC LIMIT 1`,
+		channelID, userID,
+	).Scan(&welcome, &epoch)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, 0, nil // No welcome stored yet
+		}
+		return nil, 0, fmt.Errorf("get mls welcome failed: %w", err)
+	}
+	return welcome, uint64(epoch), nil
+}
+
+func (s *PostgresStore) SaveMlsCommit(ctx context.Context, channelID, senderID uuid.UUID, epoch uint64, commitData []byte) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO channel_mls_commits (id, channel_id, sender_id, epoch, commit_data, created_at)
+		 VALUES ($1, $2, $3, $4, $5, now())
+		 ON CONFLICT (channel_id, epoch) DO UPDATE SET commit_data = EXCLUDED.commit_data`,
+		uuid.New(), channelID, senderID, epoch, commitData,
+	)
+	if err != nil {
+		return fmt.Errorf("save mls commit failed: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetLatestMlsCommit(ctx context.Context, channelID uuid.UUID) ([]byte, uint64, error) {
+	var commit []byte
+	var epoch int64
+	err := s.pool.QueryRow(ctx,
+		`SELECT commit_data, epoch FROM channel_mls_commits
+		 WHERE channel_id = $1
+		 ORDER BY epoch DESC LIMIT 1`,
+		channelID,
+	).Scan(&commit, &epoch)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, 0, nil
+		}
+		return nil, 0, fmt.Errorf("get latest mls commit failed: %w", err)
+	}
+	return commit, uint64(epoch), nil
+}
+
 
 

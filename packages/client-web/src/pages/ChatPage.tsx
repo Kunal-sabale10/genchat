@@ -15,6 +15,8 @@ import { AuthService } from '@/lib/grpc-client'
 import { PushClient } from '@/lib/push-client'
 import { PreKeyManager } from '@/lib/prekey-manager'
 import { LocalEncryptedCache } from '@/lib/local-cache'
+import { MlsGroupManager } from '@/lib/mls-group-manager'
+
 import { 
   ShieldCheck, 
   Send, 
@@ -245,13 +247,15 @@ export default function ChatPage() {
     syncChannels()
   }, [accessToken])
 
-  // --- 3. Anti-exhaustion OTK prekey replenishment ---
+  // --- 3. Anti-exhaustion OTK prekey replenishment & MLS KeyPackage publishing ---
   useEffect(() => {
     const token = accessToken || sessionStorage.getItem('genchat_access_token')
-    if (token && user?.deviceId) {
+    if (token && user?.deviceId && user?.userId) {
       PreKeyManager.checkAndReplenish(token, user.deviceId)
+      MlsGroupManager.publishKeyPackage(user.userId, user.deviceId, token)
     }
-  }, [accessToken, user?.deviceId])
+  }, [accessToken, user?.deviceId, user?.userId])
+
 
   // Fetch registered users when New DM or Create Group modal opens
   useEffect(() => {
@@ -398,10 +402,16 @@ export default function ChatPage() {
 
     gateway.connect()
 
-    // Handle incoming messages (push & history)
+    // Handle incoming messages (push & history) and MLS group commits
     const unsubMessages = gateway.subscribe(async (env: GatewayEnvelope) => {
+      if (env.type === 'group_commit' && env.ciphertext && env.sequenceNum && env.channelId) {
+        await MlsGroupManager.applyIncomingCommit(env.channelId, env.ciphertext, env.sequenceNum)
+        return
+      }
+
       if (env.type === 'message' && env.channelId) {
         const myUserId =
+
           userIdRef.current ||
           user?.userId ||
           (() => {
@@ -453,19 +463,26 @@ export default function ChatPage() {
         }
 
         let attachment: (AttachmentMetadata & { decryptedUrl?: string }) | undefined = undefined
+
         let displayText: string | undefined = env.ciphertext
         let isEncrypted = false
         let senderFingerprint: string | undefined = undefined
 
-        // Try decrypting with client-side E2EE ratchet
+        // Try decrypting with MLS if group channel or MLS envelope, else client-side E2EE ratchet
         if (env.ciphertext) {
-          const decResult = await E2eeService.decrypt(env.ciphertext, effectiveChannelId, myUserId || '')
-          displayText = decResult.text
-          isEncrypted = decResult.isEncrypted
-          senderFingerprint = decResult.fingerprint
+          if (env.ciphertext.includes('"protocol":"genchat-mls-v1"') || effectiveChannelId.startsWith('chan_')) {
+            displayText = await MlsGroupManager.decryptGroupMessage(effectiveChannelId, env.ciphertext)
+            isEncrypted = true
+          } else {
+            const decResult = await E2eeService.decrypt(env.ciphertext, effectiveChannelId, myUserId || '')
+            displayText = decResult.text
+            isEncrypted = decResult.isEncrypted
+            senderFingerprint = decResult.fingerprint
+          }
 
           // Check if payload is an encrypted media envelope
           if (displayText && displayText.startsWith('{')) {
+
             try {
               const parsed = JSON.parse(displayText)
               if (parsed.downloadUrl && parsed.encryptionKeyHex && parsed.ivHex) {
@@ -699,10 +716,15 @@ export default function ChatPage() {
 
     let wireCiphertext = textToSend
     try {
-      wireCiphertext = await E2eeService.encrypt(textToSend, activeChannelId, user.userId)
+      if (activeChannelId.startsWith('chan_')) {
+        wireCiphertext = await MlsGroupManager.encryptGroupMessage(activeChannelId, user.userId, textToSend)
+      } else {
+        wireCiphertext = await E2eeService.encrypt(textToSend, activeChannelId, user.userId)
+      }
     } catch (err) {
-      console.warn('[E2EE] Ratchet encryption fallback:', err)
+      console.warn('[E2EE] Encryption fallback:', err)
     }
+
 
     const optimisticMsg: MessageItem = {
       id: clientMsgId,
@@ -1018,6 +1040,27 @@ export default function ChatPage() {
 
     try {
       const token = accessToken || sessionStorage.getItem('genchat_access_token')
+      if (token && user?.userId && user?.deviceId) {
+        const mlsResult = await MlsGroupManager.createGroup(
+          name,
+          selectedGroupMembers,
+          user.userId,
+          user.deviceId,
+          token
+        )
+        if (mlsResult) {
+          setConversations((prev) => [
+            ...prev,
+            { id: mlsResult.channelId, name: name, isDirect: false },
+          ])
+          setActiveChannelId(mlsResult.channelId)
+          setNewChanName('')
+          setSelectedGroupMembers([])
+          setShowNewChanModal(false)
+          return
+        }
+      }
+
       const res = await fetch('/chat.v1.ChannelService/CreateChannel', {
         method: 'POST',
         headers: {
@@ -1030,6 +1073,7 @@ export default function ChatPage() {
           type: 2,
         }),
       })
+
 
       if (res.ok) {
         const data = await res.json()

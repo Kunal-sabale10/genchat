@@ -41,6 +41,8 @@ message CreateChannelRequest {
   ChannelType type = 1;
   string name = 2;
   repeated string member_user_ids = 3;
+  map<string, bytes> member_welcomes = 4; // user_id -> MLS Welcome message
+  bytes initial_commit = 5;
 }
 
 message CreateChannelResponse {
@@ -85,11 +87,24 @@ message GetChannelMembersResponse {
   repeated ChannelMember members = 1;
 }
 
+message CommitEpochRequest {
+  string channel_id = 1;
+  uint64 epoch = 2;
+  bytes commit_data = 3;
+}
+
+message CommitEpochResponse {
+  bool success = 1;
+  uint64 current_epoch = 2;
+}
+
 service ChannelService {
   rpc CreateChannel(CreateChannelRequest) returns (CreateChannelResponse);
   rpc JoinChannel(JoinChannelRequest) returns (JoinChannelResponse);
   rpc LeaveChannel(LeaveChannelRequest) returns (LeaveChannelResponse);
   rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse);
   rpc GetChannelMembers(GetChannelMembersRequest) returns (GetChannelMembersResponse);
+  rpc CommitEpoch(CommitEpochRequest) returns (CommitEpochResponse);
 }
+
 

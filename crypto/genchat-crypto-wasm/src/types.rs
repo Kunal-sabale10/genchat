@@ -84,3 +84,43 @@ pub struct WasmDecryptedPayload {
     pub plaintext: Vec<u8>,
     pub updated_session_pickle: String,
 }
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct WasmMlsKeyPackageResult {
+    pub user_id: String,
+    pub device_id: String,
+    pub key_package_json: String,
+    pub hpke_private_key_hex: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct WasmMlsAddMemberResult {
+    pub welcome_json: String,
+    pub commit_json: String,
+    pub updated_group_state: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct WasmMlsJoinResult {
+    pub updated_group_state: String,
+    pub epoch: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct WasmMlsCommitResult {
+    pub commit_json: String,
+    pub updated_group_state: String,
+    pub epoch: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct WasmMlsEncryptResult {
+    pub ciphertext_json: String,
+    pub updated_group_state: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct WasmMlsDecryptResult {
+    pub plaintext: Vec<u8>,
+    pub sender_leaf_index: usize,
+}

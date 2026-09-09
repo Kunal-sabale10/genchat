@@ -69,6 +69,19 @@ func (h *AuthHandler) CreateChannel(ctx context.Context, req *chatv1.CreateChann
 		})
 	}
 
+	// Persist MLS welcomes for members if provided
+	if len(req.MemberWelcomes) > 0 {
+		for uidStr, welcomeBytes := range req.MemberWelcomes {
+			if mUID, err := uuid.Parse(uidStr); err == nil && len(welcomeBytes) > 0 {
+				_ = h.store.SaveMlsWelcome(ctx, ch.ID, mUID, 0, welcomeBytes)
+			}
+		}
+	}
+	// Persist initial MLS commit if provided
+	if len(req.InitialCommit) > 0 {
+		_ = h.store.SaveMlsCommit(ctx, ch.ID, creatorID, 0, req.InitialCommit)
+	}
+
 	return &chatv1.CreateChannelResponse{
 		Channel: &chatv1.Channel{
 			Id:        ch.ID.String(),
@@ -96,6 +109,9 @@ func (h *AuthHandler) JoinChannel(ctx context.Context, req *chatv1.JoinChannelRe
 		return nil, status.Errorf(codes.Internal, "failed to join channel: %v", err)
 	}
 
+	// Fetch any pending MLS Welcome message for this user
+	welcomeData, _, _ := h.store.GetMlsWelcome(ctx, channelID, userID)
+
 	return &chatv1.JoinChannelResponse{
 		Success: true,
 		Member: &chatv1.ChannelMember{
@@ -104,8 +120,42 @@ func (h *AuthHandler) JoinChannel(ctx context.Context, req *chatv1.JoinChannelRe
 			Role:      chatv1.ChannelRole_CHANNEL_ROLE_MEMBER,
 			JoinedAt:  timestamppb.Now(),
 		},
+		MlsWelcome: welcomeData,
 	}, nil
 }
+
+func (h *AuthHandler) CommitEpoch(ctx context.Context, req *chatv1.CommitEpochRequest) (*chatv1.CommitEpochResponse, error) {
+	senderID, err := getUserIDFromCtx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if req.ChannelId == "" {
+		return nil, status.Error(codes.InvalidArgument, "channel_id is required")
+	}
+	channelID, err := uuid.Parse(req.ChannelId)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid channel_id")
+	}
+	if len(req.CommitData) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "commit_data is required")
+	}
+
+	// Verify sender is an active member of channel
+	isMember, err := h.store.IsChannelMember(ctx, channelID, senderID)
+	if err != nil || !isMember {
+		return nil, status.Error(codes.PermissionDenied, "permission denied: caller is not a member of target channel")
+	}
+
+	if err := h.store.SaveMlsCommit(ctx, channelID, senderID, req.Epoch, req.CommitData); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to save mls commit: %v", err)
+	}
+
+	return &chatv1.CommitEpochResponse{
+		Success:      true,
+		CurrentEpoch: req.Epoch,
+	}, nil
+}
+
 
 func (h *AuthHandler) LeaveChannel(ctx context.Context, req *chatv1.LeaveChannelRequest) (*chatv1.LeaveChannelResponse, error) {
 	userID, err := getUserIDFromCtx(ctx)

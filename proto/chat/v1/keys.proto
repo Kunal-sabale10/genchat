@@ -9,7 +9,10 @@ service KeyService {
   rpc FetchPreKeyBundle(FetchPreKeyBundleRequest) returns (FetchPreKeyBundleResponse);
   rpc GetKeyCount(GetKeyCountRequest) returns (GetKeyCountResponse);
   rpc UploadOneTimeKeys(UploadOneTimeKeysRequest) returns (UploadOneTimeKeysResponse);
+  rpc UploadMlsKeyPackage(UploadMlsKeyPackageRequest) returns (UploadMlsKeyPackageResponse);
+  rpc FetchMlsKeyPackage(FetchMlsKeyPackageRequest) returns (FetchMlsKeyPackageResponse);
 }
+
 
 message PreKeyBundle {
   bytes identity_key = 1;
@@ -70,3 +73,21 @@ message UploadOneTimeKeysRequest {
 
 message UploadOneTimeKeysResponse {
 }
+
+message UploadMlsKeyPackageRequest {
+  string device_id = 1;
+  bytes key_package_data = 2;
+}
+
+message UploadMlsKeyPackageResponse {
+}
+
+message FetchMlsKeyPackageRequest {
+  string user_id = 1;
+  string device_id = 2;
+}
+
+message FetchMlsKeyPackageResponse {
+  bytes key_package_data = 1;
+}
+

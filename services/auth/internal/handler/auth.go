@@ -52,6 +52,14 @@ type AuthStore interface {
 	LeaveChannel(ctx context.Context, channelID, userID uuid.UUID) error
 	ListUserChannels(ctx context.Context, userID uuid.UUID, limit int) ([]store.Channel, error)
 	GetChannelMembers(ctx context.Context, channelID uuid.UUID) ([]store.ChannelMember, error)
+	IsChannelMember(ctx context.Context, channelID, userID uuid.UUID) (bool, error)
+
+	SaveMlsKeyPackage(ctx context.Context, userID, deviceID uuid.UUID, keyPackage []byte) error
+	GetActiveMlsKeyPackage(ctx context.Context, userID uuid.UUID, deviceID *uuid.UUID) ([]byte, error)
+	SaveMlsWelcome(ctx context.Context, channelID, userID uuid.UUID, epoch uint64, welcomeData []byte) error
+	GetMlsWelcome(ctx context.Context, channelID, userID uuid.UUID) ([]byte, uint64, error)
+	SaveMlsCommit(ctx context.Context, channelID, senderID uuid.UUID, epoch uint64, commitData []byte) error
+	GetLatestMlsCommit(ctx context.Context, channelID uuid.UUID) ([]byte, uint64, error)
 
 	RegisterPushToken(ctx context.Context, pt *store.PushToken) error
 	UnregisterPushToken(ctx context.Context, deviceID uuid.UUID) error
@@ -59,6 +67,7 @@ type AuthStore interface {
 
 	EnsureDevUserAndDevice(ctx context.Context, userID, deviceID uuid.UUID, displayName string) error
 }
+
 
 type AuthHandler struct {
 	chatv1.UnimplementedAuthServiceServer

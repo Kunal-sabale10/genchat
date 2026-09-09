@@ -2,9 +2,12 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use wasm_bindgen::prelude::*;
 
 use genchat_crypto::keys::{IdentityKeyPair, OneTimePreKey, PqKeyPair, PqPreKey, PreKeyBundle, SignedPreKey, X25519KeyPair};
+use genchat_crypto::mls::{MlsCiphertext, MlsCommit, MlsGroup, MlsGroupState, MlsKeyPackage, MlsWelcome};
 use genchat_crypto::pqxdh::{initiate_pqxdh, respond_pqxdh, PqxdhInitMessage};
 use genchat_crypto::ratchet::{EncryptedEnvelope, GenChatAccount, GenChatSession};
 use genchat_crypto::sframe::SFrameTransformer;
+use x25519_dalek::StaticSecret;
+
 
 mod types;
 use types::*;
@@ -335,4 +338,229 @@ pub fn sframe_decrypt(
 
     sframe.decrypt_frame(encrypted_frame)
         .map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// 9. Generate an MLS KeyPackage for advertising group readiness
+#[wasm_bindgen]
+pub fn mls_generate_key_package(
+	user_id: &str,
+	device_id: &str,
+	identity_priv_hex: &str,
+) -> Result<JsValue, JsValue> {
+	let id_bytes = decode_32_hex(identity_priv_hex)?;
+	let identity = IdentityKeyPair::from_bytes(&id_bytes)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+	let hpke_kp = X25519KeyPair::generate();
+	let key_package = MlsKeyPackage::new(
+		user_id.to_string(),
+		device_id.to_string(),
+		&identity,
+		&hpke_kp,
+	);
+
+	let key_package_json = serde_json::to_string(&key_package)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+	let hpke_priv_hex = hex::encode(hpke_kp.secret_bytes());
+
+
+	let res = WasmMlsKeyPackageResult {
+		user_id: user_id.to_string(),
+		device_id: device_id.to_string(),
+		key_package_json,
+		hpke_private_key_hex: hpke_priv_hex,
+	};
+	serde_wasm_bindgen::to_value(&res).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// 10. Create a new MLS group (creator is leaf 0)
+#[wasm_bindgen]
+pub fn mls_create_group(
+	group_id: &str,
+	user_id: &str,
+	device_id: &str,
+	identity_priv_hex: &str,
+	hpke_priv_hex: &str,
+) -> Result<String, JsValue> {
+	let id_bytes = decode_32_hex(identity_priv_hex)?;
+	let identity = IdentityKeyPair::from_bytes(&id_bytes)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+	let hpke_bytes = decode_32_hex(hpke_priv_hex)?;
+	let hpke_kp = X25519KeyPair::from_secret_bytes(hpke_bytes);
+
+	let group = MlsGroup::create(
+		group_id.to_string(),
+		user_id.to_string(),
+		device_id.to_string(),
+		identity,
+		hpke_kp,
+	);
+
+	let state = group.export_state();
+	serde_json::to_string(&state).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+
+/// 11. Add a member to the group from their published KeyPackage
+#[wasm_bindgen]
+pub fn mls_group_add_member(
+	group_state_json: &str,
+	key_package_json: &str,
+) -> Result<JsValue, JsValue> {
+	let state: MlsGroupState = serde_json::from_str(group_state_json)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+	let mut group = MlsGroup::import_state(&state)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+	let key_package: MlsKeyPackage = serde_json::from_str(key_package_json)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+	let (welcome, commit) = group.add_member(&key_package)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+	let welcome_json = serde_json::to_string(&welcome)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+	let commit_json = serde_json::to_string(&commit)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+	let updated_state = serde_json::to_string(&group.export_state())
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+	let res = WasmMlsAddMemberResult {
+		welcome_json,
+		commit_json,
+		updated_group_state: updated_state,
+	};
+	serde_wasm_bindgen::to_value(&res).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// 12. Join a group from a received MlsWelcome envelope
+#[wasm_bindgen]
+pub fn mls_group_from_welcome(
+	welcome_json: &str,
+	identity_priv_hex: &str,
+	hpke_priv_hex: &str,
+) -> Result<JsValue, JsValue> {
+	let welcome: MlsWelcome = serde_json::from_str(welcome_json)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+	let id_bytes = decode_32_hex(identity_priv_hex)?;
+	let identity = IdentityKeyPair::from_bytes(&id_bytes)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+	let hpke_bytes = decode_32_hex(hpke_priv_hex)?;
+	let hpke_secret = StaticSecret::from(hpke_bytes);
+
+	let group = MlsGroup::from_welcome(&welcome, identity, hpke_secret)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+	let epoch = group.epoch();
+	let updated_state = serde_json::to_string(&group.export_state())
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+	let res = WasmMlsJoinResult {
+		updated_group_state: updated_state,
+		epoch,
+	};
+	serde_wasm_bindgen::to_value(&res).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// 13. Apply an incoming MlsCommit from an existing member to advance epoch
+#[wasm_bindgen]
+pub fn mls_group_apply_commit(
+	group_state_json: &str,
+	commit_json: &str,
+) -> Result<JsValue, JsValue> {
+	let state: MlsGroupState = serde_json::from_str(group_state_json)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+	let mut group = MlsGroup::import_state(&state)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+	let commit: MlsCommit = serde_json::from_str(commit_json)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+	group.apply_commit(&commit)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+	let epoch = group.epoch();
+	let updated_state = serde_json::to_string(&group.export_state())
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+	let res = WasmMlsJoinResult {
+		updated_group_state: updated_state,
+		epoch,
+	};
+	serde_wasm_bindgen::to_value(&res).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// 14. Remove a member from the group (re-keying epoch and generating MlsCommit)
+#[wasm_bindgen]
+pub fn mls_group_remove_member(
+	group_state_json: &str,
+	user_id: &str,
+) -> Result<JsValue, JsValue> {
+	let state: MlsGroupState = serde_json::from_str(group_state_json)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+	let mut group = MlsGroup::import_state(&state)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+	let commit = group.remove_member(user_id)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+	let commit_json = serde_json::to_string(&commit)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+	let epoch = group.epoch();
+	let updated_state = serde_json::to_string(&group.export_state())
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+	let res = WasmMlsCommitResult {
+		commit_json,
+		updated_group_state: updated_state,
+		epoch,
+	};
+	serde_wasm_bindgen::to_value(&res).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// 15. Encrypt an application message using the group's current epoch application secret
+#[wasm_bindgen]
+pub fn mls_group_encrypt_message(
+	group_state_json: &str,
+	plaintext: &[u8],
+) -> Result<JsValue, JsValue> {
+	let state: MlsGroupState = serde_json::from_str(group_state_json)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+	let mut group = MlsGroup::import_state(&state)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+	let ciphertext = group.encrypt_message(plaintext)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+	let ciphertext_json = serde_json::to_string(&ciphertext)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+	let updated_state = serde_json::to_string(&group.export_state())
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+	let res = WasmMlsEncryptResult {
+		ciphertext_json,
+		updated_group_state: updated_state,
+	};
+	serde_wasm_bindgen::to_value(&res).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// 16. Decrypt an application message using the group's current epoch application secret
+#[wasm_bindgen]
+pub fn mls_group_decrypt_message(
+	group_state_json: &str,
+	ciphertext_json: &str,
+) -> Result<JsValue, JsValue> {
+	let state: MlsGroupState = serde_json::from_str(group_state_json)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+	let group = MlsGroup::import_state(&state)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+	let ciphertext: MlsCiphertext = serde_json::from_str(ciphertext_json)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+	let plaintext = group.decrypt_message(&ciphertext)
+		.map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+	let res = WasmMlsDecryptResult {
+		plaintext,
+		sender_leaf_index: ciphertext.sender_leaf_index,
+	};
+	serde_wasm_bindgen::to_value(&res).map_err(|e| JsValue::from_str(&e.to_string()))
 }

@@ -129,6 +129,24 @@ type CallSignalPushFrame struct {
 	Candidate    json.RawMessage `json:"candidate,omitempty"`
 }
 
+// GroupCommitFrame is sent by a client when an MLS epoch advances (member added/removed/rekeyed).
+type GroupCommitFrame struct {
+	Action     string `json:"action"` // "group_commit"
+	ChannelID  string `json:"channel_id"`
+	Epoch      uint64 `json:"epoch"`
+	CommitData string `json:"commit_data"` // base64 or JSON string
+}
+
+// GroupCommitPushFrame is broadcast to all channel members so their local MLS trees advance.
+type GroupCommitPushFrame struct {
+	Type       string `json:"type"` // "group_commit"
+	ChannelID  string `json:"channel_id"`
+	SenderID   string `json:"sender_id"`
+	Epoch      uint64 `json:"epoch"`
+	CommitData string `json:"commit_data"`
+	ServerTime int64  `json:"server_time"`
+}
+
 // Router handles message routing between connected clients.
 type Router struct {
 	hub           *ws.Hub
@@ -162,6 +180,8 @@ func (r *Router) Handle(ctx context.Context, conn *ws.Conn, data []byte) error {
 	switch base.Action {
 	case "send_message":
 		return r.handleSendMessage(ctx, conn, data)
+	case "group_commit", "mls_commit":
+		return r.handleGroupCommit(ctx, conn, data)
 	case "fetch_history":
 		return r.handleFetchHistory(ctx, conn, data)
 	case "typing":
@@ -176,6 +196,7 @@ func (r *Router) Handle(ctx context.Context, conn *ws.Conn, data []byte) error {
 		return r.sendError(conn, "UNKNOWN_ACTION", fmt.Sprintf("unknown action: %s", base.Action))
 	}
 }
+
 
 func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []byte) error {
 	var frame InboundFrame
@@ -300,6 +321,80 @@ func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []by
 	)
 	return nil
 }
+
+func (r *Router) handleGroupCommit(ctx context.Context, conn *ws.Conn, data []byte) error {
+	var frame GroupCommitFrame
+	if err := json.Unmarshal(data, &frame); err != nil {
+		return r.sendError(conn, "INVALID_FRAME", "could not parse group_commit frame")
+	}
+	if frame.ChannelID == "" || frame.CommitData == "" {
+		return r.sendError(conn, "MISSING_FIELDS", "channel_id and commit_data are required")
+	}
+
+	cleanID := strings.TrimPrefix(frame.ChannelID, "chan_")
+
+	// Decode commit data
+	commitBytes, err := base64.StdEncoding.DecodeString(frame.CommitData)
+	if err != nil || len(commitBytes) == 0 {
+		commitBytes = []byte(frame.CommitData)
+	}
+
+	// Persist commit in auth/channel service if client configured
+	if r.channelClient != nil {
+		_, err := r.channelClient.CommitEpoch(ctx, &chatv1.CommitEpochRequest{
+			ChannelId:  cleanID,
+			Epoch:      frame.Epoch,
+			CommitData: commitBytes,
+		})
+		if err != nil {
+			slog.Warn("channelClient.CommitEpoch failed", "error", err, "channel", cleanID)
+		}
+	}
+
+	// Fan out group commit push to all channel members
+	pushPayload, _ := json.Marshal(GroupCommitPushFrame{
+		Type:       "group_commit",
+		ChannelID:  frame.ChannelID,
+		SenderID:   conn.UserID,
+		Epoch:      frame.Epoch,
+		CommitData: frame.CommitData,
+		ServerTime: time.Now().Unix(),
+	})
+
+	var memberIDs []string
+	if r.channelClient != nil {
+		resp, err := r.channelClient.GetChannelMembers(ctx, &chatv1.GetChannelMembersRequest{
+			ChannelId: cleanID,
+		})
+		if err == nil && len(resp.GetMembers()) > 0 {
+			for _, m := range resp.GetMembers() {
+				memberIDs = append(memberIDs, m.GetUserId())
+			}
+		}
+	}
+
+	if len(memberIDs) > 0 {
+		for _, uid := range memberIDs {
+			if uid == conn.UserID {
+				continue
+			}
+			if r.hub.IsOnline(uid) {
+				r.hub.SendToUser(uid, pushPayload)
+			}
+		}
+	} else {
+		// Broadcast fallback
+		r.hub.BroadcastAll(conn.UserID, pushPayload)
+	}
+
+	slog.Info("group commit relayed",
+		"sender", conn.UserID,
+		"channel", frame.ChannelID,
+		"epoch", frame.Epoch,
+	)
+	return nil
+}
+
 
 func (r *Router) notifyOfflineRecipient(recipientUserID, channelID string, seqNum uint64) {
 	if r.pushClient == nil || r.dispatcher == nil {

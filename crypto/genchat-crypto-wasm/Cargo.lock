@@ -348,11 +348,13 @@ dependencies = [
  "getrandom",
  "hex",
  "js-sys",
+ "rand",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-test",
+ "x25519-dalek",
 ]
 
 [[package]]

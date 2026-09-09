@@ -24,6 +24,7 @@ const (
 	ChannelService_LeaveChannel_FullMethodName      = "/chat.v1.ChannelService/LeaveChannel"
 	ChannelService_ListChannels_FullMethodName      = "/chat.v1.ChannelService/ListChannels"
 	ChannelService_GetChannelMembers_FullMethodName = "/chat.v1.ChannelService/GetChannelMembers"
+	ChannelService_CommitEpoch_FullMethodName       = "/chat.v1.ChannelService/CommitEpoch"
 )
 
 // ChannelServiceClient is the client API for ChannelService service.
@@ -35,6 +36,7 @@ type ChannelServiceClient interface {
 	LeaveChannel(ctx context.Context, in *LeaveChannelRequest, opts ...grpc.CallOption) (*LeaveChannelResponse, error)
 	ListChannels(ctx context.Context, in *ListChannelsRequest, opts ...grpc.CallOption) (*ListChannelsResponse, error)
 	GetChannelMembers(ctx context.Context, in *GetChannelMembersRequest, opts ...grpc.CallOption) (*GetChannelMembersResponse, error)
+	CommitEpoch(ctx context.Context, in *CommitEpochRequest, opts ...grpc.CallOption) (*CommitEpochResponse, error)
 }
 
 type channelServiceClient struct {
@@ -90,6 +92,15 @@ func (c *channelServiceClient) GetChannelMembers(ctx context.Context, in *GetCha
 	return out, nil
 }
 
+func (c *channelServiceClient) CommitEpoch(ctx context.Context, in *CommitEpochRequest, opts ...grpc.CallOption) (*CommitEpochResponse, error) {
+	out := new(CommitEpochResponse)
+	err := c.cc.Invoke(ctx, ChannelService_CommitEpoch_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ChannelServiceServer is the server API for ChannelService service.
 // All implementations must embed UnimplementedChannelServiceServer
 // for forward compatibility
@@ -99,6 +110,7 @@ type ChannelServiceServer interface {
 	LeaveChannel(context.Context, *LeaveChannelRequest) (*LeaveChannelResponse, error)
 	ListChannels(context.Context, *ListChannelsRequest) (*ListChannelsResponse, error)
 	GetChannelMembers(context.Context, *GetChannelMembersRequest) (*GetChannelMembersResponse, error)
+	CommitEpoch(context.Context, *CommitEpochRequest) (*CommitEpochResponse, error)
 	mustEmbedUnimplementedChannelServiceServer()
 }
 
@@ -120,6 +132,9 @@ func (UnimplementedChannelServiceServer) ListChannels(context.Context, *ListChan
 }
 func (UnimplementedChannelServiceServer) GetChannelMembers(context.Context, *GetChannelMembersRequest) (*GetChannelMembersResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetChannelMembers not implemented")
+}
+func (UnimplementedChannelServiceServer) CommitEpoch(context.Context, *CommitEpochRequest) (*CommitEpochResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CommitEpoch not implemented")
 }
 func (UnimplementedChannelServiceServer) mustEmbedUnimplementedChannelServiceServer() {}
 
@@ -224,6 +239,24 @@ func _ChannelService_GetChannelMembers_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ChannelService_CommitEpoch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CommitEpochRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ChannelServiceServer).CommitEpoch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ChannelService_CommitEpoch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ChannelServiceServer).CommitEpoch(ctx, req.(*CommitEpochRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ChannelService_ServiceDesc is the grpc.ServiceDesc for ChannelService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -250,6 +283,10 @@ var ChannelService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetChannelMembers",
 			Handler:    _ChannelService_GetChannelMembers_Handler,
+		},
+		{
+			MethodName: "CommitEpoch",
+			Handler:    _ChannelService_CommitEpoch_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

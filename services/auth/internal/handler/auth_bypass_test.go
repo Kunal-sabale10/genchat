@@ -193,6 +193,35 @@ func (m *mockAuthStore) EnsureDevUserAndDevice(ctx context.Context, userID, devi
 	return nil
 }
 
+func (m *mockAuthStore) IsChannelMember(ctx context.Context, channelID, userID uuid.UUID) (bool, error) {
+	return true, nil
+}
+
+func (m *mockAuthStore) SaveMlsKeyPackage(ctx context.Context, userID, deviceID uuid.UUID, keyPackage []byte) error {
+	return nil
+}
+
+func (m *mockAuthStore) GetActiveMlsKeyPackage(ctx context.Context, userID uuid.UUID, deviceID *uuid.UUID) ([]byte, error) {
+	return []byte("mock-mls-key-package"), nil
+}
+
+func (m *mockAuthStore) SaveMlsWelcome(ctx context.Context, channelID, userID uuid.UUID, epoch uint64, welcomeData []byte) error {
+	return nil
+}
+
+func (m *mockAuthStore) GetMlsWelcome(ctx context.Context, channelID, userID uuid.UUID) ([]byte, uint64, error) {
+	return nil, 0, nil
+}
+
+func (m *mockAuthStore) SaveMlsCommit(ctx context.Context, channelID, senderID uuid.UUID, epoch uint64, commitData []byte) error {
+	return nil
+}
+
+func (m *mockAuthStore) GetLatestMlsCommit(ctx context.Context, channelID uuid.UUID) ([]byte, uint64, error) {
+	return nil, 0, nil
+}
+
+
 // setupTestGRPCServer starts an in-process bufconn gRPC server with the AuthHandler and interceptors.
 func setupTestGRPCServer(t *testing.T, jwtSecret string) (*mockAuthStore, *grpc.ClientConn, func()) {
 	bufferSize := 1024 * 1024
