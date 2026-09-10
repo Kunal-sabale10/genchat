@@ -920,6 +920,239 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
 
+	mux.HandleFunc("/chat.v1.ChannelService/AddMember", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, nil)
+			return
+		}
+		claims, err := h.VerifyJWT(strings.TrimPrefix(authHeader, "Bearer "))
+		if err != nil {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, err)
+			return
+		}
+
+		var req struct {
+			ChannelID   string `json:"channel_id"`
+			ChannelId   string `json:"channelId"`
+			UserID      string `json:"user_id"`
+			UserId      string `json:"userId"`
+			Epoch       uint64 `json:"epoch"`
+			WelcomeData string `json:"welcome_data"`
+			CommitData  string `json:"commit_data"`
+		}
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		_ = json.Unmarshal(body, &req)
+
+		cID := req.ChannelID
+		if cID == "" {
+			cID = req.ChannelId
+		}
+		targetUID := req.UserID
+		if targetUID == "" {
+			targetUID = req.UserId
+		}
+
+		channelUUID, err := uuid.Parse(strings.TrimPrefix(cID, "chan_"))
+		if err != nil {
+			writeErrorJSON(w, r, "invalid channel_id", http.StatusBadRequest, err)
+			return
+		}
+		targetUserUUID, err := uuid.Parse(targetUID)
+		if err != nil {
+			writeErrorJSON(w, r, "invalid user_id", http.StatusBadRequest, err)
+			return
+		}
+
+		// Verify caller is active member of channel
+		isMember, err := h.store.IsChannelMember(r.Context(), channelUUID, claims.Sub)
+		if err != nil || !isMember {
+			writeErrorJSON(w, r, "forbidden: caller is not a member of this channel", http.StatusForbidden, err)
+			return
+		}
+
+		// Add target user to channel
+		if err := h.store.JoinChannel(r.Context(), channelUUID, targetUserUUID); err != nil {
+			writeErrorJSON(w, r, "failed to add member", http.StatusInternalServerError, err)
+			return
+		}
+
+		// If welcome data provided, save it
+		if req.WelcomeData != "" {
+			welcomeBytes, _ := base64.StdEncoding.DecodeString(req.WelcomeData)
+			if len(welcomeBytes) == 0 {
+				welcomeBytes = []byte(req.WelcomeData)
+			}
+			_ = h.store.SaveMlsWelcome(r.Context(), channelUUID, targetUserUUID, req.Epoch, welcomeBytes)
+		}
+
+		// If commit data provided, save it
+		if req.CommitData != "" {
+			commitBytes, _ := base64.StdEncoding.DecodeString(req.CommitData)
+			if len(commitBytes) == 0 {
+				commitBytes = []byte(req.CommitData)
+			}
+			_ = h.store.SaveMlsCommit(r.Context(), channelUUID, claims.Sub, req.Epoch, commitBytes)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success":    true,
+			"channel_id": channelUUID.String(),
+			"user_id":    targetUserUUID.String(),
+		})
+	}))
+
+	mux.HandleFunc("/chat.v1.ChannelService/RemoveMember", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, nil)
+			return
+		}
+		claims, err := h.VerifyJWT(strings.TrimPrefix(authHeader, "Bearer "))
+		if err != nil {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, err)
+			return
+		}
+
+		var req struct {
+			ChannelID  string `json:"channel_id"`
+			ChannelId  string `json:"channelId"`
+			UserID     string `json:"user_id"`
+			UserId     string `json:"userId"`
+			Epoch      uint64 `json:"epoch"`
+			CommitData string `json:"commit_data"`
+		}
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		_ = json.Unmarshal(body, &req)
+
+		cID := req.ChannelID
+		if cID == "" {
+			cID = req.ChannelId
+		}
+		targetUID := req.UserID
+		if targetUID == "" {
+			targetUID = req.UserId
+		}
+
+		channelUUID, err := uuid.Parse(strings.TrimPrefix(cID, "chan_"))
+		if err != nil {
+			writeErrorJSON(w, r, "invalid channel_id", http.StatusBadRequest, err)
+			return
+		}
+		targetUserUUID, err := uuid.Parse(targetUID)
+		if err != nil {
+			writeErrorJSON(w, r, "invalid user_id", http.StatusBadRequest, err)
+			return
+		}
+
+		// Verify caller is active member of channel
+		isMember, err := h.store.IsChannelMember(r.Context(), channelUUID, claims.Sub)
+		if err != nil || !isMember {
+			writeErrorJSON(w, r, "forbidden: caller is not a member of this channel", http.StatusForbidden, err)
+			return
+		}
+
+		// Remove target user from channel
+		if err := h.store.LeaveChannel(r.Context(), channelUUID, targetUserUUID); err != nil {
+			writeErrorJSON(w, r, "failed to remove member", http.StatusInternalServerError, err)
+			return
+		}
+
+		// If commit data provided, save it
+		if req.CommitData != "" {
+			commitBytes, _ := base64.StdEncoding.DecodeString(req.CommitData)
+			if len(commitBytes) == 0 {
+				commitBytes = []byte(req.CommitData)
+			}
+			_ = h.store.SaveMlsCommit(r.Context(), channelUUID, claims.Sub, req.Epoch, commitBytes)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success":    true,
+			"channel_id": channelUUID.String(),
+			"user_id":    targetUserUUID.String(),
+		})
+	}))
+
+	mux.HandleFunc("/chat.v1.ChannelService/SaveWelcome", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, nil)
+			return
+		}
+		claims, err := h.VerifyJWT(strings.TrimPrefix(authHeader, "Bearer "))
+		if err != nil {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, err)
+			return
+		}
+
+		var req struct {
+			ChannelID   string `json:"channel_id"`
+			ChannelId   string `json:"channelId"`
+			UserID      string `json:"user_id"`
+			UserId      string `json:"userId"`
+			Epoch       uint64 `json:"epoch"`
+			WelcomeData string `json:"welcome_data"`
+		}
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		_ = json.Unmarshal(body, &req)
+
+		cID := req.ChannelID
+		if cID == "" {
+			cID = req.ChannelId
+		}
+		targetUID := req.UserID
+		if targetUID == "" {
+			targetUID = req.UserId
+		}
+
+		channelUUID, err := uuid.Parse(strings.TrimPrefix(cID, "chan_"))
+		if err != nil {
+			writeErrorJSON(w, r, "invalid channel_id", http.StatusBadRequest, err)
+			return
+		}
+		targetUserUUID, err := uuid.Parse(targetUID)
+		if err != nil {
+			writeErrorJSON(w, r, "invalid user_id", http.StatusBadRequest, err)
+			return
+		}
+
+		isMember, err := h.store.IsChannelMember(r.Context(), channelUUID, claims.Sub)
+		if err != nil || !isMember {
+			writeErrorJSON(w, r, "forbidden: caller is not a member of this channel", http.StatusForbidden, err)
+			return
+		}
+
+		welcomeBytes, _ := base64.StdEncoding.DecodeString(req.WelcomeData)
+		if len(welcomeBytes) == 0 {
+			welcomeBytes = []byte(req.WelcomeData)
+		}
+
+		if err := h.store.SaveMlsWelcome(r.Context(), channelUUID, targetUserUUID, req.Epoch, welcomeBytes); err != nil {
+			writeErrorJSON(w, r, "failed to save mls welcome", http.StatusInternalServerError, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+		})
+	}))
+
 	// ============================================================
 	// KeyService Endpoints (Phase 2: Pre-Key Replenishment)
 	// ============================================================

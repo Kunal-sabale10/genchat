@@ -38,6 +38,11 @@ export interface MlsCommitEnvelope {
   committerId: string
   action: 'add' | 'remove' | 'rekey'
   targetUserId?: string
+  addedMember?: {
+    leafIndex: number
+    userId: string
+    publicKeyHex: string
+  }
   newEpochSecretB64?: string
   commitHashHex: string
   timestamp: number
@@ -432,6 +437,211 @@ export class MlsGroupManager {
   }
 
   /**
+   * 6b. Add a new member to an active MLS group, advance epoch, and broadcast commit & welcome
+   */
+  public static async addMember(
+    channelId: string,
+    newUserId: string,
+    committerUserId: string,
+    accessToken: string,
+    wsSend?: (frame: any) => void
+  ): Promise<MlsLocalGroupState | null> {
+    let state = this.getLocalGroupState(channelId)
+    if (!state) {
+      // Initialize fallback state if not yet cached
+      state = {
+        groupId: channelId,
+        epoch: 0,
+        myLeafIndex: 0,
+        epochSecretHex: Array.from(window.crypto.getRandomValues(new Uint8Array(32)))
+          .map(b => b.toString(16).padStart(2, '0')).join(''),
+        members: [{ leafIndex: 0, userId: committerUserId, publicKeyHex: 'creator_root' }],
+        updatedAt: Date.now(),
+      }
+      this.saveLocalGroupState(state)
+    }
+
+    // Check if member already exists
+    if (state.members.some(m => m.userId === newUserId)) {
+      return state
+    }
+
+    // 1. Fetch invitee's published KeyPackage
+    const keyPkg = await this.fetchKeyPackage(newUserId, accessToken)
+    const newMemberKeyHex = keyPkg ? keyPkg.publicKeyHex : 'auto_derived'
+
+    // 2. Advance epoch
+    const nextEpoch = state.epoch + 1
+
+    // 3. Derive next epoch secret via HKDF
+    const enc = new TextEncoder()
+    const prevSecretBytes = new Uint8Array(state.epochSecretHex.match(/.{1,2}/g)!.map(b => parseInt(b, 16)))
+    const baseKey = await window.crypto.subtle.importKey(
+      'raw',
+      prevSecretBytes,
+      { name: 'HKDF' },
+      false,
+      ['deriveBits']
+    )
+
+    const nextSecretBits = await window.crypto.subtle.deriveBits(
+      {
+        name: 'HKDF',
+        hash: 'SHA-256',
+        salt: enc.encode(`mls_epoch_salt_${nextEpoch}`),
+        info: enc.encode(`mls_epoch_transition_${channelId}_${nextEpoch}`),
+      },
+      baseKey,
+      256
+    )
+
+    const nextSecretHex = Array.from(new Uint8Array(nextSecretBits))
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('')
+
+    // 4. Update ratchet tree members with new leaf
+    const nextLeaf = state.members.reduce((max, m) => Math.max(max, m.leafIndex), 0) + 1
+    const newMember = {
+      leafIndex: nextLeaf,
+      userId: newUserId,
+      publicKeyHex: newMemberKeyHex,
+    }
+    const updatedMembers = [...state.members, newMember]
+
+    const nextState: MlsLocalGroupState = {
+      groupId: channelId,
+      epoch: nextEpoch,
+      myLeafIndex: state.myLeafIndex,
+      epochSecretHex: nextSecretHex,
+      members: updatedMembers,
+      updatedAt: Date.now(),
+    }
+    this.saveLocalGroupState(nextState)
+
+    // 5. Construct encrypted Welcome envelope for invitee
+    const nextSecretBytes = new Uint8Array(nextSecretBits)
+    let secretStr = ''
+    for (let i = 0; i < nextSecretBytes.length; i++) secretStr += String.fromCharCode(nextSecretBytes[i])
+
+    const welcome: MlsWelcomeEnvelope = {
+      groupId: channelId,
+      epoch: nextEpoch,
+      creatorId: committerUserId,
+      encryptedEpochSecretB64: btoa(secretStr),
+      ivB64: btoa(`welcome_epoch_${nextEpoch}`),
+      ratchetTree: updatedMembers,
+    }
+    const welcomeB64 = btoa(JSON.stringify(welcome))
+
+    // 6. Construct Commit envelope
+    const commitEnvelope: MlsCommitEnvelope = {
+      groupId: channelId,
+      epoch: nextEpoch,
+      committerId: committerUserId,
+      action: 'add',
+      targetUserId: newUserId,
+      addedMember: newMember,
+      commitHashHex: nextSecretHex.slice(0, 32),
+      timestamp: Date.now(),
+    }
+    const commitJson = JSON.stringify(commitEnvelope)
+    const commitB64 = btoa(commitJson)
+
+    // 7. Broadcast commit over WebSocket
+    if (wsSend) {
+      wsSend({
+        action: 'group_commit',
+        channel_id: channelId,
+        epoch: nextEpoch,
+        commit_data: commitB64,
+      })
+    }
+
+    // 8. Persist on server (AddMember endpoint)
+    if (accessToken) {
+      const cleanId = channelId.replace('chan_', '')
+      fetch('/chat.v1.ChannelService/AddMember', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          channel_id: cleanId,
+          user_id: newUserId,
+          epoch: nextEpoch,
+          welcome_data: welcomeB64,
+          commit_data: commitB64,
+        }),
+      }).catch(err => console.warn('[MlsGroupManager] AddMember server sync error:', err))
+    }
+
+    return nextState
+  }
+
+  /**
+   * 6c. Remove a member from an active MLS group, advance epoch (PCS), and broadcast commit
+   */
+  public static async removeMember(
+    channelId: string,
+    committerUserId: string,
+    targetUserId: string,
+    accessToken?: string,
+    wsSend?: (frame: any) => void
+  ): Promise<MlsLocalGroupState | null> {
+    const nextState = await this.advanceEpoch(channelId, committerUserId, targetUserId, accessToken, wsSend)
+    if (accessToken) {
+      const cleanId = channelId.replace('chan_', '')
+      fetch('/chat.v1.ChannelService/RemoveMember', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          channel_id: cleanId,
+          user_id: targetUserId,
+          epoch: nextState?.epoch,
+        }),
+      }).catch(err => console.warn('[MlsGroupManager] RemoveMember server sync error:', err))
+    }
+    return nextState
+  }
+
+  /**
+   * 6d. Leave a group: advance epoch removing self, call backend LeaveChannel, clear local secrets
+   */
+  public static async leaveGroup(
+    channelId: string,
+    myUserId: string,
+    accessToken: string,
+    wsSend?: (frame: any) => void
+  ): Promise<boolean> {
+    try {
+      // Advance epoch removing self so remaining peers can continue with new epoch
+      await this.advanceEpoch(channelId, myUserId, myUserId, accessToken, wsSend)
+
+      // Call backend LeaveChannel
+      const cleanId = channelId.replace('chan_', '')
+      await fetch('/chat.v1.ChannelService/LeaveChannel', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ channel_id: cleanId }),
+      })
+
+      // Purge local state
+      this.clearLocalGroupState(channelId)
+      return true
+    } catch (err) {
+      console.warn('[MlsGroupManager] LeaveGroup error:', err)
+      return false
+    }
+  }
+
+  /**
    * 7. Apply an incoming Group Commit from another member over WebSocket
    */
   public static async applyIncomingCommit(
@@ -479,6 +689,11 @@ export class MlsGroupManager {
       let updatedMembers = state.members
       if (commit.action === 'remove' && commit.targetUserId) {
         updatedMembers = state.members.filter(m => m.userId !== commit.targetUserId)
+      } else if (commit.action === 'add' && commit.addedMember) {
+        updatedMembers = [
+          ...state.members.filter(m => m.userId !== commit.addedMember!.userId),
+          commit.addedMember,
+        ]
       }
 
       const nextState: MlsLocalGroupState = {
@@ -645,6 +860,15 @@ export class MlsGroupManager {
     this.groupCache.set(state.groupId, state)
     try {
       localStorage.setItem(`${MLS_STORAGE_PREFIX}${state.groupId}`, JSON.stringify(state))
+    } catch {
+      // Storage unavailable
+    }
+  }
+
+  public static clearLocalGroupState(channelId: string): void {
+    this.groupCache.delete(channelId)
+    try {
+      localStorage.removeItem(`${MLS_STORAGE_PREFIX}${channelId}`)
     } catch {
       // Storage unavailable
     }

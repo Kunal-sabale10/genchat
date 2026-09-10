@@ -291,6 +291,14 @@ export class GatewayClient {
     }))
   }
 
+  public sendRaw(payload: any): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn('[Gateway] Cannot send raw frame: WebSocket not open')
+      return
+    }
+    this.ws.send(typeof payload === 'string' ? payload : JSON.stringify(payload))
+  }
+
 
   public async sendEnvelope(envelope: GatewayEnvelope): Promise<number> {
     return new Promise((resolve, reject) => {

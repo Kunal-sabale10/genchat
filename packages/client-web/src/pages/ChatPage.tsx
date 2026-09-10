@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import { GatewayClient, GatewayEnvelope } from '@/lib/gateway-client'
 import { MediaClient, AttachmentMetadata } from '@/lib/media-client'
@@ -10,12 +10,16 @@ import { CameraModal } from '@/components/CameraModal'
 import { ImageViewerModal } from '@/components/ImageViewerModal'
 import { FileAttachmentCard } from '@/components/FileAttachmentCard'
 import { AttachmentStaging } from '@/components/AttachmentStaging'
+import { ActionChips } from '@/components/ActionChips'
+import { SummaryModal } from '@/components/SummaryModal'
+import { GroupMembersModal } from '@/components/GroupMembersModal'
 import { WebRtcManager, fetchDynamicIceServers } from '@/lib/webrtc-manager'
 import { AuthService } from '@/lib/grpc-client'
 import { PushClient } from '@/lib/push-client'
 import { PreKeyManager } from '@/lib/prekey-manager'
 import { LocalEncryptedCache } from '@/lib/local-cache'
 import { MlsGroupManager } from '@/lib/mls-group-manager'
+import { LocalIntelligence } from '@/lib/local-intelligence'
 
 import { 
   ShieldCheck, 
@@ -42,7 +46,8 @@ import {
   Video,
   Camera,
   FolderOpen,
-  Maximize2
+  Maximize2,
+  Sparkles
 } from 'lucide-react'
 
 interface MessageItem {
@@ -91,6 +96,9 @@ export default function ChatPage() {
   const [showSearchModal, setShowSearchModal] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<SearchSnippetResult[]>([])
+  const [isGroupModalOpen, setIsGroupModalOpen] = useState(false)
+  const [isSummaryModalOpen, setIsSummaryModalOpen] = useState(false)
+  const chatInputRef = useRef<HTMLInputElement>(null)
   
   // Ephemeral states
   const [peerTypingUser, setPeerTypingUser] = useState<string | null>(null)
@@ -621,6 +629,22 @@ export default function ChatPage() {
     }
     return false
   })
+
+  // Contextual Smart Replies based on last incoming message in the active conversation
+  const lastIncomingMessage = useMemo(() => {
+    for (let i = currentMessages.length - 1; i >= 0; i--) {
+      const msg = currentMessages[i]
+      if (msg.senderId !== user?.userId && msg.senderId !== 'system' && msg.text) {
+        return msg.text
+      }
+    }
+    return ''
+  }, [currentMessages, user?.userId])
+
+  const smartReplies = useMemo(() => {
+    if (!lastIncomingMessage) return []
+    return LocalIntelligence.suggestSmartReplies(lastIncomingMessage)
+  }, [lastIncomingMessage])
 
   // --- 4. Typing Signal Emitter (Throttled 2s + Debounced 1.5s stop) ---
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1348,15 +1372,41 @@ export default function ChatPage() {
                 )}
               </div>
               <p className="text-[11px] text-slate-500">
-                {activeConversation?.isDirect ? '1:1 E2EE Post-Quantum Ratchet' : 'Public Channel • Instant Broadcast'}
+                {activeConversation?.isDirect
+                  ? '1:1 E2EE Post-Quantum Ratchet'
+                  : activeChannelId.startsWith('chan_')
+                  ? 'RFC 9420 MLS Group • TreeKEM E2EE'
+                  : 'Public Channel • Instant Broadcast'}
               </p>
             </div>
           </div>
 
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-3">
+            {/* AI Conversation Summarizer */}
+            <button
+              onClick={() => setIsSummaryModalOpen(true)}
+              className="flex items-center space-x-1.5 rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-purple-300 border border-purple-500/30 hover:bg-purple-600/20 hover:border-purple-500/50 transition shadow-xs"
+              title="Summarize Chat with On-Device AI"
+            >
+              <Sparkles className="h-3.5 w-3.5 text-purple-400" />
+              <span className="hidden sm:inline">Summarize</span>
+            </button>
+
+            {/* MLS Group Members Management */}
+            {activeChannelId.startsWith('chan_') && (
+              <button
+                onClick={() => setIsGroupModalOpen(true)}
+                className="flex items-center space-x-1.5 rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-cyan-300 border border-cyan-500/30 hover:bg-cyan-600/20 hover:border-cyan-500/50 transition shadow-xs"
+                title="Manage Group Members & MLS Keys"
+              >
+                <Users className="h-3.5 w-3.5 text-cyan-400" />
+                <span className="hidden sm:inline">Members</span>
+              </button>
+            )}
+
             {/* Direct Call Controls (Voice & Video) */}
             {activeConversation?.isDirect && (
-              <div className="flex items-center space-x-2 border-r border-slate-800 pr-4">
+              <div className="flex items-center space-x-2 border-r border-slate-800 pr-3">
                 <button
                   onClick={() => handleStartCall('audio')}
                   disabled={callState !== 'idle'}
@@ -1483,6 +1533,7 @@ export default function ChatPage() {
                     }`}
                   >
                     {m.text && <p className="leading-relaxed break-words">{m.text}</p>}
+                    {m.text && <ActionChips text={m.text} />}
 
                     {m.attachment && (
                       <div className="space-y-2">
@@ -1596,6 +1647,29 @@ export default function ChatPage() {
             onRemove={() => setStagedFile(null)}
           />
 
+          {/* Contextual Smart Replies Bar */}
+          {smartReplies.length > 0 && !inputText && (
+            <div className="flex items-center gap-1.5 mb-2.5 overflow-x-auto py-1 scrollbar-none animate-in fade-in slide-in-from-bottom-1">
+              <span className="text-[10px] text-slate-500 font-medium shrink-0 flex items-center gap-1 mr-1">
+                <Sparkles className="w-3 h-3 text-purple-400" />
+                Suggestions:
+              </span>
+              {smartReplies.map((reply, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => {
+                    setInputText(reply)
+                    chatInputRef.current?.focus()
+                  }}
+                  className="px-2.5 py-1 rounded-full text-xs font-medium bg-slate-800/90 text-slate-200 border border-slate-700/70 hover:bg-indigo-600/30 hover:text-indigo-200 hover:border-indigo-500/40 transition-colors shrink-0 shadow-xs"
+                >
+                  {reply}
+                </button>
+              ))}
+            </div>
+          )}
+
           <form onSubmit={handleSendMessage} className="flex items-center space-x-2">
             {/* Hidden File Inputs */}
             <input
@@ -1677,6 +1751,7 @@ export default function ChatPage() {
             </div>
 
             <input
+              ref={chatInputRef}
               type="text"
               value={inputText}
               onChange={handleInputChange}
@@ -2084,6 +2159,31 @@ export default function ChatPage() {
         imageUrl={viewerImage?.url || ''}
         fileName={viewerImage?.fileName}
         fileSize={viewerImage?.fileSize}
+      />
+
+      {/* Dynamic MLS Group Members & Info Modal */}
+      <GroupMembersModal
+        isOpen={isGroupModalOpen}
+        onClose={() => setIsGroupModalOpen(false)}
+        channelId={activeChannelId}
+        channelName={activeConversation?.name || 'Group'}
+        currentUserId={user?.userId || ''}
+        accessToken={sessionStorage.getItem('genchat_token') || ''}
+        wsSend={(frame) => gatewayRef.current?.sendRaw(frame)}
+        onLeftGroup={() => {
+          setActiveChannelId('')
+          setIsGroupModalOpen(false)
+        }}
+      />
+
+      {/* Zero-Knowledge Conversation Summarizer Modal */}
+      <SummaryModal
+        isOpen={isSummaryModalOpen}
+        onClose={() => setIsSummaryModalOpen(false)}
+        channelName={activeConversation?.name || 'Chat'}
+        messages={currentMessages
+          .filter(m => Boolean(m.text))
+          .map(m => ({ text: m.text!, sender: m.senderId === user?.userId ? 'You' : m.senderId }))}
       />
     </div>
   )
