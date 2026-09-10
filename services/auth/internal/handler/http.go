@@ -967,9 +967,14 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			writeErrorJSON(w, r, "invalid user_id", http.StatusBadRequest, err)
 			return
 		}
+		callerUUID, err := uuid.Parse(claims.Sub)
+		if err != nil {
+			writeErrorJSON(w, r, "invalid caller identity", http.StatusUnauthorized, err)
+			return
+		}
 
 		// Verify caller is active member of channel
-		isMember, err := h.store.IsChannelMember(r.Context(), channelUUID, claims.Sub)
+		isMember, err := h.store.IsChannelMember(r.Context(), channelUUID, callerUUID)
 		if err != nil || !isMember {
 			writeErrorJSON(w, r, "forbidden: caller is not a member of this channel", http.StatusForbidden, err)
 			return
@@ -996,7 +1001,7 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			if len(commitBytes) == 0 {
 				commitBytes = []byte(req.CommitData)
 			}
-			_ = h.store.SaveMlsCommit(r.Context(), channelUUID, claims.Sub, req.Epoch, commitBytes)
+			_ = h.store.SaveMlsCommit(r.Context(), channelUUID, callerUUID, req.Epoch, commitBytes)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -1053,9 +1058,14 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			writeErrorJSON(w, r, "invalid user_id", http.StatusBadRequest, err)
 			return
 		}
+		callerUUID, err := uuid.Parse(claims.Sub)
+		if err != nil {
+			writeErrorJSON(w, r, "invalid caller identity", http.StatusUnauthorized, err)
+			return
+		}
 
 		// Verify caller is active member of channel
-		isMember, err := h.store.IsChannelMember(r.Context(), channelUUID, claims.Sub)
+		isMember, err := h.store.IsChannelMember(r.Context(), channelUUID, callerUUID)
 		if err != nil || !isMember {
 			writeErrorJSON(w, r, "forbidden: caller is not a member of this channel", http.StatusForbidden, err)
 			return
@@ -1073,7 +1083,7 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			if len(commitBytes) == 0 {
 				commitBytes = []byte(req.CommitData)
 			}
-			_ = h.store.SaveMlsCommit(r.Context(), channelUUID, claims.Sub, req.Epoch, commitBytes)
+			_ = h.store.SaveMlsCommit(r.Context(), channelUUID, callerUUID, req.Epoch, commitBytes)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -1130,8 +1140,13 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			writeErrorJSON(w, r, "invalid user_id", http.StatusBadRequest, err)
 			return
 		}
+		callerUUID, err := uuid.Parse(claims.Sub)
+		if err != nil {
+			writeErrorJSON(w, r, "invalid caller identity", http.StatusUnauthorized, err)
+			return
+		}
 
-		isMember, err := h.store.IsChannelMember(r.Context(), channelUUID, claims.Sub)
+		isMember, err := h.store.IsChannelMember(r.Context(), channelUUID, callerUUID)
 		if err != nil || !isMember {
 			writeErrorJSON(w, r, "forbidden: caller is not a member of this channel", http.StatusForbidden, err)
 			return
