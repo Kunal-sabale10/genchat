@@ -173,9 +173,8 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 		}
 
 		if len(identBytes) != 32 {
-			padded := make([]byte, 32)
-			copy(padded, identBytes)
-			identBytes = padded
+			writeErrorJSON(w, r, "identityKey must be exactly 32 bytes", http.StatusBadRequest, nil)
+			return
 		}
 
 		resp, err := h.FinishRegistration(r.Context(), &chatv1.FinishRegistrationRequest{
@@ -537,10 +536,21 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 	}))
 
-	// Internal/Authorized GetPushTokens for Gateway
+	// Authenticated GetPushTokens endpoint
 	mux.HandleFunc("/chat.v1.PushService/GetPushTokens", cors(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost && r.Method != http.MethodGet {
 			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, nil)
+			return
+		}
+		claims, err := h.VerifyJWT(strings.TrimPrefix(authHeader, "Bearer "))
+		if err != nil {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, err)
 			return
 		}
 
@@ -558,6 +568,11 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 
 		if targetUserID == "" {
 			writeErrorJSON(w, r, "userId is required", http.StatusBadRequest, nil)
+			return
+		}
+
+		if claims.Sub != targetUserID {
+			writeErrorJSON(w, r, "forbidden", http.StatusForbidden, nil)
 			return
 		}
 

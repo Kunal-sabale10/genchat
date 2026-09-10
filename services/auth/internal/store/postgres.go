@@ -219,7 +219,7 @@ func (s *PostgresStore) FetchPreKeyBundle(ctx context.Context, userID, deviceID 
 		return nil, fmt.Errorf("failed to get identity key: %w", err)
 	}
 
-	err = tx.QueryRow(ctx, `SELECT signed_pre_key, signed_pre_key_sig, signed_pre_key_id, pq_pre_key, pq_pre_key_sig, pq_pre_key_id FROM device_pre_keys WHERE device_id = $1`, deviceID).
+	err = tx.QueryRow(ctx, `SELECT signed_pre_key, signed_pre_key_sig, signed_pre_key_id, pq_pre_key, pq_pre_key_sig, pq_pre_key_id FROM device_pre_keys WHERE device_id = $1 ORDER BY uploaded_at DESC LIMIT 1`, deviceID).
 		Scan(&bundle.SPK, &bundle.SPKSig, &bundle.SPKID, &bundle.PQPK, &bundle.PQPKSig, &bundle.PQPKID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pre keys: %w", err)

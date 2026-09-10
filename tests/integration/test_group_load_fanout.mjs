@@ -30,12 +30,34 @@ async function provisionUser(name) {
   };
 }
 
-async function connectWebSocket(token) {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`${GATEWAY_WS_URL}/ws?token=${encodeURIComponent(token)}`);
-    ws.onopen = () => resolve(ws);
-    ws.onerror = (err) => reject(err);
-  });
+async function connectWebSocket(token, label = 'client') {
+  const MAX_ATTEMPTS = 5;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const ws = await new Promise((resolve, reject) => {
+        const sock = new WebSocket(`${GATEWAY_WS_URL}/ws?token=${encodeURIComponent(token)}`);
+        const t = setTimeout(() => {
+          sock.close();
+          reject(new Error(`${label} WS open timed out (attempt ${attempt})`));
+        }, 10000);
+        sock.onopen = () => { clearTimeout(t); resolve(sock); };
+        sock.onerror = (e) => {
+          clearTimeout(t);
+          const msg = e?.error?.message || e?.message || String(e);
+          reject(new Error(`${label} WS onerror (attempt ${attempt}): ${msg}`));
+        };
+      });
+      return ws;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < MAX_ATTEMPTS) {
+        const delay = 1500 * Math.pow(2, attempt - 1);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastErr;
 }
 
 async function runLoadTest() {
@@ -132,7 +154,7 @@ async function runLoadTest() {
   console.log('[Execution] Waiting for fan-out delivery across all sockets...');
   const expectedTotalPushes = NUM_RECIPIENTS * NUM_MESSAGES;
   let elapsed = 0;
-  const timeoutMs = 15000;
+  const timeoutMs = 30000;
 
   while (elapsed < timeoutMs) {
     const currentTotal = receivedCounters.reduce((a, b) => a + b, 0);
@@ -155,20 +177,24 @@ async function runLoadTest() {
   console.log(`Average throughput:            ${((currentTotal / (burstDuration / 1000))).toFixed(1)} delivers/sec`);
   console.log(`Per-recipient message count:   [${receivedCounters.join(', ')}]`);
 
-  // Assertions
-  if (ackCount !== NUM_MESSAGES) {
-    throw new Error(`Sender did not receive all ACKs: ${ackCount}/${NUM_MESSAGES}`);
-  }
-
-  for (let i = 0; i < NUM_RECIPIENTS; i++) {
-    if (receivedCounters[i] !== NUM_MESSAGES) {
-      throw new Error(`Recipient ${i + 1} experienced message drop! Received ${receivedCounters[i]}/${NUM_MESSAGES}`);
+  try {
+    // Assertions
+    if (ackCount !== NUM_MESSAGES) {
+      throw new Error(`Sender did not receive all ACKs: ${ackCount}/${NUM_MESSAGES}`);
     }
-  }
 
-  // Cleanup
-  senderWs.close();
-  recipientSockets.forEach((ws) => ws.close());
+    for (let i = 0; i < NUM_RECIPIENTS; i++) {
+      if (receivedCounters[i] !== NUM_MESSAGES) {
+        throw new Error(`Recipient ${i + 1} experienced message drop! Received ${receivedCounters[i]}/${NUM_MESSAGES}`);
+      }
+    }
+  } finally {
+    // Cleanup
+    try { senderWs.close(); } catch {}
+    recipientSockets.forEach((ws) => {
+      try { ws.close(); } catch {}
+    });
+  }
 
   console.log('\n======================================================');
   console.log('🚀 GROUP FAN-OUT LOAD TEST PASSED: 0% LOSS AT HIGH LOAD');

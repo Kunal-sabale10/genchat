@@ -96,7 +96,7 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/healthz || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -124,7 +124,7 @@ services:
       auth:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/healthz || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/healthz || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -207,6 +207,12 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8082/healthz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
 
   coturn:
     image: coturn/coturn:latest

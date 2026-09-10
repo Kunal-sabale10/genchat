@@ -295,9 +295,12 @@ func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []by
 					go r.notifyOfflineRecipient(uid, frame.ChannelID, uint64(seqNum))
 				}
 			}
-		} else {
-			// Broadcast fallback (e.g. chan_public)
+		} else if frame.ChannelID == "chan_public" {
+			// Broadcast fallback exclusively for the designated public channel
 			r.hub.BroadcastAll(conn.UserID, push)
+		} else {
+			slog.Warn("cannot route channel message: no members resolved", "channel", frame.ChannelID)
+			return r.sendError(conn, "CHANNEL_NOT_FOUND", "channel members could not be resolved")
 		}
 	} else {
 		// 1:1 Direct Message: route to recipient
@@ -339,6 +342,25 @@ func (r *Router) handleGroupCommit(ctx context.Context, conn *ws.Conn, data []by
 		commitBytes = []byte(frame.CommitData)
 	}
 
+	var memberIDs []string
+	if r.channelClient != nil {
+		resp, err := r.channelClient.GetChannelMembers(ctx, &chatv1.GetChannelMembersRequest{
+			ChannelId: cleanID,
+		})
+		if err == nil && len(resp.GetMembers()) > 0 {
+			isMember := false
+			for _, m := range resp.GetMembers() {
+				if m.GetUserId() == conn.UserID {
+					isMember = true
+				}
+				memberIDs = append(memberIDs, m.GetUserId())
+			}
+			if !isMember && cleanID != "public" {
+				return r.sendError(conn, "FORBIDDEN", "user is not a member of this channel")
+			}
+		}
+	}
+
 	// Persist commit in auth/channel service if client configured
 	if r.channelClient != nil {
 		_, err := r.channelClient.CommitEpoch(ctx, &chatv1.CommitEpochRequest{
@@ -361,18 +383,6 @@ func (r *Router) handleGroupCommit(ctx context.Context, conn *ws.Conn, data []by
 		ServerTime: time.Now().Unix(),
 	})
 
-	var memberIDs []string
-	if r.channelClient != nil {
-		resp, err := r.channelClient.GetChannelMembers(ctx, &chatv1.GetChannelMembersRequest{
-			ChannelId: cleanID,
-		})
-		if err == nil && len(resp.GetMembers()) > 0 {
-			for _, m := range resp.GetMembers() {
-				memberIDs = append(memberIDs, m.GetUserId())
-			}
-		}
-	}
-
 	if len(memberIDs) > 0 {
 		for _, uid := range memberIDs {
 			if uid == conn.UserID {
@@ -382,9 +392,11 @@ func (r *Router) handleGroupCommit(ctx context.Context, conn *ws.Conn, data []by
 				r.hub.SendToUser(uid, pushPayload)
 			}
 		}
-	} else {
-		// Broadcast fallback
+	} else if frame.ChannelID == "chan_public" {
 		r.hub.BroadcastAll(conn.UserID, pushPayload)
+	} else {
+		slog.Warn("cannot route group commit: no members resolved", "channel", frame.ChannelID)
+		return r.sendError(conn, "CHANNEL_NOT_FOUND", "channel members could not be resolved")
 	}
 
 	slog.Info("group commit relayed",
@@ -440,6 +452,28 @@ func (r *Router) handleFetchHistory(ctx context.Context, conn *ws.Conn, data []b
 		return r.sendError(conn, "PERSISTENCE_UNAVAILABLE", "ledger not configured")
 	}
 
+	// Verify channel membership before returning message history
+	if strings.HasPrefix(frame.ChannelID, "chan_") {
+		cleanID := strings.TrimPrefix(frame.ChannelID, "chan_")
+		if r.channelClient != nil && cleanID != "public" {
+			resp, err := r.channelClient.GetChannelMembers(ctx, &chatv1.GetChannelMembersRequest{
+				ChannelId: cleanID,
+			})
+			if err == nil && len(resp.GetMembers()) > 0 {
+				isMember := false
+				for _, m := range resp.GetMembers() {
+					if m.GetUserId() == conn.UserID {
+						isMember = true
+						break
+					}
+				}
+				if !isMember {
+					return r.sendError(conn, "FORBIDDEN", "user is not a member of this channel")
+				}
+			}
+		}
+	}
+
 	conversationID := getConversationID(conn.UserID, frame.ChannelID)
 	bucket := time.Now().Format("2006-01")
 	msgs, err := r.ledger.FetchMessages(ctx, conversationID, bucket, frame.Limit, frame.BeforeServerID)
@@ -486,7 +520,27 @@ func (r *Router) handleTyping(conn *ws.Conn, data []byte) error {
 	})
 
 	if strings.HasPrefix(frame.ChannelID, "chan_") {
-		r.hub.BroadcastAll(conn.UserID, push)
+		cleanID := strings.TrimPrefix(frame.ChannelID, "chan_")
+		var memberIDs []string
+		if r.channelClient != nil {
+			resp, err := r.channelClient.GetChannelMembers(context.Background(), &chatv1.GetChannelMembersRequest{
+				ChannelId: cleanID,
+			})
+			if err == nil {
+				for _, m := range resp.GetMembers() {
+					memberIDs = append(memberIDs, m.GetUserId())
+				}
+			}
+		}
+		if len(memberIDs) > 0 {
+			for _, uid := range memberIDs {
+				if uid != conn.UserID {
+					r.hub.SendToUser(uid, push)
+				}
+			}
+		} else if frame.ChannelID == "chan_public" {
+			r.hub.BroadcastAll(conn.UserID, push)
+		}
 	} else {
 		r.hub.SendToUser(frame.ChannelID, push)
 	}
@@ -559,7 +613,7 @@ func (r *Router) handleReadReceipt(ctx context.Context, conn *ws.Conn, data []by
 					r.hub.SendToUser(uid, receiptPush)
 				}
 			}
-		} else {
+		} else if frame.ChannelID == "chan_public" {
 			r.hub.BroadcastAll(conn.UserID, receiptPush)
 		}
 	} else {

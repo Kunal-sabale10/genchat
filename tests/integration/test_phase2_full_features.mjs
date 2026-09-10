@@ -5,16 +5,7 @@ async function runPhase2Tests() {
 
   const AUTH_URL = process.env.AUTH_URL || 'http://127.0.0.1:8080'
   const WS_URL = process.env.WS_URL || 'ws://127.0.0.1:8081/ws'
-  const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production'
 
-  function createTestJWT(sub, deviceId, expiresInSec = 900) {
-    const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url')
-    const exp = Math.floor(Date.now() / 1000) + expiresInSec
-    const payload = Buffer.from(JSON.stringify({ sub, device_id: deviceId, exp })).toString('base64url')
-    const sigBase = `${header}.${payload}`
-    const sig = crypto.createHmac('sha256', JWT_SECRET).update(sigBase).digest('base64url')
-    return `${sigBase}.${sig}`
-  }
 
   let passed = 0
   let failed = 0
@@ -276,11 +267,13 @@ async function runPhase2Tests() {
   const wsEve = wrapWebSocket(`${WS_URL}?token=${encodeURIComponent(eveToken)}`)
   await wsEve.waitOpen()
 
-  const eveForbiddenPromise = new Promise((resolve) => {
+  const eveForbiddenPromise = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Timeout waiting for Eve FORBIDDEN error frame')), 10000)
     wsEve.onMessage((raw) => {
       try {
         const frame = JSON.parse(raw)
         if (frame.type === 'error') {
+          clearTimeout(timer)
           resolve(frame)
         }
       } catch {}

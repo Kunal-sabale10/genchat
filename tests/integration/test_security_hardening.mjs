@@ -185,6 +185,8 @@ async function runSecurityTests() {
       break
     }
   }
+  assert(hit429, 'Auth ceremony rate limiter triggered HTTP 429 on rapid requests')
+
   // TEST 5: User Discovery Directory (ListUsers)
   console.log('\n5. Testing User Discovery Directory (/chat.v1.AuthService/ListUsers)...')
   const unauthListRes = await fetch(`${AUTH_URL}/chat.v1.AuthService/ListUsers`, {

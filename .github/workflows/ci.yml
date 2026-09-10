@@ -144,20 +144,14 @@ jobs:
       - name: Start Docker Compose Infrastructure
         run: |
           docker compose -f deploy/docker-compose.yaml up -d --build
-          echo "Waiting for ALL backend services to become healthy (up to 240s)..."
-          timeout 240s bash -c '
-            until docker compose -f deploy/docker-compose.yaml ps | grep -E "(auth|gateway|ledger|postgres|redis|scylladb|minio)" | grep -v "(healthy)" | grep -v "minio-init\|scylla-init\|scylla-init\|coturn\|web" | grep -qv "Exit"; do
-              sleep 3
-            done
-          ' || true
-          # Additional explicit wait: poll ports directly (bypass Docker healthcheck timing)
-          echo "Polling auth HTTP port 8080..."
-          timeout 60s bash -c 'until curl -sf http://127.0.0.1:8080/healthz > /dev/null 2>&1; do sleep 2; done'
-          echo "Polling gateway HTTP port 8081..."
-          timeout 60s bash -c 'until curl -sf http://127.0.0.1:8081/healthz > /dev/null 2>&1; do sleep 2; done'
-          echo "Polling media HTTP port 8082..."
-          timeout 60s bash -c 'until curl -sf http://127.0.0.1:8082/health > /dev/null 2>&1; do sleep 2; done' || echo "Media service not critical, continuing..."
-          echo "All services confirmed ready!"
+          echo "Waiting for core backend services to become healthy..."
+          timeout 120s bash -c 'until curl -sf http://127.0.0.1:8080/healthz > /dev/null 2>&1; do sleep 2; done'
+          echo "✓ Auth service ready on port 8080"
+          timeout 120s bash -c 'until curl -sf http://127.0.0.1:8081/healthz > /dev/null 2>&1; do sleep 2; done'
+          echo "✓ Gateway service ready on port 8081"
+          timeout 120s bash -c 'until curl -sf http://127.0.0.1:8082/healthz > /dev/null 2>&1; do sleep 2; done'
+          echo "✓ Media service ready on port 8082"
+          echo "All backend services confirmed healthy!"
           docker compose -f deploy/docker-compose.yaml ps
 
       - name: Run System Security Verification

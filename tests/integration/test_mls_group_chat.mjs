@@ -72,12 +72,34 @@ async function decryptMlsMessage(envelopeJson, epochSecretHex, channelId, epoch)
   return new TextDecoder().decode(decrypted);
 }
 
-async function connectWebSocket(token) {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`${GATEWAY_WS_URL}/ws?token=${encodeURIComponent(token)}`);
-    ws.onopen = () => resolve(ws);
-    ws.onerror = (err) => reject(err);
-  });
+async function connectWebSocket(token, label = 'client') {
+  const MAX_ATTEMPTS = 5;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const ws = await new Promise((resolve, reject) => {
+        const sock = new WebSocket(`${GATEWAY_WS_URL}/ws?token=${encodeURIComponent(token)}`);
+        const t = setTimeout(() => {
+          sock.close();
+          reject(new Error(`${label} WS open timed out (attempt ${attempt})`));
+        }, 10000);
+        sock.onopen = () => { clearTimeout(t); resolve(sock); };
+        sock.onerror = (e) => {
+          clearTimeout(t);
+          const msg = e?.error?.message || e?.message || String(e);
+          reject(new Error(`${label} WS onerror (attempt ${attempt}): ${msg}`));
+        };
+      });
+      return ws;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < MAX_ATTEMPTS) {
+        const delay = 1500 * Math.pow(2, attempt - 1);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastErr;
 }
 
 
@@ -366,9 +388,9 @@ async function runTest() {
   }
 
   // Cleanup WebSockets
-  aliceWs.close();
-  bobWs.close();
-  charlieWs.close();
+  try { aliceWs?.close(); } catch {}
+  try { bobWs?.close(); } catch {}
+  try { charlieWs?.close(); } catch {}
 
   console.log('\n======================================================');
   console.log('🎉 ALL MLS GROUP CHAT INTEGRATION TESTS PASSED 100%!');

@@ -32,26 +32,24 @@ RUN go build -o /bin/gatewayd ./services/gateway/cmd/gatewayd
 RUN go build -o /bin/ledgerd ./services/msgledger/cmd/ledgerd
 RUN go build -o /bin/mediad ./services/media/cmd/mediad
 
-FROM debian:bookworm-slim AS auth
+FROM debian:bookworm-slim AS base-runtime
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl netcat-openbsd && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/crypto/genchat-crypto-ffi/target/release/libgenchat_crypto_ffi.so /usr/local/lib/
-COPY --from=builder /bin/authd /usr/local/bin/
 RUN ldconfig
+
+FROM base-runtime AS auth
+COPY --from=builder /bin/authd /usr/local/bin/
 CMD ["authd"]
 
-FROM debian:bookworm-slim AS gateway
-COPY --from=builder /app/crypto/genchat-crypto-ffi/target/release/libgenchat_crypto_ffi.so /usr/local/lib/
+FROM base-runtime AS gateway
 COPY --from=builder /bin/gatewayd /usr/local/bin/
-RUN ldconfig
 CMD ["gatewayd"]
 
-FROM debian:bookworm-slim AS ledger
-COPY --from=builder /app/crypto/genchat-crypto-ffi/target/release/libgenchat_crypto_ffi.so /usr/local/lib/
+FROM base-runtime AS ledger
 COPY --from=builder /bin/ledgerd /usr/local/bin/
-RUN ldconfig
 CMD ["ledgerd"]
 
-FROM debian:bookworm-slim AS media
-COPY --from=builder /app/crypto/genchat-crypto-ffi/target/release/libgenchat_crypto_ffi.so /usr/local/lib/
+FROM base-runtime AS media
 COPY --from=builder /bin/mediad /usr/local/bin/
-RUN ldconfig
 CMD ["mediad"]
+

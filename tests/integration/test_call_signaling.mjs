@@ -15,35 +15,6 @@ async function provisionUser(displayName) {
   return await res.json();
 }
 
-async function connectWS(token, label) {
-  const MAX_ATTEMPTS = 5;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    try {
-      await new Promise((resolve, reject) => {
-        const ws = new WebSocket(`${GATEWAY_WS_URL}/ws?token=${encodeURIComponent(token)}`);
-        const timeout = setTimeout(() => {
-          ws.close();
-          reject(new Error(`${label} WS open timeout on attempt ${attempt}`));
-        }, 10000);
-        ws.onopen = () => { clearTimeout(timeout); resolve(ws); };
-        ws.onerror = (e) => {
-          clearTimeout(timeout);
-          const msg = e?.error?.message || e?.message || 'unknown';
-          reject(new Error(`${label} WS connect error on attempt ${attempt}: ${msg}`));
-        };
-      }).then(ws => { return ws; });
-      // Need to capture ws from the promise — restructure:
-      break;
-    } catch (err) {
-      if (attempt === MAX_ATTEMPTS) throw err;
-      const delay = 2000 * Math.pow(2, attempt - 1);
-      console.error(`  ${label} attempt ${attempt} failed: ${err.message}. Retrying in ${delay}ms...`);
-      await new Promise(r => setTimeout(r, delay));
-    }
-  }
-}
-
-// Actually create properly — above is a draft. Use this cleaner version:
 async function openWebSocket(token, label) {
   const MAX_ATTEMPTS = 5;
   let lastErr;

@@ -1,5 +1,3 @@
-import crypto from 'crypto'
-
 async function runPushTests() {
   console.log('=== STARTING GENCHAT PUSH NOTIFICATION INTEGRATION TESTS ===\n')
 
@@ -76,7 +74,9 @@ async function runPushTests() {
 
   // 3. Query Registered Tokens via GetPushTokens
   console.log('\n3. Testing Push Token Query (/chat.v1.PushService/GetPushTokens)...')
-  const queryRes = await fetch(`${AUTH_URL}/chat.v1.PushService/GetPushTokens?userId=${userB}`)
+  const queryRes = await fetch(`${AUTH_URL}/chat.v1.PushService/GetPushTokens?userId=${userB}`, {
+    headers: { Authorization: `Bearer ${tokenB}` },
+  })
   assert(queryRes.status === 200, 'GetPushTokens returns HTTP 200 OK')
   const queryJson = await queryRes.json()
   assert(Array.isArray(queryJson.tokens), 'GetPushTokens returns tokens array')
@@ -180,7 +180,9 @@ async function runPushTests() {
   assert(unregRes.status === 200, 'UnregisterPushToken returns HTTP 200 OK')
   
   // Verify token is no longer present
-  const verifyRes = await fetch(`${AUTH_URL}/chat.v1.PushService/GetPushTokens?userId=${userB}`)
+  const verifyRes = await fetch(`${AUTH_URL}/chat.v1.PushService/GetPushTokens?userId=${userB}`, {
+    headers: { Authorization: `Bearer ${tokenB}` },
+  })
   const verifyJson = await verifyRes.json()
   const remaining = (verifyJson.tokens || []).filter((t) => (t.deviceId || t.device_id) === deviceB)
   assert(remaining.length === 0, 'Device token successfully pruned from database')
