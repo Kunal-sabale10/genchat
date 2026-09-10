@@ -33,8 +33,26 @@ async function runSecurityTests() {
 
   // TEST 1: Ephemeral TURN Credential Generation & Verification
   console.log('1. Testing RFC 7635 Ephemeral TURN Credentials...')
-  const testUserId = 'user-sec-test-' + Date.now()
-  const testToken = createTestJWT(testUserId, 'dev-001')
+  let testUserId = 'user-sec-test-' + Date.now()
+  let testDeviceId = 'dev-001'
+  let testToken = createTestJWT(testUserId, testDeviceId)
+
+  try {
+    const devRes = await fetch(`${AUTH_URL}/dev-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ displayName: 'Security Test User' }),
+    })
+    if (devRes.ok) {
+      const devData = await devRes.json()
+      testUserId = devData.user_id
+      testDeviceId = devData.device_id
+      testToken = devData.access_token
+      console.log(`    Provisioned test user: ${testUserId}`)
+    }
+  } catch (err) {
+    console.warn('    Could not provision via /dev-token, falling back to local JWT:', err.message)
+  }
 
   // 1a. Unauthorized request without token
   const unauthRes = await fetch(`${AUTH_URL}/chat.v1.AuthService/GetIceServers`)
