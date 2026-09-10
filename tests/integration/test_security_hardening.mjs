@@ -3,8 +3,8 @@ import crypto from 'crypto'
 async function runSecurityTests() {
   console.log('=== STARTING GENCHAT SYSTEM SECURITY TESTS ===\n')
 
-  const AUTH_URL = process.env.AUTH_URL || 'http://localhost:8080'
-  const MEDIA_URL = process.env.MEDIA_URL || 'http://localhost:8082'
+  const AUTH_URL = process.env.AUTH_URL || 'http://127.0.0.1:8080'
+  const MEDIA_URL = process.env.MEDIA_URL || 'http://127.0.0.1:8082'
   const TURN_SECRET = process.env.TURN_SECRET || 'dev_turn_shared_secret_32b_change_in_prod'
   const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production'
 

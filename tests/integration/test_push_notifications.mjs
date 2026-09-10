@@ -1,21 +1,10 @@
 import crypto from 'crypto'
-import { execSync } from 'child_process'
 
 async function runPushTests() {
   console.log('=== STARTING GENCHAT PUSH NOTIFICATION INTEGRATION TESTS ===\n')
 
-  const AUTH_URL = process.env.AUTH_URL || 'http://localhost:8080'
-  const GATEWAY_URL = process.env.GATEWAY_URL || 'ws://localhost:8081'
-  const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production'
-
-  function createTestJWT(sub, deviceId, expiresInSec = 900) {
-    const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url')
-    const exp = Math.floor(Date.now() / 1000) + expiresInSec
-    const payload = Buffer.from(JSON.stringify({ sub, device_id: deviceId, exp })).toString('base64url')
-    const sigBase = `${header}.${payload}`
-    const sig = crypto.createHmac('sha256', JWT_SECRET).update(sigBase).digest('base64url')
-    return `${sigBase}.${sig}`
-  }
+  const AUTH_URL = process.env.AUTH_URL || 'http://127.0.0.1:8080'
+  const GATEWAY_URL = process.env.GATEWAY_URL || 'ws://127.0.0.1:8081'
 
   let passed = 0
   let failed = 0
@@ -30,22 +19,28 @@ async function runPushTests() {
     }
   }
 
-  const userA = crypto.randomUUID()
-  const userB = crypto.randomUUID()
-  const deviceA = crypto.randomUUID()
-  const deviceB = crypto.randomUUID()
+  // Provision Alice and Bob via /dev-token (persists to Postgres hermetically)
+  const resA = await fetch(`${AUTH_URL}/dev-token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ displayName: 'Push Test Alice' }),
+  })
+  if (!resA.ok) throw new Error(`Failed to provision Alice via dev-token: ${resA.status}`)
+  const dataA = await resA.json()
+  const userA = dataA.user_id
+  const deviceA = dataA.device_id
+  const tokenA = dataA.access_token
 
-  // Seed userB and deviceB in Postgres to satisfy foreign key constraints
-  try {
-    const pubKey = crypto.randomBytes(32).toString('hex')
-    const devKey = crypto.randomBytes(32).toString('hex')
-    execSync(`docker compose -f deploy/docker-compose.yaml exec -T postgres psql -U genchat -d genchat -c "INSERT INTO users (id, display_name, identity_key) VALUES ('${userB}', 'Push Test Bob', '\\\\x${pubKey}') ON CONFLICT DO NOTHING; INSERT INTO user_devices (id, user_id, device_label, identity_key) VALUES ('${deviceB}', '${userB}', 'Bob Device', '\\\\x${devKey}') ON CONFLICT DO NOTHING;"`, { stdio: 'pipe' })
-  } catch (err) {
-    console.warn('Could not seed user in postgres directly:', err.message)
-  }
-
-  const tokenA = createTestJWT(userA, deviceA)
-  const tokenB = createTestJWT(userB, deviceB)
+  const resB = await fetch(`${AUTH_URL}/dev-token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ displayName: 'Push Test Bob' }),
+  })
+  if (!resB.ok) throw new Error(`Failed to provision Bob via dev-token: ${resB.status}`)
+  const dataB = await resB.json()
+  const userB = dataB.user_id
+  const deviceB = dataB.device_id
+  const tokenB = dataB.access_token
 
   // 1. Unauthenticated request protection
   console.log('1. Testing Unauthenticated Push Service Access...')
@@ -92,7 +87,7 @@ async function runPushTests() {
   // 4. Offline Recipient Real-Time Delivery & Silent Push Triggering
   console.log('\n4. Testing Offline Recipient Handling via Gateway...')
   await new Promise((resolve, reject) => {
-    const wsA = new WebSocket(`${GATEWAY_URL}/ws?token=${tokenA}`)
+    const wsA = new WebSocket(`${GATEWAY_URL}/ws?token=${encodeURIComponent(tokenA)}`)
     
     wsA.onopen = () => {
       // Alice sends a message to Bob (who is NOT connected to WebSocket)

@@ -3,8 +3,8 @@ import crypto from 'crypto'
 async function runPhase2Tests() {
   console.log('=== STARTING PHASE 2 SENIOR-ENGINEER FULL FEATURES TEST SUITE ===\n')
 
-  const AUTH_URL = process.env.AUTH_URL || 'http://localhost:8080'
-  const WS_URL = process.env.WS_URL || 'ws://localhost:8081/ws'
+  const AUTH_URL = process.env.AUTH_URL || 'http://127.0.0.1:8080'
+  const WS_URL = process.env.WS_URL || 'ws://127.0.0.1:8081/ws'
   const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production'
 
   function createTestJWT(sub, deviceId, expiresInSec = 900) {
