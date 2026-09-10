@@ -86,9 +86,23 @@ async function runPushTests() {
 
   // 4. Offline Recipient Real-Time Delivery & Silent Push Triggering
   console.log('\n4. Testing Offline Recipient Handling via Gateway...')
-  await new Promise((resolve, reject) => {
+  let wsConnectAttempts = 0
+  const MAX_WS_ATTEMPTS = 5
+  const WS_TIMEOUT_MS = 15000
+
+  const runWsTest = () => new Promise((resolve, reject) => {
+    wsConnectAttempts++
     const wsA = new WebSocket(`${GATEWAY_URL}/ws?token=${encodeURIComponent(tokenA)}`)
-    
+    let settled = false
+    const settle = (fn, arg) => {
+      if (!settled) { settled = true; fn(arg) }
+    }
+
+    const timer = setTimeout(() => {
+      wsA.close()
+      settle(reject, new Error(`Timed out waiting for Gateway ACK after ${WS_TIMEOUT_MS}ms (attempt ${wsConnectAttempts})`))
+    }, WS_TIMEOUT_MS)
+
     wsA.onopen = () => {
       // Alice sends a message to Bob (who is NOT connected to WebSocket)
       const clientMsgId = 'msg-' + Date.now()
@@ -100,33 +114,58 @@ async function runPushTests() {
         message_type: 1,
       })
       wsA.send(payload)
-    }
 
-    wsA.onmessage = async (event) => {
-      try {
-        const text = typeof event.data === 'string' ? event.data : await event.data.text()
-        const frame = JSON.parse(text)
-        if (frame.type === 'ack') {
-          assert(true, 'Gateway acknowledged message persistence via ScyllaDB ACK')
-          assert(typeof frame.sequence_num === 'number', 'ACK contains sequence_num')
-          assert(!!frame.message_id, 'ACK contains durable message_id')
+      wsA.onmessage = async (event) => {
+        try {
+          const text = typeof event.data === 'string' ? event.data : await event.data.text()
+          const frame = JSON.parse(text)
+          if (frame.type === 'ack') {
+            clearTimeout(timer)
+            assert(true, 'Gateway acknowledged message persistence via ScyllaDB ACK')
+            assert(typeof frame.sequence_num === 'number', 'ACK contains sequence_num')
+            assert(!!frame.message_id, 'ACK contains durable message_id')
+            wsA.close()
+            settle(resolve, undefined)
+          } else if (frame.type === 'error') {
+            clearTimeout(timer)
+            wsA.close()
+            settle(reject, new Error(`Gateway returned error frame: ${frame.message || JSON.stringify(frame)}`))
+          }
+        } catch (parseErr) {
+          clearTimeout(timer)
           wsA.close()
-          resolve()
+          settle(reject, parseErr)
         }
-      } catch (err) {
-        reject(err)
       }
     }
 
-    wsA.onerror = (err) => {
-      assert(false, `WebSocket connection error: ${err.message || 'unknown'}`)
-      reject(err)
+    wsA.onerror = (errEvent) => {
+      clearTimeout(timer)
+      const msg = errEvent?.error?.message || errEvent?.message || String(errEvent)
+      console.error(`  WebSocket error on attempt ${wsConnectAttempts}: ${msg}`)
+      wsA.close()
+      settle(reject, new Error(`WebSocket connect error (attempt ${wsConnectAttempts}): ${msg}`))
     }
-
-    setTimeout(() => {
-      reject(new Error('Timed out waiting for Gateway ACK on offline message'))
-    }, 5000)
   })
+
+  // Retry with exponential back-off so transient "service not yet ready" errors don't fail the build
+  let wsSuccess = false
+  for (let attempt = 0; attempt < MAX_WS_ATTEMPTS; attempt++) {
+    try {
+      await runWsTest()
+      wsSuccess = true
+      break
+    } catch (wsErr) {
+      if (attempt < MAX_WS_ATTEMPTS - 1) {
+        const delay = 2000 * Math.pow(2, attempt) // 2s, 4s, 8s, 16s
+        console.error(`  Attempt ${attempt + 1} failed: ${wsErr.message}. Retrying in ${delay}ms...`)
+        await new Promise(r => setTimeout(r, delay))
+      } else {
+        assert(false, `WebSocket offline delivery test FAILED after ${MAX_WS_ATTEMPTS} attempts: ${wsErr.message}`)
+      }
+    }
+  }
+
 
   // 5. Unregister Push Token
   console.log('\n5. Testing Push Token Unregistration...')

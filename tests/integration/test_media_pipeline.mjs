@@ -3,7 +3,7 @@ import crypto from 'node:crypto'
 async function testMediaPipeline() {
   console.log('--- Starting Media Upload & MinIO S3 Pipeline Verification ---')
 
-  const MEDIA_URL = process.env.MEDIA_URL || 'http://localhost:8082'
+  const MEDIA_URL = process.env.MEDIA_URL || 'http://127.0.0.1:8082'
 
   // 1. Generate test plaintext (mimicking a photo or document)
   const originalPlaintext = 'GenChat Top-Secret Document: AES-256-GCM Zero-Knowledge Media Attachment Verification Payload ' + Date.now()

@@ -95,6 +95,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
 
   gateway:
     build:
@@ -114,9 +120,15 @@ services:
       redis:
         condition: service_healthy
       ledger:
-        condition: service_started
+        condition: service_healthy
       auth:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/healthz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
 
   ledger:
     build:
@@ -133,6 +145,12 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 50052 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
 
   minio:
     image: minio/minio:latest

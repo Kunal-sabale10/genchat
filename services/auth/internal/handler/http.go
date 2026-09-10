@@ -47,6 +47,19 @@ func isAllowedOrigin(origin string, allowed []string) bool {
 func (h *AuthHandler) HTTPHandler() http.Handler {
 	mux := http.NewServeMux()
 
+	// Liveness / readiness probes — must respond before the service accepts
+	// any authenticated traffic. These are NOT protected by CORS or auth.
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
 	cors := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			// Security Headers
