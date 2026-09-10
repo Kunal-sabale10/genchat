@@ -451,6 +451,7 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 
 		var req struct {
 			DeviceID string `json:"deviceId"`
+			DeviceId string `json:"device_id"`
 			Platform int    `json:"platform"`
 			Token    string `json:"token"`
 			Endpoint string `json:"endpoint"`
@@ -463,6 +464,9 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			return
 		}
 
+		if req.DeviceID == "" {
+			req.DeviceID = req.DeviceId
+		}
 		if req.DeviceID == "" {
 			req.DeviceID = claims.DeviceID
 		}
@@ -512,6 +516,7 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 
 		var req struct {
 			DeviceID string `json:"deviceId"`
+			DeviceId string `json:"device_id"`
 		}
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil || json.Unmarshal(body, &req) != nil {
@@ -519,6 +524,9 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			return
 		}
 
+		if req.DeviceID == "" {
+			req.DeviceID = req.DeviceId
+		}
 		if req.DeviceID == "" {
 			req.DeviceID = claims.DeviceID
 		}
@@ -557,13 +565,20 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 		var targetUserID string
 		if r.Method == http.MethodGet {
 			targetUserID = r.URL.Query().Get("userId")
+			if targetUserID == "" {
+				targetUserID = r.URL.Query().Get("user_id")
+			}
 		} else {
 			var req struct {
 				UserID string `json:"userId"`
+				UserId string `json:"user_id"`
 			}
 			body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 			_ = json.Unmarshal(body, &req)
 			targetUserID = req.UserID
+			if targetUserID == "" {
+				targetUserID = req.UserId
+			}
 		}
 
 		if targetUserID == "" {
@@ -571,7 +586,7 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			return
 		}
 
-		if claims.Sub != targetUserID {
+		if !strings.EqualFold(claims.Sub, targetUserID) {
 			writeErrorJSON(w, r, "forbidden", http.StatusForbidden, nil)
 			return
 		}
@@ -584,8 +599,15 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			return
 		}
 
+		tokensList := resp.GetTokens()
+		if tokensList == nil {
+			tokensList = []*chatv1.PushTokenRecord{}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tokens": tokensList,
+		})
 	}))
 
 	// ============================================================

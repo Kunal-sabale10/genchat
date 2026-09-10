@@ -108,7 +108,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
           cache-dependency-path: packages/client-web/package-lock.json
 
@@ -132,6 +132,8 @@ jobs:
     name: End-to-End Integration Tests
     runs-on: ubuntu-latest
     needs: [go-services, client-web]
+    env:
+      NODE_OPTIONS: "--experimental-websocket"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -139,7 +141,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Start Docker Compose Infrastructure
         run: |
