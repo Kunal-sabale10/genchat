@@ -222,4 +222,18 @@ export class LocalEncryptedCache {
       // Storage unavailable
     }
   }
+
+  /**
+   * Permanently purges expired ephemeral messages from offline storage.
+   */
+  public static async purgeExpiredMessages(): Promise<string[]> {
+    return localDb.purgeExpiredMessages()
+  }
+
+  /**
+   * Permanently deletes a single message from offline storage.
+   */
+  public static async deleteMessage(idOrClientMsgId: string, channelId?: string): Promise<void> {
+    return localDb.deleteMessage(idOrClientMsgId, channelId)
+  }
 }

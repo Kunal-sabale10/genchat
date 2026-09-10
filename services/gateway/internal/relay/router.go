@@ -19,11 +19,12 @@ import (
 
 // InboundFrame is the JSON envelope sent by the client.
 type InboundFrame struct {
-	Action        string `json:"action"`
-	ChannelID     string `json:"channel_id"`
-	ClientMsgID   string `json:"client_msg_id"`
-	CiphertextB64 string `json:"ciphertext_base64"`
-	MessageType   int    `json:"message_type"`
+	Action          string `json:"action"`
+	ChannelID       string `json:"channel_id"`
+	ClientMsgID     string `json:"client_msg_id"`
+	CiphertextB64   string `json:"ciphertext_base64"`
+	MessageType     int    `json:"message_type"`
+	EphemeralTTLSec int64  `json:"ephemeral_ttl_sec,omitempty"`
 }
 
 // AckFrame is sent back to the sender upon successful delivery.
@@ -36,13 +37,14 @@ type AckFrame struct {
 
 // PushFrame is sent to the recipient(s).
 type PushFrame struct {
-	Type          string `json:"type"`
-	ChannelID     string `json:"channel_id"`
-	SenderID      string `json:"sender_id"`
-	CiphertextB64 string `json:"ciphertext_base64"`
-	MessageType   int    `json:"message_type"`
-	ServerID      string `json:"server_id"`
-	ServerTime    int64  `json:"server_time"`
+	Type            string `json:"type"`
+	ChannelID       string `json:"channel_id"`
+	SenderID        string `json:"sender_id"`
+	CiphertextB64   string `json:"ciphertext_base64"`
+	MessageType     int    `json:"message_type"`
+	ServerID        string `json:"server_id"`
+	ServerTime      int64  `json:"server_time"`
+	EphemeralTTLSec int64  `json:"ephemeral_ttl_sec,omitempty"`
 }
 
 // ErrorFrame is sent when a frame cannot be processed.
@@ -147,6 +149,22 @@ type GroupCommitPushFrame struct {
 	ServerTime int64  `json:"server_time"`
 }
 
+// EphemeralSettingFrame is sent when a participant changes the disappearing message TTL.
+type EphemeralSettingFrame struct {
+	Action          string `json:"action"` // "ephemeral_setting"
+	ChannelID       string `json:"channel_id"`
+	EphemeralTTLSec int64  `json:"ephemeral_ttl_sec"`
+}
+
+// EphemeralSettingPushFrame is broadcast to conversation participants.
+type EphemeralSettingPushFrame struct {
+	Type            string `json:"type"` // "ephemeral_setting"
+	ChannelID       string `json:"channel_id"`
+	EphemeralTTLSec int64  `json:"ephemeral_ttl_sec"`
+	UpdatedBy       string `json:"updated_by"`
+	UpdatedAt       int64  `json:"updated_at"`
+}
+
 // Router handles message routing between connected clients.
 type Router struct {
 	hub           *ws.Hub
@@ -190,6 +208,8 @@ func (r *Router) Handle(ctx context.Context, conn *ws.Conn, data []byte) error {
 		return r.handleReadReceipt(ctx, conn, data)
 	case "call_signal":
 		return r.handleCallSignal(conn, data)
+	case "ephemeral_setting":
+		return r.handleEphemeralSetting(ctx, conn, data)
 	case "ping":
 		return r.handlePing(conn)
 	default:
@@ -251,13 +271,14 @@ func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []by
 
 	// 2. Push to channel members
 	push, _ := json.Marshal(PushFrame{
-		Type:          "push",
-		ChannelID:     frame.ChannelID,
-		SenderID:      conn.UserID,
-		CiphertextB64: frame.CiphertextB64,
-		MessageType:   frame.MessageType,
-		ServerID:      serverID,
-		ServerTime:    time.Now().Unix(),
+		Type:            "push",
+		ChannelID:       frame.ChannelID,
+		SenderID:        conn.UserID,
+		CiphertextB64:   frame.CiphertextB64,
+		MessageType:     frame.MessageType,
+		ServerID:        serverID,
+		ServerTime:      time.Now().Unix(),
+		EphemeralTTLSec: frame.EphemeralTTLSec,
 	})
 
 	if strings.HasPrefix(frame.ChannelID, "chan_") {
@@ -675,6 +696,63 @@ func (r *Router) handleCallSignal(conn *ws.Conn, data []byte) error {
 		"caller", conn.UserID,
 		"target", frame.TargetUserID,
 		"call_id", frame.CallID,
+	)
+	return nil
+}
+
+func (r *Router) handleEphemeralSetting(ctx context.Context, conn *ws.Conn, data []byte) error {
+	var frame EphemeralSettingFrame
+	if err := json.Unmarshal(data, &frame); err != nil {
+		return r.sendError(conn, "INVALID_FRAME", "could not parse ephemeral_setting frame")
+	}
+	if frame.ChannelID == "" {
+		return r.sendError(conn, "MISSING_FIELDS", "channel_id is required")
+	}
+
+	pushPayload, err := json.Marshal(EphemeralSettingPushFrame{
+		Type:            "ephemeral_setting",
+		ChannelID:       frame.ChannelID,
+		EphemeralTTLSec: frame.EphemeralTTLSec,
+		UpdatedBy:       conn.UserID,
+		UpdatedAt:       time.Now().Unix(),
+	})
+	if err != nil {
+		return err
+	}
+
+	if strings.HasPrefix(frame.ChannelID, "chan_") {
+		cleanID := strings.TrimPrefix(frame.ChannelID, "chan_")
+		var memberIDs []string
+		if r.channelClient != nil {
+			resp, err := r.channelClient.GetChannelMembers(ctx, &chatv1.GetChannelMembersRequest{
+				ChannelId: cleanID,
+			})
+			if err == nil && len(resp.GetMembers()) > 0 {
+				for _, m := range resp.GetMembers() {
+					memberIDs = append(memberIDs, m.GetUserId())
+				}
+			}
+		}
+
+		if len(memberIDs) > 0 {
+			for _, uid := range memberIDs {
+				r.hub.SendToUser(uid, pushPayload)
+			}
+		} else if frame.ChannelID == "chan_public" {
+			r.hub.BroadcastAll("", pushPayload)
+		}
+	} else {
+		// 1:1 conversation: send to recipient and back to sender
+		r.hub.SendToUser(frame.ChannelID, pushPayload)
+		if frame.ChannelID != conn.UserID {
+			r.hub.SendToUser(conn.UserID, pushPayload)
+		}
+	}
+
+	slog.Info("ephemeral setting updated",
+		"channel", frame.ChannelID,
+		"ttl_sec", frame.EphemeralTTLSec,
+		"updated_by", conn.UserID,
 	)
 	return nil
 }

@@ -15,6 +15,8 @@ export interface StoredMessage {
   status: 'pending' | 'sent' | 'delivered' | 'read'
   timestamp: string
   createdAt: number
+  ephemeralTtlSec?: number
+  expiresAt?: number
 }
 
 export interface StoredConversation {
@@ -123,6 +125,7 @@ export class LocalStorageDb {
   }
 
   public async getMessagesByChannel(channelId: string): Promise<StoredMessage[]> {
+    const now = Date.now()
     const db = await this.dbPromise
     if (db) {
       return new Promise((resolve) => {
@@ -133,8 +136,9 @@ export class LocalStorageDb {
           const req = index.getAll(channelId)
           req.onsuccess = () => {
             const list: StoredMessage[] = req.result || []
-            list.sort((a, b) => a.createdAt - b.createdAt)
-            resolve(list)
+            const valid = list.filter((m) => !m.expiresAt || m.expiresAt > now)
+            valid.sort((a, b) => a.createdAt - b.createdAt)
+            resolve(valid)
           }
           req.onerror = () => resolve(this.getLocalStorageMessages(channelId))
         } catch {
@@ -144,6 +148,119 @@ export class LocalStorageDb {
     }
 
     return this.getLocalStorageMessages(channelId)
+  }
+
+  /**
+   * Permanently deletes a single message from IndexedDB and localStorage fallback.
+   */
+  public async deleteMessage(idOrClientMsgId: string, channelId?: string): Promise<void> {
+    const db = await this.dbPromise
+    if (db) {
+      await new Promise<void>((resolve) => {
+        try {
+          const tx = db.transaction(STORE_MESSAGES, 'readwrite')
+          const store = tx.objectStore(STORE_MESSAGES)
+          store.delete(idOrClientMsgId)
+          tx.oncomplete = () => resolve()
+          tx.onerror = () => resolve()
+        } catch {
+          resolve()
+        }
+      })
+    }
+
+    try {
+      const purgeFromKey = (key: string) => {
+        const raw = localStorage.getItem(key)
+        if (raw) {
+          const msgs: StoredMessage[] = JSON.parse(raw)
+          const remaining = msgs.filter((m) => m.id !== idOrClientMsgId && m.clientMsgId !== idOrClientMsgId)
+          if (remaining.length !== msgs.length) {
+            localStorage.setItem(key, JSON.stringify(remaining))
+          }
+        }
+      }
+
+      if (channelId) {
+        purgeFromKey(`genchat_msgs_${channelId}`)
+      } else {
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i)
+          if (key && key.startsWith('genchat_msgs_')) {
+            purgeFromKey(key)
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Permanently purges expired ephemeral messages from IndexedDB and localStorage.
+   * Returns list of purged message IDs.
+   */
+  public async purgeExpiredMessages(): Promise<string[]> {
+    const now = Date.now()
+    const purgedIds: string[] = []
+
+    const db = await this.dbPromise
+    if (db) {
+      await new Promise<void>((resolve) => {
+        try {
+          const tx = db.transaction(STORE_MESSAGES, 'readwrite')
+          const store = tx.objectStore(STORE_MESSAGES)
+          const cursorReq = store.openCursor()
+
+          cursorReq.onsuccess = (e) => {
+            const cursor = (e.target as IDBRequest<IDBCursorWithValue>).result
+            if (cursor) {
+              const msg: StoredMessage = cursor.value
+              if (msg.expiresAt && msg.expiresAt <= now) {
+                purgedIds.push(msg.id || msg.clientMsgId)
+                cursor.delete()
+              }
+              cursor.continue()
+            } else {
+              resolve()
+            }
+          }
+          cursorReq.onerror = () => resolve()
+        } catch {
+          resolve()
+        }
+      })
+    }
+
+    // Also purge localStorage fallback
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i)
+        if (key && key.startsWith('genchat_msgs_')) {
+          const raw = localStorage.getItem(key)
+          if (raw) {
+            const msgs: StoredMessage[] = JSON.parse(raw)
+            const remaining = msgs.filter((m) => {
+              if (m.expiresAt && m.expiresAt <= now) {
+                const id = m.id || m.clientMsgId
+                if (!purgedIds.includes(id)) {
+                  purgedIds.push(id)
+                }
+                return false
+              }
+              return true
+            })
+            if (remaining.length !== msgs.length) {
+              localStorage.setItem(key, JSON.stringify(remaining))
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    return purgedIds
   }
 
   public async updateMessageStatus(clientMsgIdOrId: string, status: StoredMessage['status']): Promise<void> {
@@ -225,6 +342,9 @@ export class LocalStorageDb {
       pool = this.getLocalStorageMessages(channelId)
     }
 
+    const now = Date.now()
+    pool = pool.filter((m) => !m.expiresAt || m.expiresAt > now)
+
     const results: SearchSnippetResult[] = []
 
     for (const msg of pool) {
@@ -274,7 +394,10 @@ export class LocalStorageDb {
     try {
       if (channelId) {
         const raw = localStorage.getItem(`genchat_msgs_${channelId}`)
-        return raw ? JSON.parse(raw) : []
+        if (!raw) return []
+        const msgs: StoredMessage[] = JSON.parse(raw)
+        const now = Date.now()
+        return msgs.filter((m) => !m.expiresAt || m.expiresAt > now)
       }
       return []
     } catch {

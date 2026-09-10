@@ -13,6 +13,8 @@ import { AttachmentStaging } from '@/components/AttachmentStaging'
 import { ActionChips } from '@/components/ActionChips'
 import { SummaryModal } from '@/components/SummaryModal'
 import { GroupMembersModal } from '@/components/GroupMembersModal'
+import { DisappearingTimerBadge } from '@/components/DisappearingTimerBadge'
+import { EphemeralSettingsModal } from '@/components/EphemeralSettingsModal'
 import { WebRtcManager, fetchDynamicIceServers } from '@/lib/webrtc-manager'
 import { AuthService } from '@/lib/grpc-client'
 import { PushClient } from '@/lib/push-client'
@@ -47,7 +49,8 @@ import {
   Camera,
   FolderOpen,
   Maximize2,
-  Sparkles
+  Sparkles,
+  Timer
 } from 'lucide-react'
 
 interface MessageItem {
@@ -61,12 +64,27 @@ interface MessageItem {
   timestamp: string
   isEncrypted?: boolean
   senderFingerprint?: string
+  ephemeralTtlSec?: number
+  expiresAt?: number
 }
 
 interface ConversationItem {
   id: string
   name: string
   isDirect: boolean
+}
+
+function formatTtlLabel(sec: number): string {
+  if (!sec || sec <= 0) return 'Off'
+  if (sec === 30) return '30s'
+  if (sec === 300) return '5m'
+  if (sec === 3600) return '1h'
+  if (sec === 86400) return '24h'
+  if (sec === 604800) return '7d'
+  if (sec < 60) return `${sec}s`
+  if (sec < 3600) return `${Math.floor(sec / 60)}m`
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h`
+  return `${Math.floor(sec / 86400)}d`
 }
 
 export default function ChatPage() {
@@ -98,6 +116,20 @@ export default function ChatPage() {
   const [searchResults, setSearchResults] = useState<SearchSnippetResult[]>([])
   const [isGroupModalOpen, setIsGroupModalOpen] = useState(false)
   const [isSummaryModalOpen, setIsSummaryModalOpen] = useState(false)
+  const [isEphemeralModalOpen, setIsEphemeralModalOpen] = useState(false)
+  const [conversationTtls, setConversationTtls] = useState<Record<string, number>>(() => {
+    try {
+      const raw = localStorage.getItem('genchat_conv_ttls')
+      return raw ? JSON.parse(raw) : {}
+    } catch {
+      return {}
+    }
+  })
+  const conversationTtlsRef = useRef<Record<string, number>>(conversationTtls)
+  useEffect(() => {
+    conversationTtlsRef.current = conversationTtls
+  }, [conversationTtls])
+  const currentChannelTtl = conversationTtls[activeChannelId] || 0
   const chatInputRef = useRef<HTMLInputElement>(null)
   
   // Ephemeral states
@@ -207,10 +239,12 @@ export default function ChatPage() {
       if (activeChannelId) {
         const cachedMsgs = await LocalEncryptedCache.loadMessages(activeChannelId)
         if (cachedMsgs && cachedMsgs.length > 0) {
+          const now = Date.now()
+          const valid = cachedMsgs.filter((m) => !m.expiresAt || m.expiresAt > now)
           setMessages((prev) => {
-            const ids = new Set(cachedMsgs.map((m) => m.id))
-            const existingNotInCache = prev.filter((m) => !ids.has(m.id))
-            return [...cachedMsgs, ...existingNotInCache].map((m: any) => ({
+            const ids = new Set(valid.map((m) => m.id))
+            const existingNotInCache = prev.filter((m) => (!m.expiresAt || m.expiresAt > now) && !ids.has(m.id))
+            return [...valid, ...existingNotInCache].map((m: any) => ({
               ...m,
               isEncrypted: true,
             }))
@@ -408,6 +442,36 @@ export default function ChatPage() {
       }
     })
 
+    // Handle Ephemeral Setting changes from peers
+    const unsubEphemeral = gateway.onEphemeralSetting((ev) => {
+      console.log('[ChatPage] EphemeralSetting received:', ev)
+      setConversationTtls((prev) => {
+        const updated = { ...prev, [ev.channelId]: ev.ephemeralTtlSec }
+        try {
+          localStorage.setItem('genchat_conv_ttls', JSON.stringify(updated))
+        } catch {}
+        return updated
+      })
+
+      // Add a system notice in chat
+      const myId = userIdRef.current || user?.userId
+      const actorName = ev.updatedBy === myId ? 'You' : ev.updatedBy
+      const noticeText = ev.ephemeralTtlSec > 0
+        ? `⏳ ${actorName} set disappearing messages to ${formatTtlLabel(ev.ephemeralTtlSec)}.`
+        : `⏳ ${actorName} turned off disappearing messages.`
+
+      const noticeMsg: MessageItem = {
+        id: `notice_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+        clientMsgId: `notice_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+        channelId: ev.channelId,
+        senderId: 'system',
+        text: noticeText,
+        status: 'read',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      }
+      setMessages((prev) => [...prev, noticeMsg])
+    })
+
     gateway.connect()
 
     // Handle incoming messages (push & history) and MLS group commits
@@ -519,6 +583,9 @@ export default function ChatPage() {
           }
         }
 
+        const ttlSec = env.ephemeralTtlSec || conversationTtlsRef.current[effectiveChannelId] || 0
+        const expiresAt = ttlSec > 0 ? Date.now() + (ttlSec * 1000) : undefined
+
         const msgId = env.clientMsgId || `srv_${Date.now()}`
         const newMsg: MessageItem = {
           id: msgId,
@@ -531,6 +598,8 @@ export default function ChatPage() {
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           isEncrypted,
           senderFingerprint,
+          ephemeralTtlSec: ttlSec > 0 ? ttlSec : undefined,
+          expiresAt,
         }
 
         // Write to local IndexedDB with AES-256-GCM encryption at rest
@@ -590,6 +659,7 @@ export default function ChatPage() {
       unsubTyping()
       unsubReceipts()
       unsubCallSignal()
+      unsubEphemeral()
       unsubMessages()
       gateway.disconnect()
     }
@@ -612,10 +682,60 @@ export default function ChatPage() {
     setPeerTypingUser(null)
   }, [isConnected, activeChannelId])
 
+  // Ephemeral Self-Destruct Engine: 1s interval to purge expired messages from memory and storage
+  useEffect(() => {
+    const purgeInterval = setInterval(async () => {
+      const now = Date.now()
+      setMessages((prev) => {
+        const hasExpired = prev.some((m) => m.expiresAt && m.expiresAt <= now)
+        if (!hasExpired) return prev
+        return prev.filter((m) => !m.expiresAt || m.expiresAt > now)
+      })
+      await localDb.purgeExpiredMessages()
+    }, 1000)
+
+    return () => clearInterval(purgeInterval)
+  }, [])
+
+  const handleSaveEphemeralTtl = (ttlSec: number) => {
+    if (!activeChannelId) return
+    setConversationTtls((prev) => {
+      const updated = { ...prev, [activeChannelId]: ttlSec }
+      try {
+        localStorage.setItem('genchat_conv_ttls', JSON.stringify(updated))
+      } catch {}
+      return updated
+    })
+
+    // Broadcast over WebSocket to peer / members
+    if (gatewayRef.current) {
+      gatewayRef.current.sendEphemeralSetting(activeChannelId, ttlSec)
+    }
+
+    // Add local system notice
+    const noticeText = ttlSec > 0
+      ? `⏳ You set disappearing messages to ${formatTtlLabel(ttlSec)}.`
+      : `⏳ You turned off disappearing messages.`
+
+    const noticeMsg: MessageItem = {
+      id: `notice_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+      clientMsgId: `notice_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+      channelId: activeChannelId,
+      senderId: 'system',
+      text: noticeText,
+      status: 'read',
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    }
+    setMessages((prev) => [...prev, noticeMsg])
+  }
+
   const activeConversation = conversations.find((c) => c.id === activeChannelId)
   
   // Robust message filter: matches exact channelId OR peer user in 1:1 DMs (case-insensitive)
   const currentMessages = messages.filter((m) => {
+    const now = Date.now()
+    if (m.expiresAt && m.expiresAt <= now) return false
+
     const activeId = (activeChannelId || '').toLowerCase()
     const msgChan = (m.channelId || '').toLowerCase()
     if (msgChan === activeId) return true
@@ -676,6 +796,8 @@ export default function ChatPage() {
 
     const textToSend = inputText.trim()
     const clientMsgId = `cli_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+    const ttlSec = currentChannelTtl
+    const expiresAt = ttlSec > 0 ? Date.now() + (ttlSec * 1000) : undefined
 
     // --- Case A: Sending an Encrypted Attachment (Photo, Video, Document) ---
     if (stagedFile) {
@@ -697,6 +819,8 @@ export default function ChatPage() {
           status: 'pending',
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           isEncrypted: true,
+          ephemeralTtlSec: ttlSec > 0 ? ttlSec : undefined,
+          expiresAt,
         }
 
         setMessages((prev) => [...prev, optimisticMsg])
@@ -717,6 +841,7 @@ export default function ChatPage() {
             senderId: user.userId,
             clientMsgId,
             ciphertext: encryptedMeta,
+            ephemeralTtlSec: ttlSec > 0 ? ttlSec : undefined,
           })
 
           setMessages((prev) =>
@@ -759,6 +884,8 @@ export default function ChatPage() {
       status: 'pending',
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       isEncrypted: true,
+      ephemeralTtlSec: ttlSec > 0 ? ttlSec : undefined,
+      expiresAt,
     }
 
     setMessages((prev) => [...prev, optimisticMsg])
@@ -772,6 +899,7 @@ export default function ChatPage() {
           senderId: user.userId,
           clientMsgId,
           ciphertext: wireCiphertext,
+          ephemeralTtlSec: ttlSec > 0 ? ttlSec : undefined,
         })
 
         setMessages((prev) =>
@@ -1382,6 +1510,22 @@ export default function ChatPage() {
           </div>
 
           <div className="flex items-center space-x-3">
+            {/* Disappearing Messages Setting */}
+            <button
+              onClick={() => setIsEphemeralModalOpen(true)}
+              className={`flex items-center space-x-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium border transition shadow-xs ${
+                currentChannelTtl > 0
+                  ? 'bg-amber-500/15 text-amber-300 border-amber-500/50 hover:bg-amber-500/25'
+                  : 'bg-slate-900 text-slate-300 border-slate-800 hover:bg-slate-800 hover:text-white'
+              }`}
+              title="Disappearing Messages (Self-Destruct Timers)"
+            >
+              <Timer className={`h-3.5 w-3.5 ${currentChannelTtl > 0 ? 'text-amber-400' : 'text-slate-400'}`} />
+              <span className="hidden sm:inline">
+                {currentChannelTtl > 0 ? formatTtlLabel(currentChannelTtl) : 'Timer'}
+              </span>
+            </button>
+
             {/* AI Conversation Summarizer */}
             <button
               onClick={() => setIsSummaryModalOpen(true)}
@@ -1498,6 +1642,16 @@ export default function ChatPage() {
             </div>
           )}
 
+          {/* Ephemeral Active Status Banner */}
+          {currentChannelTtl > 0 && (
+            <div className="flex justify-center mb-3">
+              <div className="flex items-center space-x-2 rounded-full bg-amber-500/10 border border-amber-500/30 px-3.5 py-1.5 text-xs text-amber-300 shadow-sm">
+                <Timer className="h-3.5 w-3.5 text-amber-400 animate-pulse" />
+                <span>Disappearing messages on: {formatTtlLabel(currentChannelTtl)} self-destruct</span>
+              </div>
+            </div>
+          )}
+
           {currentMessages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-slate-500 space-y-2">
               <Lock className="h-8 w-8 text-slate-600" />
@@ -1596,6 +1750,9 @@ export default function ChatPage() {
                       <span title="End-to-End Encrypted">
                         <Lock className="h-2.5 w-2.5 text-emerald-400" />
                       </span>
+                    )}
+                    {m.expiresAt && (
+                      <DisappearingTimerBadge expiresAt={m.expiresAt} />
                     )}
                     {isMe && (
                       <span>
@@ -2184,6 +2341,15 @@ export default function ChatPage() {
         messages={currentMessages
           .filter(m => Boolean(m.text))
           .map(m => ({ text: m.text!, sender: m.senderId === user?.userId ? 'You' : m.senderId }))}
+      />
+
+      {/* Disappearing / Ephemeral Messages Modal */}
+      <EphemeralSettingsModal
+        isOpen={isEphemeralModalOpen}
+        currentTtlSec={currentChannelTtl}
+        channelName={activeConversation?.name || 'Conversation'}
+        onClose={() => setIsEphemeralModalOpen(false)}
+        onSave={handleSaveEphemeralTtl}
       />
     </div>
   )

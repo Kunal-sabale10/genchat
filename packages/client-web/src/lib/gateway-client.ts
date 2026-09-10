@@ -1,11 +1,12 @@
 export interface GatewayEnvelope {
-  type: 'message' | 'ack' | 'presence' | 'heartbeat' | 'push' | 'error' | 'pong' | 'typing' | 'read_receipt' | 'group_commit'
+  type: 'message' | 'ack' | 'presence' | 'heartbeat' | 'push' | 'error' | 'pong' | 'typing' | 'read_receipt' | 'group_commit' | 'ephemeral_setting'
   channelId?: string
   senderId?: string
   clientMsgId?: string
   sequenceNum?: number
   messageType?: number
   ciphertext?: string
+  ephemeralTtlSec?: number
 }
 
 
@@ -23,6 +24,13 @@ export interface ReadReceiptEvent {
   receiptType?: 'delivered' | 'read'
 }
 
+export interface EphemeralSettingEvent {
+  channelId: string
+  ephemeralTtlSec: number
+  updatedBy: string
+  updatedAt: number
+}
+
 
 export interface CallSignalEvent {
   signalType: 'offer' | 'answer' | 'ice_candidate' | 'hangup' | 'reject' | 'peer_offline'
@@ -38,6 +46,7 @@ export type MessageHandler = (envelope: GatewayEnvelope) => void
 export type StatusHandler = (connected: boolean) => void
 export type TypingHandler = (event: TypingEvent) => void
 export type ReadReceiptHandler = (event: ReadReceiptEvent) => void
+export type EphemeralSettingHandler = (event: EphemeralSettingEvent) => void
 export type CallSignalHandler = (event: CallSignalEvent) => void
 
 export class GatewayClient {
@@ -49,6 +58,7 @@ export class GatewayClient {
   private statusHandlers: Set<StatusHandler> = new Set()
   private typingHandlers: Set<TypingHandler> = new Set()
   private readReceiptHandlers: Set<ReadReceiptHandler> = new Set()
+  private ephemeralSettingHandlers: Set<EphemeralSettingHandler> = new Set()
   private callSignalHandlers: Set<CallSignalHandler> = new Set()
   private pendingAcks: Map<string, (seq: number) => void> = new Map()
   private pingTimer: ReturnType<typeof setInterval> | null = null
@@ -179,6 +189,20 @@ export class GatewayClient {
           return
         }
 
+        // 5b. Handle Ephemeral Setting update
+        if (raw.type === 'ephemeral_setting') {
+          console.log('[Gateway] Received ephemeral_setting for', raw.channel_id, 'ttl:', raw.ephemeral_ttl_sec)
+          this.ephemeralSettingHandlers.forEach((h) =>
+            h({
+              channelId: raw.channel_id || raw.channelId,
+              ephemeralTtlSec: Number(raw.ephemeral_ttl_sec ?? raw.ephemeralTtlSec ?? 0),
+              updatedBy: raw.updated_by || raw.updatedBy,
+              updatedAt: raw.updated_at || raw.updatedAt || Date.now(),
+            })
+          )
+          return
+        }
+
         // 3b. Handle group_commit frame
         if (raw.type === 'group_commit') {
 
@@ -237,6 +261,7 @@ export class GatewayClient {
             sequenceNum: raw.server_time,
             messageType: raw.message_type,
             ciphertext: decodedCiphertext,
+            ephemeralTtlSec: raw.ephemeral_ttl_sec != null ? Number(raw.ephemeral_ttl_sec) : undefined,
           }
           console.log('[Gateway] Normalized push → envelope:', JSON.stringify(envelope))
         } else {
@@ -248,6 +273,7 @@ export class GatewayClient {
             sequenceNum: raw.sequence_num ?? raw.sequenceNum,
             messageType: raw.message_type ?? raw.messageType,
             ciphertext: raw.ciphertext_base64 || raw.ciphertext,
+            ephemeralTtlSec: raw.ephemeral_ttl_sec != null ? Number(raw.ephemeral_ttl_sec) : undefined,
           }
         }
 
@@ -327,12 +353,15 @@ export class GatewayClient {
         b64 = btoa(rawPayload)
       }
 
-      const wireFrame = {
+      const wireFrame: any = {
         action: 'send_message',
         channel_id: envelope.channelId,
         client_msg_id: clientMsgId,
         ciphertext_base64: b64,
         message_type: envelope.messageType || 1,
+      }
+      if (envelope.ephemeralTtlSec) {
+        wireFrame.ephemeral_ttl_sec = envelope.ephemeralTtlSec
       }
 
       this.ws.send(JSON.stringify(wireFrame))
@@ -390,6 +419,20 @@ export class GatewayClient {
     }))
   }
 
+
+  public onEphemeralSetting(handler: EphemeralSettingHandler): () => void {
+    this.ephemeralSettingHandlers.add(handler)
+    return () => this.ephemeralSettingHandlers.delete(handler)
+  }
+
+  public sendEphemeralSetting(channelId: string, ephemeralTtlSec: number): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+    this.ws.send(JSON.stringify({
+      action: 'ephemeral_setting',
+      channel_id: channelId,
+      ephemeral_ttl_sec: ephemeralTtlSec,
+    }))
+  }
 
   public onCallSignal(handler: CallSignalHandler): () => void {
     this.callSignalHandlers.add(handler)
