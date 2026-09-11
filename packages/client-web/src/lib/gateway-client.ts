@@ -1,5 +1,5 @@
 export interface GatewayEnvelope {
-  type: 'message' | 'ack' | 'presence' | 'heartbeat' | 'push' | 'error' | 'pong' | 'typing' | 'read_receipt' | 'group_commit' | 'ephemeral_setting' | 'reaction'
+  type: 'message' | 'ack' | 'presence' | 'heartbeat' | 'push' | 'error' | 'pong' | 'typing' | 'read_receipt' | 'group_commit' | 'ephemeral_setting' | 'reaction' | 'message_deleted' | 'ack_delete'
   channelId?: string
   senderId?: string
   clientMsgId?: string
@@ -8,6 +8,14 @@ export interface GatewayEnvelope {
   ciphertext?: string
   ephemeralTtlSec?: number
   replyToMessageId?: string
+}
+
+export interface DeleteMessageEvent {
+  channelId: string
+  messageId: string
+  senderId: string
+  deleteScope: 'everyone' | 'me'
+  serverTime?: number
 }
 
 
@@ -69,6 +77,7 @@ export type ReadReceiptHandler = (event: ReadReceiptEvent) => void
 export type EphemeralSettingHandler = (event: EphemeralSettingEvent) => void
 export type ReactionHandler = (event: ReactionEvent) => void
 export type CallSignalHandler = (event: CallSignalEvent) => void
+export type DeleteMessageHandler = (event: DeleteMessageEvent) => void
 
 export class GatewayClient {
   private ws: WebSocket | null = null
@@ -82,6 +91,7 @@ export class GatewayClient {
   private ephemeralSettingHandlers: Set<EphemeralSettingHandler> = new Set()
   private reactionHandlers: Set<ReactionHandler> = new Set()
   private callSignalHandlers: Set<CallSignalHandler> = new Set()
+  private deleteMessageHandlers: Set<DeleteMessageHandler> = new Set()
   private pendingAcks: Map<string, (seq: number) => void> = new Map()
   private pingTimer: ReturnType<typeof setInterval> | null = null
   private isExplicitDisconnect = false
@@ -237,6 +247,21 @@ export class GatewayClient {
               senderId: raw.sender_id || raw.senderId,
               emoji: raw.emoji,
               op: raw.op || 'add',
+              serverTime: raw.server_time || raw.serverTime || Date.now(),
+            })
+          )
+          return
+        }
+
+        // 5d. Handle Message Deletion (Revocation)
+        if (raw.type === 'message_deleted') {
+          console.log('[Gateway] Received message_deleted for', raw.message_id, 'in channel:', raw.channel_id, 'by:', raw.sender_id)
+          this.deleteMessageHandlers.forEach((h) =>
+            h({
+              channelId: raw.channel_id || raw.channelId,
+              messageId: raw.message_id || raw.messageId,
+              senderId: raw.sender_id || raw.senderId,
+              deleteScope: raw.delete_scope || raw.deleteScope || 'everyone',
               serverTime: raw.server_time || raw.serverTime || Date.now(),
             })
           )
@@ -443,6 +468,26 @@ export class GatewayClient {
       op,
     }
     console.log('[Gateway] Dispatched reaction:', emoji, 'on:', targetId, 'op:', op)
+    this.ws.send(JSON.stringify(frame))
+  }
+
+  public onDeleteMessage(handler: DeleteMessageHandler): () => void {
+    this.deleteMessageHandlers.add(handler)
+    return () => this.deleteMessageHandlers.delete(handler)
+  }
+
+  public sendDeleteMessage(channelId: string, messageId: string, scope: 'everyone' | 'me' = 'everyone'): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn('[Gateway] Cannot send delete_message, WebSocket not open')
+      return
+    }
+    const frame = {
+      action: 'delete_message',
+      channel_id: channelId,
+      message_id: messageId,
+      delete_scope: scope,
+    }
+    console.log('[Gateway] Dispatched delete_message:', messageId, 'in:', channelId, 'scope:', scope)
     this.ws.send(JSON.stringify(frame))
   }
 

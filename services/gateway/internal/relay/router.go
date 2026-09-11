@@ -71,6 +71,33 @@ type ReactionPushFrame struct {
 	ServerTime  int64  `json:"server_time"`
 }
 
+// DeleteMessageInboundFrame is sent by a client to delete or revoke a message.
+type DeleteMessageInboundFrame struct {
+	Action      string `json:"action"`                  // "delete_message"
+	ChannelID   string `json:"channel_id"`              // channel ID or recipient user ID
+	MessageID   string `json:"message_id"`              // target message ID
+	ClientMsgID string `json:"client_msg_id,omitempty"` // alias for target message ID
+	DeleteScope string `json:"delete_scope"`            // "everyone" | "me"
+}
+
+// DeleteMessagePushFrame is relayed to conversation participants when a message is revoked.
+type DeleteMessagePushFrame struct {
+	Type        string `json:"type"`         // "message_deleted"
+	ChannelID   string `json:"channel_id"`
+	MessageID   string `json:"message_id"`
+	SenderID    string `json:"sender_id"`
+	DeleteScope string `json:"delete_scope"` // "everyone"
+	ServerTime  int64  `json:"server_time"`
+}
+
+// AckDeleteFrame is sent back to the requester confirming deletion.
+type AckDeleteFrame struct {
+	Type        string `json:"type"`         // "ack_delete"
+	MessageID   string `json:"message_id"`
+	ChannelID   string `json:"channel_id"`
+	DeleteScope string `json:"delete_scope"`
+}
+
 // ErrorFrame is sent when a frame cannot be processed.
 type ErrorFrame struct {
 	Type    string `json:"type"`
@@ -228,6 +255,8 @@ func (r *Router) Handle(ctx context.Context, conn *ws.Conn, data []byte) error {
 		return r.handleSendMessage(ctx, conn, data)
 	case "reaction":
 		return r.handleReaction(ctx, conn, data)
+	case "delete_message":
+		return r.handleDeleteMessage(ctx, conn, data)
 	case "group_commit", "mls_commit":
 		return r.handleGroupCommit(ctx, conn, data)
 	case "fetch_history":
@@ -904,6 +933,86 @@ func (r *Router) handleReaction(ctx context.Context, conn *ws.Conn, data []byte)
 		"target_id", frame.TargetID,
 		"emoji", frame.Emoji,
 		"op", op,
+		"sender", conn.UserID,
+	)
+	return nil
+}
+
+func (r *Router) handleDeleteMessage(ctx context.Context, conn *ws.Conn, data []byte) error {
+	var frame DeleteMessageInboundFrame
+	if err := json.Unmarshal(data, &frame); err != nil {
+		return r.sendError(conn, "INVALID_FRAME", "could not parse delete_message frame")
+	}
+	messageID := frame.MessageID
+	if messageID == "" {
+		messageID = frame.ClientMsgID
+	}
+	if frame.ChannelID == "" || messageID == "" {
+		return r.sendError(conn, "MISSING_FIELDS", "channel_id and message_id are required")
+	}
+
+	scope := frame.DeleteScope
+	if scope == "" {
+		scope = "everyone"
+	}
+
+	// 1. If delete_scope == "everyone", broadcast push frame to conversation participants
+	if scope == "everyone" {
+		pushPayload, err := json.Marshal(DeleteMessagePushFrame{
+			Type:        "message_deleted",
+			ChannelID:   frame.ChannelID,
+			MessageID:   messageID,
+			SenderID:    conn.UserID,
+			DeleteScope: "everyone",
+			ServerTime:  time.Now().Unix(),
+		})
+		if err != nil {
+			return err
+		}
+
+		if strings.HasPrefix(frame.ChannelID, "chan_") {
+			cleanID := strings.TrimPrefix(frame.ChannelID, "chan_")
+			var memberIDs []string
+			if r.channelClient != nil {
+				resp, err := r.channelClient.GetChannelMembers(ctx, &chatv1.GetChannelMembersRequest{
+					ChannelId: cleanID,
+				})
+				if err == nil {
+					for _, m := range resp.GetMembers() {
+						memberIDs = append(memberIDs, m.GetUserId())
+					}
+				}
+			}
+
+			if len(memberIDs) > 0 {
+				for _, uid := range memberIDs {
+					r.hub.SendToUser(uid, pushPayload)
+				}
+			} else if frame.ChannelID == "chan_public" {
+				r.hub.BroadcastAll("", pushPayload)
+			}
+		} else {
+			// 1:1 direct message: send to peer and echo back to sender
+			r.hub.SendToUser(frame.ChannelID, pushPayload)
+			if frame.ChannelID != conn.UserID {
+				r.hub.SendToUser(conn.UserID, pushPayload)
+			}
+		}
+	}
+
+	// 2. Always ACK the requester
+	ackPayload, _ := json.Marshal(AckDeleteFrame{
+		Type:        "ack_delete",
+		MessageID:   messageID,
+		ChannelID:   frame.ChannelID,
+		DeleteScope: scope,
+	})
+	r.hub.SendToUser(conn.UserID, ackPayload)
+
+	slog.Info("message deletion processed",
+		"channel", frame.ChannelID,
+		"message_id", messageID,
+		"scope", scope,
 		"sender", conn.UserID,
 	)
 	return nil

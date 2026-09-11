@@ -26,6 +26,10 @@ export interface StoredMessage {
   expiresAt?: number
   replyTo?: QuotedReply
   reactions?: Record<string, string[]>
+  isDeleted?: boolean
+  deletedAt?: number
+  deletedBy?: string
+  deleteScope?: 'everyone' | 'me'
 }
 
 export interface StoredConversation {
@@ -206,6 +210,91 @@ export class LocalStorageDb {
   }
 
   /**
+   * Marks a message as revoked/deleted for everyone, zeroizing sensitive payload and leaving a tombstone.
+   * If scope is 'me', permanently purges the message from local storage.
+   */
+  public async markMessageDeleted(
+    idOrClientMsgId: string,
+    channelId: string,
+    deletedBy: string,
+    scope: 'everyone' | 'me' = 'everyone'
+  ): Promise<void> {
+    if (scope === 'me') {
+      await this.deleteMessage(idOrClientMsgId, channelId)
+      return
+    }
+
+    const db = await this.dbPromise
+    if (db) {
+      await new Promise<void>((resolve) => {
+        try {
+          const tx = db.transaction(STORE_MESSAGES, 'readwrite')
+          const store = tx.objectStore(STORE_MESSAGES)
+          const req = store.get(idOrClientMsgId)
+          req.onsuccess = () => {
+            const msg: StoredMessage = req.result
+            if (msg) {
+              msg.isDeleted = true
+              msg.deletedAt = Date.now()
+              msg.deletedBy = deletedBy
+              msg.deleteScope = 'everyone'
+              delete msg.text
+              delete msg.attachment
+              delete msg.replyTo
+              delete msg.reactions
+              store.put(msg)
+            }
+            resolve()
+          }
+          req.onerror = () => resolve()
+        } catch {
+          resolve()
+        }
+      })
+    }
+
+    // Also update localStorage fallback
+    try {
+      const updateKey = (key: string) => {
+        const raw = localStorage.getItem(key)
+        if (raw) {
+          const msgs: StoredMessage[] = JSON.parse(raw)
+          let modified = false
+          for (const m of msgs) {
+            if (m.id === idOrClientMsgId || m.clientMsgId === idOrClientMsgId) {
+              m.isDeleted = true
+              m.deletedAt = Date.now()
+              m.deletedBy = deletedBy
+              m.deleteScope = 'everyone'
+              delete m.text
+              delete m.attachment
+              delete m.replyTo
+              delete m.reactions
+              modified = true
+            }
+          }
+          if (modified) {
+            localStorage.setItem(key, JSON.stringify(msgs))
+          }
+        }
+      }
+
+      if (channelId) {
+        updateKey(`genchat_msgs_${channelId}`)
+      } else {
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i)
+          if (key && key.startsWith('genchat_msgs_')) {
+            updateKey(key)
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
    * Permanently purges expired ephemeral messages from IndexedDB and localStorage.
    * Returns list of purged message IDs.
    */
@@ -352,11 +441,12 @@ export class LocalStorageDb {
     }
 
     const now = Date.now()
-    pool = pool.filter((m) => !m.expiresAt || m.expiresAt > now)
+    pool = pool.filter((m) => !m.isDeleted && (!m.expiresAt || m.expiresAt > now))
 
     const results: SearchSnippetResult[] = []
 
     for (const msg of pool) {
+      if (msg.isDeleted) continue
       const text = msg.text || ''
       if (!text) continue
       const lower = text.toLowerCase()

@@ -27,6 +27,7 @@ import { WebRtcManager, fetchDynamicIceServers } from '@/lib/webrtc-manager'
 import { GroupWebRtcManager } from '@/lib/group-webrtc-manager'
 import { GroupCallModal } from '@/components/GroupCallModal'
 import { ActiveCallBanner } from '@/components/ActiveCallBanner'
+import { DeleteMessageModal } from '@/components/DeleteMessageModal'
 import { AuthService } from '@/lib/grpc-client'
 import { PushClient } from '@/lib/push-client'
 import { PreKeyManager } from '@/lib/prekey-manager'
@@ -65,7 +66,9 @@ import {
   AlertTriangle,
   Mic,
   Smile,
-  CornerUpLeft
+  CornerUpLeft,
+  Trash2,
+  Ban
 } from 'lucide-react'
 
 interface MessageItem {
@@ -83,6 +86,10 @@ interface MessageItem {
   expiresAt?: number
   replyTo?: QuotedReply
   reactions?: Record<string, string[]>
+  isDeleted?: boolean
+  deletedAt?: number
+  deletedBy?: string
+  deleteScope?: 'everyone' | 'me'
 }
 
 interface ConversationItem {
@@ -210,6 +217,7 @@ export default function ChatPage() {
   const [replyingTo, setReplyingTo] = useState<QuotedReply | null>(null)
   const [activeReactionPickerMsgId, setActiveReactionPickerMsgId] = useState<string | null>(null)
   const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null)
+  const [deleteTargetMessage, setDeleteTargetMessage] = useState<MessageItem | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const photoInputRef = useRef<HTMLInputElement>(null)
@@ -615,6 +623,33 @@ export default function ChatPage() {
       )
     })
 
+    // Handle incoming message deletion / revocation
+    const unsubDeleteMessage = gateway.onDeleteMessage((ev) => {
+      console.log('[ChatPage] DeleteMessage received:', ev)
+      if (ev.deleteScope === 'everyone') {
+        setMessages((prev) =>
+          prev.map((m) => {
+            const mKey = m.clientMsgId || m.id
+            if (mKey === ev.messageId || m.id === ev.messageId) {
+              return {
+                ...m,
+                isDeleted: true,
+                deletedAt: ev.serverTime ? ev.serverTime * 1000 : Date.now(),
+                deletedBy: ev.senderId,
+                deleteScope: 'everyone',
+                text: undefined,
+                attachment: undefined,
+                replyTo: undefined,
+                reactions: undefined,
+              }
+            }
+            return m
+          })
+        )
+        localDb.markMessageDeleted(ev.messageId, ev.channelId, ev.senderId, 'everyone')
+      }
+    })
+
     gateway.connect()
 
     // Handle incoming messages (push & history) and MLS group commits
@@ -811,6 +846,7 @@ export default function ChatPage() {
       unsubCallSignal()
       unsubEphemeral()
       unsubReaction()
+      unsubDeleteMessage()
       unsubMessages()
       gateway.disconnect()
     }
@@ -998,6 +1034,44 @@ export default function ChatPage() {
       setHighlightedMsgId(messageId)
       setTimeout(() => setHighlightedMsgId(null), 2200)
     }
+  }
+
+  const handleConfirmDelete = async (scope: 'everyone' | 'me') => {
+    if (!deleteTargetMessage || !activeChannelId || !user) return
+    const msgKey = deleteTargetMessage.clientMsgId || deleteTargetMessage.id
+
+    if (scope === 'everyone') {
+      setMessages((prev) =>
+        prev.map((m) => {
+          if ((m.clientMsgId && m.clientMsgId === msgKey) || m.id === msgKey) {
+            return {
+              ...m,
+              isDeleted: true,
+              deletedAt: Date.now(),
+              deletedBy: user.userId,
+              deleteScope: 'everyone',
+              text: undefined,
+              attachment: undefined,
+              replyTo: undefined,
+              reactions: undefined,
+            }
+          }
+          return m
+        })
+      )
+
+      await localDb.markMessageDeleted(msgKey, activeChannelId, user.userId, 'everyone')
+      gatewayRef.current?.sendDeleteMessage(activeChannelId, msgKey, 'everyone')
+    } else {
+      setMessages((prev) =>
+        prev.filter((m) => (m.clientMsgId ? m.clientMsgId !== msgKey : true) && m.id !== msgKey)
+      )
+
+      await localDb.deleteMessage(msgKey, activeChannelId)
+      gatewayRef.current?.sendDeleteMessage(activeChannelId, msgKey, 'me')
+    }
+
+    setDeleteTargetMessage(null)
   }
 
   // --- 5. Message Dispatch with E2EE Ratchet & Encrypted Attachments ---
@@ -2281,42 +2355,58 @@ export default function ChatPage() {
                       isMe ? 'right-2' : 'left-2'
                     }`}
                   >
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setActiveReactionPickerMsgId(activeReactionPickerMsgId === msgKey ? null : msgKey)
-                      }}
-                      className="p-1 text-slate-400 hover:text-amber-400 hover:bg-slate-800 rounded-full transition"
-                      title="React with emoji"
-                    >
-                      <Smile className="h-3.5 w-3.5" />
-                    </button>
+                    {!m.isDeleted && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setActiveReactionPickerMsgId(activeReactionPickerMsgId === msgKey ? null : msgKey)
+                          }}
+                          className="p-1 text-slate-400 hover:text-amber-400 hover:bg-slate-800 rounded-full transition"
+                          title="React with emoji"
+                        >
+                          <Smile className="h-3.5 w-3.5" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            const snippet =
+                              m.text ||
+                              (m.attachment?.isVoiceNote
+                                ? '🎙️ Voice message'
+                                : m.attachment?.mimeType?.startsWith('image/')
+                                ? '📷 Photo'
+                                : m.attachment?.fileName || 'Attachment')
+                            const senderName = isMe ? 'You' : (activeConversation?.name || m.senderId.slice(0, 10))
+                            setReplyingTo({
+                              messageId: msgKey,
+                              senderId: m.senderId,
+                              senderName,
+                              snippet,
+                            })
+                            chatInputRef.current?.focus()
+                          }}
+                          className="p-1 text-slate-400 hover:text-indigo-400 hover:bg-slate-800 rounded-full transition"
+                          title="Reply"
+                        >
+                          <CornerUpLeft className="h-3.5 w-3.5" />
+                        </button>
+                      </>
+                    )}
 
                     <button
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation()
-                        const snippet =
-                          m.text ||
-                          (m.attachment?.isVoiceNote
-                            ? '🎙️ Voice message'
-                            : m.attachment?.mimeType?.startsWith('image/')
-                            ? '📷 Photo'
-                            : m.attachment?.fileName || 'Attachment')
-                        const senderName = isMe ? 'You' : (activeConversation?.name || m.senderId.slice(0, 10))
-                        setReplyingTo({
-                          messageId: msgKey,
-                          senderId: m.senderId,
-                          senderName,
-                          snippet,
-                        })
-                        chatInputRef.current?.focus()
+                        setDeleteTargetMessage(m)
                       }}
-                      className="p-1 text-slate-400 hover:text-indigo-400 hover:bg-slate-800 rounded-full transition"
-                      title="Reply"
+                      className="p-1 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded-full transition"
+                      title="Delete message"
                     >
-                      <CornerUpLeft className="h-3.5 w-3.5" />
+                      <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   </div>
 
@@ -2339,11 +2429,20 @@ export default function ChatPage() {
 
                   <div
                     className={`max-w-md rounded-2xl px-4 py-2.5 text-sm ${
-                      isMe
+                      m.isDeleted
+                        ? 'bg-slate-900/60 border border-slate-800 text-slate-400 rounded-2xl'
+                        : isMe
                         ? 'bg-indigo-600 text-white rounded-br-xs'
                         : 'bg-slate-800 text-slate-100 rounded-bl-xs'
                     }`}
                   >
+                    {m.isDeleted ? (
+                      <div className="flex items-center space-x-2 py-0.5 select-none text-slate-400 text-xs italic">
+                        <Ban className="h-3.5 w-3.5 text-slate-500 shrink-0" />
+                        <span>{isMe ? 'You deleted this message' : 'This message was deleted'}</span>
+                      </div>
+                    ) : (
+                      <>
                     {/* Quoted Reply Header */}
                     {m.replyTo && (
                       <div
@@ -2438,10 +2537,12 @@ export default function ChatPage() {
                         )}
                       </div>
                     )}
+                    </>
+                  )}
                   </div>
 
                   {/* Reaction Badges */}
-                  {m.reactions && Object.keys(m.reactions).length > 0 && (
+                  {!m.isDeleted && m.reactions && Object.keys(m.reactions).length > 0 && (
                     <div className={`flex flex-wrap items-center gap-1 mt-1 px-1 ${isMe ? 'justify-end' : 'justify-start'}`}>
                       {Object.entries(m.reactions).map(([emoji, userIds]) => {
                         if (!userIds || userIds.length === 0) return null
@@ -3089,6 +3190,20 @@ export default function ChatPage() {
         channelName={activeConversation?.name || 'Conversation'}
         onClose={() => setIsEphemeralModalOpen(false)}
         onSave={handleSaveEphemeralTtl}
+      />
+
+      {/* Message Revocation & Deletion Modal */}
+      <DeleteMessageModal
+        isOpen={Boolean(deleteTargetMessage)}
+        onClose={() => setDeleteTargetMessage(null)}
+        onConfirm={handleConfirmDelete}
+        isSender={deleteTargetMessage?.senderId === user?.userId}
+        messageSnippet={
+          deleteTargetMessage?.text ||
+          (deleteTargetMessage?.attachment?.isVoiceNote
+            ? '🎙️ Voice message'
+            : deleteTargetMessage?.attachment?.fileName || 'Attachment')
+        }
       />
     </div>
   )
