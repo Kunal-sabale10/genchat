@@ -5,6 +5,13 @@
  * Executes client-side full-text search with highlight snippets.
  */
 
+export interface QuotedReply {
+  messageId: string
+  senderId: string
+  senderName?: string
+  snippet: string
+}
+
 export interface StoredMessage {
   id: string
   clientMsgId: string
@@ -17,6 +24,8 @@ export interface StoredMessage {
   createdAt: number
   ephemeralTtlSec?: number
   expiresAt?: number
+  replyTo?: QuotedReply
+  reactions?: Record<string, string[]>
 }
 
 export interface StoredConversation {

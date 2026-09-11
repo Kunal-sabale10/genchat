@@ -19,12 +19,13 @@ import (
 
 // InboundFrame is the JSON envelope sent by the client.
 type InboundFrame struct {
-	Action          string `json:"action"`
-	ChannelID       string `json:"channel_id"`
-	ClientMsgID     string `json:"client_msg_id"`
-	CiphertextB64   string `json:"ciphertext_base64"`
-	MessageType     int    `json:"message_type"`
-	EphemeralTTLSec int64  `json:"ephemeral_ttl_sec,omitempty"`
+	Action           string `json:"action"`
+	ChannelID        string `json:"channel_id"`
+	ClientMsgID      string `json:"client_msg_id"`
+	CiphertextB64    string `json:"ciphertext_base64"`
+	MessageType      int    `json:"message_type"`
+	EphemeralTTLSec  int64  `json:"ephemeral_ttl_sec,omitempty"`
+	ReplyToMessageID string `json:"reply_to_message_id,omitempty"`
 }
 
 // AckFrame is sent back to the sender upon successful delivery.
@@ -37,14 +38,37 @@ type AckFrame struct {
 
 // PushFrame is sent to the recipient(s).
 type PushFrame struct {
-	Type            string `json:"type"`
-	ChannelID       string `json:"channel_id"`
-	SenderID        string `json:"sender_id"`
-	CiphertextB64   string `json:"ciphertext_base64"`
-	MessageType     int    `json:"message_type"`
-	ServerID        string `json:"server_id"`
-	ServerTime      int64  `json:"server_time"`
-	EphemeralTTLSec int64  `json:"ephemeral_ttl_sec,omitempty"`
+	Type             string `json:"type"`
+	ChannelID        string `json:"channel_id"`
+	SenderID         string `json:"sender_id"`
+	CiphertextB64    string `json:"ciphertext_base64"`
+	MessageType      int    `json:"message_type"`
+	ServerID         string `json:"server_id"`
+	ServerTime       int64  `json:"server_time"`
+	EphemeralTTLSec  int64  `json:"ephemeral_ttl_sec,omitempty"`
+	ReplyToMessageID string `json:"reply_to_message_id,omitempty"`
+}
+
+// ReactionInboundFrame is sent by a client to add or remove an emoji reaction.
+type ReactionInboundFrame struct {
+	Action      string `json:"action"`                  // "reaction"
+	ChannelID   string `json:"channel_id"`              // channel ID or recipient user ID
+	TargetID    string `json:"target_id"`               // target message_id / client_msg_id
+	TargetMsgID string `json:"target_msg_id,omitempty"` // alias for target_id
+	Emoji       string `json:"emoji"`                   // emoji string, e.g. "👍", "❤️", "🔥"
+	Op          string `json:"op"`                      // "add" | "remove"
+}
+
+// ReactionPushFrame is relayed to conversation participants.
+type ReactionPushFrame struct {
+	Type        string `json:"type"`          // "reaction"
+	ChannelID   string `json:"channel_id"`
+	TargetID    string `json:"target_id"`
+	TargetMsgID string `json:"target_msg_id"` // alias for backward/flexible compatibility
+	SenderID    string `json:"sender_id"`
+	Emoji       string `json:"emoji"`
+	Op          string `json:"op"`
+	ServerTime  int64  `json:"server_time"`
 }
 
 // ErrorFrame is sent when a frame cannot be processed.
@@ -199,6 +223,8 @@ func (r *Router) Handle(ctx context.Context, conn *ws.Conn, data []byte) error {
 	switch base.Action {
 	case "send_message":
 		return r.handleSendMessage(ctx, conn, data)
+	case "reaction":
+		return r.handleReaction(ctx, conn, data)
 	case "group_commit", "mls_commit":
 		return r.handleGroupCommit(ctx, conn, data)
 	case "fetch_history":
@@ -272,14 +298,15 @@ func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []by
 
 	// 2. Push to channel members
 	push, _ := json.Marshal(PushFrame{
-		Type:            "push",
-		ChannelID:       frame.ChannelID,
-		SenderID:        conn.UserID,
-		CiphertextB64:   frame.CiphertextB64,
-		MessageType:     frame.MessageType,
-		ServerID:        serverID,
-		ServerTime:      time.Now().Unix(),
-		EphemeralTTLSec: frame.EphemeralTTLSec,
+		Type:             "push",
+		ChannelID:        frame.ChannelID,
+		SenderID:         conn.UserID,
+		CiphertextB64:    frame.CiphertextB64,
+		MessageType:      frame.MessageType,
+		ServerID:         serverID,
+		ServerTime:       time.Now().Unix(),
+		EphemeralTTLSec:  frame.EphemeralTTLSec,
+		ReplyToMessageID: frame.ReplyToMessageID,
 	})
 
 	if strings.HasPrefix(frame.ChannelID, "chan_") {
@@ -755,6 +782,77 @@ func (r *Router) handleEphemeralSetting(ctx context.Context, conn *ws.Conn, data
 		"channel", frame.ChannelID,
 		"ttl_sec", frame.EphemeralTTLSec,
 		"updated_by", conn.UserID,
+	)
+	return nil
+}
+
+func (r *Router) handleReaction(ctx context.Context, conn *ws.Conn, data []byte) error {
+	var frame ReactionInboundFrame
+	if err := json.Unmarshal(data, &frame); err != nil {
+		return r.sendError(conn, "INVALID_FRAME", "could not parse reaction frame")
+	}
+	targetID := frame.TargetID
+	if targetID == "" {
+		targetID = frame.TargetMsgID
+	}
+	if frame.ChannelID == "" || targetID == "" || frame.Emoji == "" {
+		return r.sendError(conn, "MISSING_FIELDS", "channel_id, target_id, and emoji are required")
+	}
+
+	op := frame.Op
+	if op == "" {
+		op = "add"
+	}
+
+	pushPayload, err := json.Marshal(ReactionPushFrame{
+		Type:        "reaction",
+		ChannelID:   frame.ChannelID,
+		TargetID:    targetID,
+		TargetMsgID: targetID,
+		SenderID:    conn.UserID,
+		Emoji:       frame.Emoji,
+		Op:          op,
+		ServerTime:  time.Now().Unix(),
+	})
+	if err != nil {
+		return err
+	}
+
+	if strings.HasPrefix(frame.ChannelID, "chan_") {
+		cleanID := strings.TrimPrefix(frame.ChannelID, "chan_")
+		var memberIDs []string
+		if r.channelClient != nil {
+			resp, err := r.channelClient.GetChannelMembers(ctx, &chatv1.GetChannelMembersRequest{
+				ChannelId: cleanID,
+			})
+			if err == nil {
+				for _, m := range resp.GetMembers() {
+					memberIDs = append(memberIDs, m.GetUserId())
+				}
+			}
+		}
+
+		if len(memberIDs) > 0 {
+			for _, uid := range memberIDs {
+				r.hub.SendToUser(uid, pushPayload)
+			}
+		} else if frame.ChannelID == "chan_public" {
+			r.hub.BroadcastAll("", pushPayload)
+		}
+	} else {
+		// 1:1 direct message: send to peer and echo back to sender
+		r.hub.SendToUser(frame.ChannelID, pushPayload)
+		if frame.ChannelID != conn.UserID {
+			r.hub.SendToUser(conn.UserID, pushPayload)
+		}
+	}
+
+	slog.Info("reaction relayed",
+		"channel", frame.ChannelID,
+		"target_id", frame.TargetID,
+		"emoji", frame.Emoji,
+		"op", op,
+		"sender", conn.UserID,
 	)
 	return nil
 }

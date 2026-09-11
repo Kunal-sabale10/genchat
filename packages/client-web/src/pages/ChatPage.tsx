@@ -18,6 +18,9 @@ import { EphemeralSettingsModal } from '@/components/EphemeralSettingsModal'
 import { SafetyNumberModal } from '@/components/SafetyNumberModal'
 import { VoiceNotePlayer } from '@/components/VoiceNotePlayer'
 import { VoiceRecorderBar } from '@/components/VoiceRecorderBar'
+import { ReactionPicker } from '@/components/ReactionPicker'
+import { QuotedReplyBanner } from '@/components/QuotedReplyBanner'
+import { QuotedReply } from '@/lib/local-storage-db'
 import { VoiceRecordingResult } from '@/lib/voice-recorder'
 import { SafetyNumberManager, TrustRecord } from '@/lib/safety-numbers'
 import { WebRtcManager, fetchDynamicIceServers } from '@/lib/webrtc-manager'
@@ -57,7 +60,9 @@ import {
   Sparkles,
   Timer,
   AlertTriangle,
-  Mic
+  Mic,
+  Smile,
+  CornerUpLeft
 } from 'lucide-react'
 
 interface MessageItem {
@@ -73,6 +78,8 @@ interface MessageItem {
   senderFingerprint?: string
   ephemeralTtlSec?: number
   expiresAt?: number
+  replyTo?: QuotedReply
+  reactions?: Record<string, string[]>
 }
 
 interface ConversationItem {
@@ -175,6 +182,9 @@ export default function ChatPage() {
   const [viewerImage, setViewerImage] = useState<{ url: string; fileName?: string; fileSize?: number } | null>(null)
   const [isDraggingFile, setIsDraggingFile] = useState(false)
   const [isRecordingVoice, setIsRecordingVoice] = useState(false)
+  const [replyingTo, setReplyingTo] = useState<QuotedReply | null>(null)
+  const [activeReactionPickerMsgId, setActiveReactionPickerMsgId] = useState<string | null>(null)
+  const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const photoInputRef = useRef<HTMLInputElement>(null)
@@ -483,6 +493,33 @@ export default function ChatPage() {
       setMessages((prev) => [...prev, noticeMsg])
     })
 
+    // Handle incoming real-time emoji reactions
+    const unsubReaction = gateway.onReaction((ev) => {
+      console.log('[ChatPage] Reaction received:', ev)
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id === ev.targetId || m.clientMsgId === ev.targetId) {
+            const reactions = { ...(m.reactions || {}) }
+            const users = new Set(reactions[ev.emoji] || [])
+            if (ev.op === 'remove') {
+              users.delete(ev.senderId)
+            } else {
+              users.add(ev.senderId)
+            }
+            if (users.size === 0) {
+              delete reactions[ev.emoji]
+            } else {
+              reactions[ev.emoji] = Array.from(users)
+            }
+            const updated = { ...m, reactions }
+            localDb.saveMessage({ ...updated, createdAt: Date.now() })
+            return updated
+          }
+          return m
+        })
+      )
+    })
+
     gateway.connect()
 
     // Handle incoming messages (push & history) and MLS group commits
@@ -546,6 +583,7 @@ export default function ChatPage() {
         }
 
         let attachment: (AttachmentMetadata & { decryptedUrl?: string }) | undefined = undefined
+        let replyTo: QuotedReply | undefined = undefined
 
         let displayText: string | undefined = env.ciphertext
         let isEncrypted = false
@@ -563,11 +601,13 @@ export default function ChatPage() {
             senderFingerprint = decResult.fingerprint
           }
 
-          // Check if payload is an encrypted media envelope
+          // Check if payload is an encrypted JSON envelope (media, voice note, or quoted reply)
           if (displayText && displayText.startsWith('{')) {
-
             try {
               const parsed = JSON.parse(displayText)
+              if (parsed.replyTo) {
+                replyTo = parsed.replyTo
+              }
               if (parsed.downloadUrl && parsed.encryptionKeyHex && parsed.ivHex) {
                 let decryptedUrl: string | undefined = undefined
                 try {
@@ -587,6 +627,8 @@ export default function ChatPage() {
 
                 attachment = { ...parsed, decryptedUrl }
                 displayText = parsed.caption || undefined
+              } else if (parsed.text !== undefined) {
+                displayText = parsed.text
               }
             } catch {
               // Plain text
@@ -605,6 +647,8 @@ export default function ChatPage() {
           senderId: env.senderId || 'peer',
           text: displayText,
           attachment,
+          replyTo,
+          reactions: {},
           status: 'delivered',
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           isEncrypted,
@@ -671,6 +715,7 @@ export default function ChatPage() {
       unsubReceipts()
       unsubCallSignal()
       unsubEphemeral()
+      unsubReaction()
       unsubMessages()
       gateway.disconnect()
     }
@@ -817,6 +862,49 @@ export default function ChatPage() {
     }
   }
 
+  // --- 4B. Reaction and Quoted Reply Navigation Handlers ---
+  const handleToggleReaction = (targetMsg: MessageItem, emoji: string) => {
+    if (!user) return
+    const targetId = targetMsg.id || targetMsg.clientMsgId
+    const existing = targetMsg.reactions?.[emoji] || []
+    const hasReacted = existing.includes(user.userId)
+    const op: 'add' | 'remove' = hasReacted ? 'remove' : 'add'
+
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (m.id === targetId || m.clientMsgId === targetId) {
+          const reactions = { ...(m.reactions || {}) }
+          const users = new Set(reactions[emoji] || [])
+          if (op === 'remove') {
+            users.delete(user.userId)
+          } else {
+            users.add(user.userId)
+          }
+          if (users.size === 0) {
+            delete reactions[emoji]
+          } else {
+            reactions[emoji] = Array.from(users)
+          }
+          const updated = { ...m, reactions }
+          localDb.saveMessage({ ...updated, createdAt: Date.now() })
+          return updated
+        }
+        return m
+      })
+    )
+
+    gatewayRef.current?.sendReaction(activeChannelId, targetId, emoji, op)
+  }
+
+  const handleJumpToMessage = (messageId: string) => {
+    const el = document.getElementById(`msg-${messageId}`)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      setHighlightedMsgId(messageId)
+      setTimeout(() => setHighlightedMsgId(null), 2200)
+    }
+  }
+
   // --- 5. Message Dispatch with E2EE Ratchet & Encrypted Attachments ---
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault()
@@ -825,6 +913,9 @@ export default function ChatPage() {
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
     gatewayRef.current?.sendTyping(activeChannelId, false)
     lastTypingSentRef.current = 0
+
+    const currentReply = replyingTo
+    setReplyingTo(null)
 
     const textToSend = inputText.trim()
     const clientMsgId = `cli_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
@@ -848,6 +939,8 @@ export default function ChatPage() {
           senderId: user.userId,
           text: caption,
           attachment: { ...attachment, decryptedUrl: localPreviewUrl },
+          replyTo: currentReply || undefined,
+          reactions: {},
           status: 'pending',
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           isEncrypted: true,
@@ -863,7 +956,10 @@ export default function ChatPage() {
         setInputText('')
 
         // Encrypt attachment metadata envelope
-        const metaJson = JSON.stringify(attachment)
+        const metaJson = JSON.stringify({
+          ...attachment,
+          replyTo: currentReply || undefined,
+        })
         const encryptedMeta = await E2eeService.encrypt(metaJson, activeChannelId, user.userId)
 
         if (gatewayRef.current) {
@@ -874,6 +970,7 @@ export default function ChatPage() {
             clientMsgId,
             ciphertext: encryptedMeta,
             ephemeralTtlSec: ttlSec > 0 ? ttlSec : undefined,
+            replyToMessageId: currentReply?.messageId,
           })
 
           setMessages((prev) =>
@@ -895,17 +992,24 @@ export default function ChatPage() {
     // --- Case B: Normal Plaintext / Ratchet Encrypted Text Message ---
     setInputText('')
 
-    let wireCiphertext = textToSend
+    let payloadString = textToSend
+    if (currentReply) {
+      payloadString = JSON.stringify({
+        text: textToSend,
+        replyTo: currentReply,
+      })
+    }
+
+    let wireCiphertext = payloadString
     try {
       if (activeChannelId.startsWith('chan_')) {
-        wireCiphertext = await MlsGroupManager.encryptGroupMessage(activeChannelId, user.userId, textToSend)
+        wireCiphertext = await MlsGroupManager.encryptGroupMessage(activeChannelId, user.userId, payloadString)
       } else {
-        wireCiphertext = await E2eeService.encrypt(textToSend, activeChannelId, user.userId)
+        wireCiphertext = await E2eeService.encrypt(payloadString, activeChannelId, user.userId)
       }
     } catch (err) {
       console.warn('[E2EE] Encryption fallback:', err)
     }
-
 
     const optimisticMsg: MessageItem = {
       id: clientMsgId,
@@ -913,6 +1017,8 @@ export default function ChatPage() {
       channelId: activeChannelId,
       senderId: user.userId,
       text: textToSend,
+      replyTo: currentReply || undefined,
+      reactions: {},
       status: 'pending',
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       isEncrypted: true,
@@ -932,6 +1038,7 @@ export default function ChatPage() {
           clientMsgId,
           ciphertext: wireCiphertext,
           ephemeralTtlSec: ttlSec > 0 ? ttlSec : undefined,
+          replyToMessageId: currentReply?.messageId,
         })
 
         setMessages((prev) =>
@@ -958,6 +1065,9 @@ export default function ChatPage() {
     const ttlSec = currentChannelTtl
     const expiresAt = ttlSec > 0 ? Date.now() + (ttlSec * 1000) : undefined
 
+    const currentReply = replyingTo
+    setReplyingTo(null)
+
     try {
       const attachment = await mediaClientRef.current.uploadEncryptedAttachment(result.blob, {
         isVoiceNote: true,
@@ -979,6 +1089,8 @@ export default function ChatPage() {
           durationSec: result.durationSec,
           waveform: result.waveform,
         },
+        replyTo: currentReply || undefined,
+        reactions: {},
         status: 'pending',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         isEncrypted: true,
@@ -995,6 +1107,7 @@ export default function ChatPage() {
         isVoiceNote: true,
         durationSec: result.durationSec,
         waveform: result.waveform,
+        replyTo: currentReply || undefined,
       })
 
       let wireCiphertext = metaJson
@@ -1012,6 +1125,7 @@ export default function ChatPage() {
           clientMsgId,
           ciphertext: wireCiphertext,
           ephemeralTtlSec: ttlSec > 0 ? ttlSec : undefined,
+          replyToMessageId: currentReply?.messageId,
         })
 
         setMessages((prev) =>
@@ -1821,10 +1935,85 @@ export default function ChatPage() {
                 )
               }
 
+              const msgKey = m.id || m.clientMsgId
+              const isHighlighted = highlightedMsgId === msgKey
+
               return (
-                <div key={m.id} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                <div
+                  key={msgKey}
+                  id={`msg-${msgKey}`}
+                  className={`group relative flex flex-col my-1 transition-all duration-300 ${
+                    isMe ? 'items-end' : 'items-start'
+                  } ${
+                    isHighlighted
+                      ? 'ring-2 ring-indigo-400 ring-offset-2 ring-offset-slate-950 rounded-2xl p-1 bg-indigo-500/15'
+                      : ''
+                  }`}
+                >
                   {!isMe && (
                     <span className="text-[11px] text-slate-500 mb-1 px-1">{m.senderId}</span>
+                  )}
+
+                  {/* Floating Action Menu on Bubble Hover */}
+                  <div
+                    className={`absolute -top-3 opacity-0 group-hover:opacity-100 transition-opacity z-20 flex items-center space-x-1 bg-slate-900/95 border border-slate-700/80 rounded-full px-2 py-0.5 shadow-lg backdrop-blur-md ${
+                      isMe ? 'right-2' : 'left-2'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setActiveReactionPickerMsgId(activeReactionPickerMsgId === msgKey ? null : msgKey)
+                      }}
+                      className="p-1 text-slate-400 hover:text-amber-400 hover:bg-slate-800 rounded-full transition"
+                      title="React with emoji"
+                    >
+                      <Smile className="h-3.5 w-3.5" />
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        const snippet =
+                          m.text ||
+                          (m.attachment?.isVoiceNote
+                            ? '🎙️ Voice message'
+                            : m.attachment?.mimeType?.startsWith('image/')
+                            ? '📷 Photo'
+                            : m.attachment?.fileName || 'Attachment')
+                        const senderName = isMe ? 'You' : (activeConversation?.name || m.senderId.slice(0, 10))
+                        setReplyingTo({
+                          messageId: msgKey,
+                          senderId: m.senderId,
+                          senderName,
+                          snippet,
+                        })
+                        chatInputRef.current?.focus()
+                      }}
+                      className="p-1 text-slate-400 hover:text-indigo-400 hover:bg-slate-800 rounded-full transition"
+                      title="Reply"
+                    >
+                      <CornerUpLeft className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Reaction Picker Popover */}
+                  {activeReactionPickerMsgId === msgKey && (
+                    <div className={`absolute -top-11 z-30 ${isMe ? 'right-2' : 'left-2'}`}>
+                      <ReactionPicker
+                        onSelectEmoji={(emoji) => handleToggleReaction(m, emoji)}
+                        onClose={() => setActiveReactionPickerMsgId(null)}
+                        userReactions={
+                          user
+                            ? Object.keys(m.reactions || {}).filter((k) =>
+                                m.reactions![k]?.includes(user.userId)
+                              )
+                            : []
+                        }
+                      />
+                    </div>
                   )}
 
                   <div
@@ -1834,6 +2023,34 @@ export default function ChatPage() {
                         : 'bg-slate-800 text-slate-100 rounded-bl-xs'
                     }`}
                   >
+                    {/* Quoted Reply Header */}
+                    {m.replyTo && (
+                      <div
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleJumpToMessage(m.replyTo!.messageId)
+                        }}
+                        className={`flex items-center space-x-2 px-3 py-1.5 mb-2 rounded-xl cursor-pointer transition select-none ${
+                          isMe
+                            ? 'bg-black/25 hover:bg-black/35 border-l-4 border-white'
+                            : 'bg-slate-950/60 hover:bg-slate-950/80 border-l-4 border-indigo-500'
+                        }`}
+                        title="Click to jump to quoted message"
+                      >
+                        <div className="flex-1 min-w-0 text-left">
+                          <div
+                            className={`text-[11px] font-semibold truncate ${
+                              isMe ? 'text-indigo-200' : 'text-indigo-400'
+                            }`}
+                          >
+                            @{m.replyTo.senderName || m.replyTo.senderId.slice(0, 10)}
+                          </div>
+                          <div className={`text-xs truncate ${isMe ? 'text-white/80' : 'text-slate-300'}`}>
+                            {m.replyTo.snippet}
+                          </div>
+                        </div>
+                      </div>
+                    )}
                     {m.text && <p className="leading-relaxed break-words">{m.text}</p>}
                     {m.text && <ActionChips text={m.text} />}
 
@@ -1902,6 +2119,35 @@ export default function ChatPage() {
                     )}
                   </div>
 
+                  {/* Reaction Badges */}
+                  {m.reactions && Object.keys(m.reactions).length > 0 && (
+                    <div className={`flex flex-wrap items-center gap-1 mt-1 px-1 ${isMe ? 'justify-end' : 'justify-start'}`}>
+                      {Object.entries(m.reactions).map(([emoji, userIds]) => {
+                        if (!userIds || userIds.length === 0) return null
+                        const hasReacted = user ? userIds.includes(user.userId) : false
+                        return (
+                          <button
+                            key={emoji}
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleToggleReaction(m, emoji)
+                            }}
+                            className={`inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-xs font-medium border transition transform active:scale-95 ${
+                              hasReacted
+                                ? 'bg-indigo-600/40 border-indigo-400/60 text-white shadow-xs'
+                                : 'bg-slate-800/80 border-slate-700/60 text-slate-300 hover:border-slate-500'
+                            }`}
+                            title={`${userIds.length} ${userIds.length === 1 ? 'reaction' : 'reactions'}`}
+                          >
+                            <span>{emoji}</span>
+                            <span className="text-[10px] font-bold">{userIds.length}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+
                   <div className="flex items-center space-x-1.5 mt-1 px-1 text-[10px] text-slate-500">
                     <span>{m.timestamp}</span>
                     {m.isEncrypted && (
@@ -1961,6 +2207,14 @@ export default function ChatPage() {
             isUploading={isUploading}
             onRemove={() => setStagedFile(null)}
           />
+
+          {/* Quoted Reply Banner */}
+          {replyingTo && (
+            <QuotedReplyBanner
+              replyingTo={replyingTo}
+              onCancel={() => setReplyingTo(null)}
+            />
+          )}
 
           {/* Contextual Smart Replies Bar */}
           {smartReplies.length > 0 && !inputText && (

@@ -1,5 +1,5 @@
 export interface GatewayEnvelope {
-  type: 'message' | 'ack' | 'presence' | 'heartbeat' | 'push' | 'error' | 'pong' | 'typing' | 'read_receipt' | 'group_commit' | 'ephemeral_setting'
+  type: 'message' | 'ack' | 'presence' | 'heartbeat' | 'push' | 'error' | 'pong' | 'typing' | 'read_receipt' | 'group_commit' | 'ephemeral_setting' | 'reaction'
   channelId?: string
   senderId?: string
   clientMsgId?: string
@@ -7,6 +7,7 @@ export interface GatewayEnvelope {
   messageType?: number
   ciphertext?: string
   ephemeralTtlSec?: number
+  replyToMessageId?: string
 }
 
 
@@ -31,6 +32,14 @@ export interface EphemeralSettingEvent {
   updatedAt: number
 }
 
+export interface ReactionEvent {
+  channelId: string
+  targetId: string
+  senderId: string
+  emoji: string
+  op: 'add' | 'remove'
+  serverTime?: number
+}
 
 export interface CallSignalEvent {
   signalType: 'offer' | 'answer' | 'ice_candidate' | 'hangup' | 'reject' | 'peer_offline'
@@ -47,6 +56,7 @@ export type StatusHandler = (connected: boolean) => void
 export type TypingHandler = (event: TypingEvent) => void
 export type ReadReceiptHandler = (event: ReadReceiptEvent) => void
 export type EphemeralSettingHandler = (event: EphemeralSettingEvent) => void
+export type ReactionHandler = (event: ReactionEvent) => void
 export type CallSignalHandler = (event: CallSignalEvent) => void
 
 export class GatewayClient {
@@ -59,6 +69,7 @@ export class GatewayClient {
   private typingHandlers: Set<TypingHandler> = new Set()
   private readReceiptHandlers: Set<ReadReceiptHandler> = new Set()
   private ephemeralSettingHandlers: Set<EphemeralSettingHandler> = new Set()
+  private reactionHandlers: Set<ReactionHandler> = new Set()
   private callSignalHandlers: Set<CallSignalHandler> = new Set()
   private pendingAcks: Map<string, (seq: number) => void> = new Map()
   private pingTimer: ReturnType<typeof setInterval> | null = null
@@ -203,6 +214,22 @@ export class GatewayClient {
           return
         }
 
+        // 5c. Handle Reaction update
+        if (raw.type === 'reaction') {
+          console.log('[Gateway] Received reaction for', raw.target_id, 'emoji:', raw.emoji, 'by:', raw.sender_id)
+          this.reactionHandlers.forEach((h) =>
+            h({
+              channelId: raw.channel_id || raw.channelId,
+              targetId: raw.target_id || raw.targetId,
+              senderId: raw.sender_id || raw.senderId,
+              emoji: raw.emoji,
+              op: raw.op || 'add',
+              serverTime: raw.server_time || raw.serverTime || Date.now(),
+            })
+          )
+          return
+        }
+
         // 3b. Handle group_commit frame
         if (raw.type === 'group_commit') {
 
@@ -238,6 +265,7 @@ export class GatewayClient {
               sequenceNum: m.sequence_num,
               ciphertext: decodedCiphertext,
               ephemeralTtlSec: m.ephemeral_ttl_sec != null ? Number(m.ephemeral_ttl_sec) : undefined,
+              replyToMessageId: m.reply_to_message_id || m.replyToMessageId,
             }
             this.messageHandlers.forEach((handler) => handler(histEnvelope))
           }
@@ -263,6 +291,7 @@ export class GatewayClient {
             messageType: raw.message_type,
             ciphertext: decodedCiphertext,
             ephemeralTtlSec: raw.ephemeral_ttl_sec != null ? Number(raw.ephemeral_ttl_sec) : undefined,
+            replyToMessageId: raw.reply_to_message_id || raw.replyToMessageId,
           }
           console.log('[Gateway] Normalized push → envelope:', JSON.stringify(envelope))
         } else {
@@ -275,6 +304,7 @@ export class GatewayClient {
             messageType: raw.message_type ?? raw.messageType,
             ciphertext: raw.ciphertext_base64 || raw.ciphertext,
             ephemeralTtlSec: raw.ephemeral_ttl_sec != null ? Number(raw.ephemeral_ttl_sec) : undefined,
+            replyToMessageId: raw.reply_to_message_id || raw.replyToMessageId,
           }
         }
 
@@ -364,6 +394,9 @@ export class GatewayClient {
       if (envelope.ephemeralTtlSec) {
         wireFrame.ephemeral_ttl_sec = envelope.ephemeralTtlSec
       }
+      if (envelope.replyToMessageId) {
+        wireFrame.reply_to_message_id = envelope.replyToMessageId
+      }
 
       this.ws.send(JSON.stringify(wireFrame))
     })
@@ -377,6 +410,27 @@ export class GatewayClient {
       channel_id: channelId,
       limit,
     }))
+  }
+
+  public onReaction(handler: ReactionHandler): () => void {
+    this.reactionHandlers.add(handler)
+    return () => this.reactionHandlers.delete(handler)
+  }
+
+  public sendReaction(channelId: string, targetId: string, emoji: string, op: 'add' | 'remove' = 'add'): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn('[Gateway] Cannot send reaction, WebSocket not open')
+      return
+    }
+    const frame = {
+      action: 'reaction',
+      channel_id: channelId,
+      target_id: targetId,
+      emoji,
+      op,
+    }
+    console.log('[Gateway] Dispatched reaction:', emoji, 'on:', targetId, 'op:', op)
+    this.ws.send(JSON.stringify(frame))
   }
 
   public onTyping(handler: TypingHandler): () => void {
