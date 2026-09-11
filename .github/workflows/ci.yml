@@ -183,6 +183,9 @@ jobs:
       - name: Run Cryptographic Message Reactions & Quoted Replies Verification
         run: node tests/integration/test_reactions_and_replies.mjs
 
+      - name: Run Multi-Party WebRTC Group Calling & Mesh Signaling Verification
+        run: node tests/integration/test_group_calling.mjs
+
       - name: Run Phase 2 Full Features & Anti-Spoofing Interceptor Verification
         run: node tests/integration/test_phase2_full_features.mjs
 

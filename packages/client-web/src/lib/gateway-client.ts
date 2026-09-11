@@ -42,13 +42,24 @@ export interface ReactionEvent {
 }
 
 export interface CallSignalEvent {
-  signalType: 'offer' | 'answer' | 'ice_candidate' | 'hangup' | 'reject' | 'peer_offline'
+  signalType:
+    | 'offer'
+    | 'answer'
+    | 'ice_candidate'
+    | 'hangup'
+    | 'reject'
+    | 'peer_offline'
+    | 'group_join'
+    | 'group_leave'
+    | 'group_ping'
   callId: string
+  channelId?: string
   senderId?: string
   targetUserId?: string
   callType?: 'audio' | 'video'
   sdp?: string
   candidate?: any
+  serverTime?: number
 }
 
 export type MessageHandler = (envelope: GatewayEnvelope) => void
@@ -185,16 +196,18 @@ export class GatewayClient {
 
         // 5. Handle WebRTC call signaling
         if (raw.type === 'call_signal') {
-          console.log('[Gateway] Received call_signal:', raw.signal_type, 'from:', raw.sender_id, 'call:', raw.call_id)
+          console.log('[Gateway] Received call_signal:', raw.signal_type, 'from:', raw.sender_id, 'call:', raw.call_id, 'chan:', raw.channel_id)
           this.callSignalHandlers.forEach((h) =>
             h({
               signalType: raw.signal_type,
               callId: raw.call_id,
+              channelId: raw.channel_id,
               senderId: raw.sender_id,
               targetUserId: raw.target_user_id,
               callType: raw.call_type || 'video',
               sdp: raw.sdp,
               candidate: raw.candidate,
+              serverTime: raw.server_time,
             })
           )
           return
@@ -503,12 +516,13 @@ export class GatewayClient {
       action: 'call_signal',
       signal_type: event.signalType,
       call_id: event.callId,
+      channel_id: event.channelId,
       target_user_id: event.targetUserId,
       call_type: event.callType || 'video',
       sdp: event.sdp,
       candidate: event.candidate,
     }
-    console.log('[Gateway] Dispatched call_signal:', event.signalType, 'to:', event.targetUserId)
+    console.log('[Gateway] Dispatched call_signal:', event.signalType, 'target:', event.targetUserId, 'channel:', event.channelId)
     this.ws.send(JSON.stringify(frame))
   }
 

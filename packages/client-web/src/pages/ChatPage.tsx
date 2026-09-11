@@ -24,6 +24,9 @@ import { QuotedReply } from '@/lib/local-storage-db'
 import { VoiceRecordingResult } from '@/lib/voice-recorder'
 import { SafetyNumberManager, TrustRecord } from '@/lib/safety-numbers'
 import { WebRtcManager, fetchDynamicIceServers } from '@/lib/webrtc-manager'
+import { GroupWebRtcManager } from '@/lib/group-webrtc-manager'
+import { GroupCallModal } from '@/components/GroupCallModal'
+import { ActiveCallBanner } from '@/components/ActiveCallBanner'
 import { AuthService } from '@/lib/grpc-client'
 import { PushClient } from '@/lib/push-client'
 import { PreKeyManager } from '@/lib/prekey-manager'
@@ -174,6 +177,28 @@ export default function ChatPage() {
   useEffect(() => { activeCallPeerIdRef.current = activeCallPeerId }, [activeCallPeerId])
   const activeCallIdRef = useRef<string>('')
   useEffect(() => { activeCallIdRef.current = activeCallId }, [activeCallId])
+
+  // Group WebRTC Calling States
+  const [isGroupCallActive, setIsGroupCallActive] = useState(false)
+  const [activeGroupCallId, setActiveGroupCallId] = useState<string | null>(null)
+  const [groupCallChannelId, setGroupCallChannelId] = useState<string | null>(null)
+  const [groupCallType, setGroupCallType] = useState<'audio' | 'video'>('video')
+  const [isGroupCallMuted, setIsGroupCallMuted] = useState(false)
+  const [isGroupCallVideoDisabled, setIsGroupCallVideoDisabled] = useState(false)
+  const [isGroupCallScreenSharing, setIsGroupCallScreenSharing] = useState(false)
+  const [isGroupCallMinimized, setIsGroupCallMinimized] = useState(false)
+  const [groupLocalStream, setGroupLocalStream] = useState<MediaStream | null>(null)
+  const [groupRemoteStreams, setGroupRemoteStreams] = useState<Map<string, MediaStream>>(new Map())
+  const [groupActiveSpeakerId, setGroupActiveSpeakerId] = useState<string | null>(null)
+  const [ongoingCallsByChannel, setOngoingCallsByChannel] = useState<
+    Record<string, { callId: string; callType: 'audio' | 'video'; participantCount: number; startedBy: string }>
+  >({})
+
+  const groupRtcRef = useRef<GroupWebRtcManager | null>(null)
+  const isGroupCallActiveRef = useRef(false)
+  useEffect(() => { isGroupCallActiveRef.current = isGroupCallActive }, [isGroupCallActive])
+  const activeGroupCallIdRef = useRef<string | null>(null)
+  useEffect(() => { activeGroupCallIdRef.current = activeGroupCallId }, [activeGroupCallId])
 
   // Media Attachment & Camera states
   const [stagedFile, setStagedFile] = useState<File | null>(null)
@@ -428,6 +453,76 @@ export default function ChatPage() {
     // Handle WebRTC call signals from peers
     const unsubCallSignal = gateway.onCallSignal(async (ev) => {
       console.log('[ChatPage] CallSignal received:', ev.signalType, ev)
+
+      // 1. Group Call lifecycle events
+      if (ev.signalType === 'group_join') {
+        const channelId = ev.channelId || ev.callId
+        setOngoingCallsByChannel((prev) => {
+          const current = prev[channelId] || {
+            callId: ev.callId,
+            callType: ev.callType || 'video',
+            participantCount: 1,
+            startedBy: ev.senderId || '',
+          }
+          return {
+            ...prev,
+            [channelId]: {
+              ...current,
+              participantCount: Math.max(1, (current.participantCount || 1) + (ev.senderId !== user?.userId ? 1 : 0)),
+            },
+          }
+        })
+
+        // If I am active in this group call, connect with the newly joined peer
+        if (isGroupCallActiveRef.current && activeGroupCallIdRef.current === ev.callId) {
+          if (ev.senderId && ev.senderId !== user?.userId) {
+            console.log('[ChatPage] Initiating mesh peer connection with newcomer:', ev.senderId)
+            groupRtcRef.current?.addPeer(ev.senderId, true)
+          }
+        }
+        return
+      }
+
+      if (ev.signalType === 'group_leave') {
+        const channelId = ev.channelId || ev.callId
+        if (ev.senderId) {
+          groupRtcRef.current?.removePeer(ev.senderId)
+          setGroupRemoteStreams((prev) => {
+            const next = new Map(prev)
+            next.delete(ev.senderId!)
+            return next
+          })
+        }
+        setOngoingCallsByChannel((prev) => {
+          const current = prev[channelId]
+          if (!current) return prev
+          const nextCount = Math.max(0, current.participantCount - 1)
+          if (nextCount === 0) {
+            const copy = { ...prev }
+            delete copy[channelId]
+            return copy
+          }
+          return {
+            ...prev,
+            [channelId]: { ...current, participantCount: nextCount },
+          }
+        })
+        return
+      }
+
+      // 2. Multi-peer Group Call WebRTC Negotiation
+      if (isGroupCallActiveRef.current && (ev.channelId || activeGroupCallIdRef.current === ev.callId)) {
+        if (ev.signalType === 'offer' && ev.sdp && ev.senderId) {
+          await groupRtcRef.current?.handleOffer(ev.senderId, ev.sdp)
+        } else if (ev.signalType === 'answer' && ev.sdp && ev.senderId) {
+          await groupRtcRef.current?.handleAnswer(ev.senderId, ev.sdp)
+        } else if (ev.signalType === 'ice_candidate' && ev.candidate && ev.senderId) {
+          await groupRtcRef.current?.handleIceCandidate(ev.senderId, ev.candidate)
+        }
+        return
+      }
+
+      // 3. 1:1 Direct Calling Handshake
       if (ev.signalType === 'offer' && ev.sdp) {
         pendingOfferRef.current = { sdp: ev.sdp, callType: ev.callType || 'video' }
         setActiveCallId(ev.callId)
@@ -1382,6 +1477,193 @@ export default function ChatPage() {
     }
   }
 
+  // --- Group WebRTC Calling Actions ---
+  const handleStartGroupCall = async (type: 'audio' | 'video') => {
+    if (!activeChannelId || !user || !gatewayRef.current) return
+
+    const callId = `grp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+    const channelId = activeChannelId
+
+    setIsGroupCallActive(true)
+    setActiveGroupCallId(callId)
+    setGroupCallChannelId(channelId)
+    setGroupCallType(type)
+    setIsGroupCallMinimized(false)
+    setIsGroupCallMuted(false)
+    setIsGroupCallVideoDisabled(false)
+    setIsGroupCallScreenSharing(false)
+    setGroupRemoteStreams(new Map())
+
+    const dynamicServers = await fetchDynamicIceServers(accessToken || undefined)
+    const groupRtc = new GroupWebRtcManager({
+      iceServers: dynamicServers,
+      onLocalStream: (s) => setGroupLocalStream(s),
+      onPeerStream: (peerId, s) => {
+        setGroupRemoteStreams((prev) => new Map(prev).set(peerId, s))
+      },
+      onPeerLeft: (peerId) => {
+        setGroupRemoteStreams((prev) => {
+          const next = new Map(prev)
+          next.delete(peerId)
+          return next
+        })
+      },
+      onActiveSpeakerChange: (speakerId) => {
+        setGroupActiveSpeakerId(speakerId)
+      },
+      onSignal: (sig) => {
+        gatewayRef.current?.sendCallSignal({
+          signalType: sig.signalType,
+          callId,
+          channelId,
+          targetUserId: sig.targetUserId,
+          callType: type,
+          sdp: sig.sdp,
+          candidate: sig.candidate,
+        })
+      },
+      onError: (err) => {
+        console.error('[GroupWebRtc] Call error:', err)
+      },
+    })
+    groupRtcRef.current = groupRtc
+
+    try {
+      await groupRtc.startLocalStream(type)
+      // Broadcast join to channel members
+      gatewayRef.current.sendCallSignal({
+        signalType: 'group_join',
+        callId,
+        channelId,
+        callType: type,
+      })
+
+      // Update local ongoing call map
+      setOngoingCallsByChannel((prev) => ({
+        ...prev,
+        [channelId]: {
+          callId,
+          callType: type,
+          participantCount: 1,
+          startedBy: user.userId,
+        },
+      }))
+    } catch (err: any) {
+      console.error('[GroupWebRtc] Failed to start local stream:', err)
+      handleLeaveGroupCall()
+    }
+  }
+
+  const handleJoinGroupCall = async (callId: string, type: 'audio' | 'video') => {
+    if (!activeChannelId || !user || !gatewayRef.current) return
+    const channelId = activeChannelId
+
+    setIsGroupCallActive(true)
+    setActiveGroupCallId(callId)
+    setGroupCallChannelId(channelId)
+    setGroupCallType(type)
+    setIsGroupCallMinimized(false)
+    setIsGroupCallMuted(false)
+    setIsGroupCallVideoDisabled(false)
+    setIsGroupCallScreenSharing(false)
+    setGroupRemoteStreams(new Map())
+
+    const dynamicServers = await fetchDynamicIceServers(accessToken || undefined)
+    const groupRtc = new GroupWebRtcManager({
+      iceServers: dynamicServers,
+      onLocalStream: (s) => setGroupLocalStream(s),
+      onPeerStream: (peerId, s) => {
+        setGroupRemoteStreams((prev) => new Map(prev).set(peerId, s))
+      },
+      onPeerLeft: (peerId) => {
+        setGroupRemoteStreams((prev) => {
+          const next = new Map(prev)
+          next.delete(peerId)
+          return next
+        })
+      },
+      onActiveSpeakerChange: (speakerId) => {
+        setGroupActiveSpeakerId(speakerId)
+      },
+      onSignal: (sig) => {
+        gatewayRef.current?.sendCallSignal({
+          signalType: sig.signalType,
+          callId,
+          channelId,
+          targetUserId: sig.targetUserId,
+          callType: type,
+          sdp: sig.sdp,
+          candidate: sig.candidate,
+        })
+      },
+      onError: (err) => {
+        console.error('[GroupWebRtc] Call error:', err)
+      },
+    })
+    groupRtcRef.current = groupRtc
+
+    try {
+      await groupRtc.startLocalStream(type)
+      // Broadcast join to announce presence to all existing members
+      gatewayRef.current.sendCallSignal({
+        signalType: 'group_join',
+        callId,
+        channelId,
+        callType: type,
+      })
+    } catch (err: any) {
+      console.error('[GroupWebRtc] Failed to join group call:', err)
+      handleLeaveGroupCall()
+    }
+  }
+
+  const handleLeaveGroupCall = () => {
+    if (activeGroupCallId && groupCallChannelId && gatewayRef.current) {
+      gatewayRef.current.sendCallSignal({
+        signalType: 'group_leave',
+        callId: activeGroupCallId,
+        channelId: groupCallChannelId,
+      })
+    }
+
+    groupRtcRef.current?.leave()
+    groupRtcRef.current = null
+
+    setIsGroupCallActive(false)
+    setActiveGroupCallId(null)
+    setGroupCallChannelId(null)
+    setIsGroupCallMinimized(false)
+    setGroupLocalStream(null)
+    setGroupRemoteStreams(new Map())
+    setGroupActiveSpeakerId(null)
+  }
+
+  const handleToggleGroupMute = () => {
+    if (groupRtcRef.current) {
+      const isMuted = groupRtcRef.current.toggleAudio()
+      setIsGroupCallMuted(isMuted)
+    }
+  }
+
+  const handleToggleGroupVideo = () => {
+    if (groupRtcRef.current) {
+      const isOff = groupRtcRef.current.toggleVideo()
+      setIsGroupCallVideoDisabled(isOff)
+    }
+  }
+
+  const handleToggleGroupScreenShare = async () => {
+    if (groupRtcRef.current) {
+      if (isGroupCallScreenSharing) {
+        await groupRtcRef.current.stopScreenShare()
+        setIsGroupCallScreenSharing(false)
+      } else {
+        const stream = await groupRtcRef.current.startScreenShare()
+        setIsGroupCallScreenSharing(Boolean(stream))
+      }
+    }
+  }
+
   // --- 7. Modals Handlers ---
   const handleSelectUser = (targetUserId: string, displayName?: string) => {
     const target = targetUserId.trim()
@@ -1794,12 +2076,12 @@ export default function ChatPage() {
               </button>
             )}
 
-            {/* Direct Call Controls (Voice & Video) */}
-            {activeConversation?.isDirect && (
+            {/* Direct or Group Call Controls (Voice & Video) */}
+            {activeConversation?.isDirect ? (
               <div className="flex items-center space-x-2 border-r border-slate-800 pr-3">
                 <button
                   onClick={() => handleStartCall('audio')}
-                  disabled={callState !== 'idle'}
+                  disabled={callState !== 'idle' || isGroupCallActive}
                   className="flex items-center space-x-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 border border-slate-800 hover:bg-emerald-600/20 hover:text-emerald-400 hover:border-emerald-500/30 transition disabled:opacity-40 disabled:cursor-not-allowed shadow-xs"
                   title="Start Voice Call"
                 >
@@ -1809,12 +2091,34 @@ export default function ChatPage() {
 
                 <button
                   onClick={() => handleStartCall('video')}
-                  disabled={callState !== 'idle'}
+                  disabled={callState !== 'idle' || isGroupCallActive}
                   className="flex items-center space-x-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 border border-slate-800 hover:bg-indigo-600/20 hover:text-indigo-400 hover:border-indigo-500/30 transition disabled:opacity-40 disabled:cursor-not-allowed shadow-xs"
                   title="Start Video Call"
                 >
                   <Video className="h-3.5 w-3.5 text-indigo-400" />
                   <span className="hidden sm:inline">Video</span>
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center space-x-2 border-r border-slate-800 pr-3">
+                <button
+                  onClick={() => handleStartGroupCall('audio')}
+                  disabled={isGroupCallActive || callState !== 'idle'}
+                  className="flex items-center space-x-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 border border-slate-800 hover:bg-emerald-600/20 hover:text-emerald-400 hover:border-emerald-500/30 transition disabled:opacity-40 disabled:cursor-not-allowed shadow-xs"
+                  title="Start Group Voice Call"
+                >
+                  <Phone className="h-3.5 w-3.5 text-emerald-400" />
+                  <span className="hidden sm:inline">Group Voice</span>
+                </button>
+
+                <button
+                  onClick={() => handleStartGroupCall('video')}
+                  disabled={isGroupCallActive || callState !== 'idle'}
+                  className="flex items-center space-x-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 border border-slate-800 hover:bg-indigo-600/20 hover:text-indigo-400 hover:border-indigo-500/30 transition disabled:opacity-40 disabled:cursor-not-allowed shadow-xs"
+                  title="Start Group Video Call"
+                >
+                  <Video className="h-3.5 w-3.5 text-indigo-400" />
+                  <span className="hidden sm:inline">Group Video</span>
                 </button>
               </div>
             )}
@@ -1869,6 +2173,23 @@ export default function ChatPage() {
             </div>
           </div>
         )}
+
+        {/* Active Group Call Banner in Channel */}
+        {activeChannelId &&
+          ongoingCallsByChannel[activeChannelId] &&
+          !isGroupCallActive && (
+            <ActiveCallBanner
+              channelName={activeConversation?.name || 'channel'}
+              callType={ongoingCallsByChannel[activeChannelId].callType}
+              participantCount={ongoingCallsByChannel[activeChannelId].participantCount}
+              onJoin={() =>
+                handleJoinGroupCall(
+                  ongoingCallsByChannel[activeChannelId].callId,
+                  ongoingCallsByChannel[activeChannelId].callType
+                )
+              }
+            />
+          )}
 
         {/* Message Stream */}
         <div
@@ -2699,6 +3020,26 @@ export default function ChatPage() {
           onToggleMinimize={() => setIsCallMinimized((prev) => !prev)}
         />
       )}
+
+      {/* Multi-Party WebRTC Group Voice / Video Calling Grid Modal */}
+      <GroupCallModal
+        isOpen={isGroupCallActive}
+        channelName={activeConversation?.name || 'group'}
+        callType={groupCallType}
+        localStream={groupLocalStream}
+        remoteStreams={groupRemoteStreams}
+        currentUserId={user?.userId || ''}
+        activeSpeakerId={groupActiveSpeakerId}
+        isMuted={isGroupCallMuted}
+        isVideoDisabled={isGroupCallVideoDisabled}
+        isScreenSharing={isGroupCallScreenSharing}
+        isMinimized={isGroupCallMinimized}
+        onToggleMute={handleToggleGroupMute}
+        onToggleVideo={handleToggleGroupVideo}
+        onToggleScreenShare={handleToggleGroupScreenShare}
+        onToggleMinimize={() => setIsGroupCallMinimized((prev) => !prev)}
+        onLeaveCall={handleLeaveGroupCall}
+      />
 
       {/* Live Camera Snapshot Modal */}
       <CameraModal

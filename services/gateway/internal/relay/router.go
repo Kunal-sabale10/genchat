@@ -136,24 +136,27 @@ type ReadReceiptPushFrame struct {
 // CallSignalInboundFrame is sent by a client to initiate, negotiate, or end a WebRTC call.
 type CallSignalInboundFrame struct {
 	Action       string          `json:"action"` // "call_signal"
-	SignalType   string          `json:"signal_type"` // "offer", "answer", "ice_candidate", "hangup", "reject"
+	SignalType   string          `json:"signal_type"` // "offer", "answer", "ice_candidate", "hangup", "reject", "group_join", "group_leave", "group_ping"
 	CallID       string          `json:"call_id"`
-	TargetUserID string          `json:"target_user_id"`
+	ChannelID    string          `json:"channel_id,omitempty"`
+	TargetUserID string          `json:"target_user_id,omitempty"`
 	CallType     string          `json:"call_type,omitempty"` // "audio" | "video"
 	SDP          string          `json:"sdp,omitempty"`
 	Candidate    json.RawMessage `json:"candidate,omitempty"`
 }
 
-// CallSignalPushFrame is relayed to the target peer.
+// CallSignalPushFrame is relayed to the target peer or group members.
 type CallSignalPushFrame struct {
 	Type         string          `json:"type"` // "call_signal"
 	SignalType   string          `json:"signal_type"`
 	CallID       string          `json:"call_id"`
+	ChannelID    string          `json:"channel_id,omitempty"`
 	SenderID     string          `json:"sender_id"`
-	TargetUserID string          `json:"target_user_id"`
+	TargetUserID string          `json:"target_user_id,omitempty"`
 	CallType     string          `json:"call_type,omitempty"`
 	SDP          string          `json:"sdp,omitempty"`
 	Candidate    json.RawMessage `json:"candidate,omitempty"`
+	ServerTime   int64           `json:"server_time,omitempty"`
 }
 
 // GroupCommitFrame is sent by a client when an MLS epoch advances (member added/removed/rekeyed).
@@ -234,7 +237,7 @@ func (r *Router) Handle(ctx context.Context, conn *ws.Conn, data []byte) error {
 	case "read_receipt", "ack_receipt":
 		return r.handleReadReceipt(ctx, conn, data)
 	case "call_signal":
-		return r.handleCallSignal(conn, data)
+		return r.handleCallSignal(ctx, conn, data)
 	case "ephemeral_setting":
 		return r.handleEphemeralSetting(ctx, conn, data)
 	case "ping":
@@ -680,14 +683,74 @@ func (r *Router) handlePing(conn *ws.Conn) error {
 	return nil
 }
 
-func (r *Router) handleCallSignal(conn *ws.Conn, data []byte) error {
+func (r *Router) handleCallSignal(ctx context.Context, conn *ws.Conn, data []byte) error {
 	var frame CallSignalInboundFrame
 	if err := json.Unmarshal(data, &frame); err != nil {
 		return r.sendError(conn, "INVALID_FRAME", "could not parse call_signal frame")
 	}
 
-	if frame.TargetUserID == "" || frame.CallID == "" || frame.SignalType == "" {
-		return r.sendError(conn, "MISSING_FIELDS", "target_user_id, call_id, signal_type are required")
+	if frame.CallID == "" || frame.SignalType == "" {
+		return r.sendError(conn, "MISSING_FIELDS", "call_id and signal_type are required")
+	}
+
+	pushPayload, err := json.Marshal(CallSignalPushFrame{
+		Type:         "call_signal",
+		SignalType:   frame.SignalType,
+		CallID:       frame.CallID,
+		ChannelID:    frame.ChannelID,
+		SenderID:     conn.UserID,
+		TargetUserID: frame.TargetUserID,
+		CallType:     frame.CallType,
+		SDP:          frame.SDP,
+		Candidate:    frame.Candidate,
+		ServerTime:   time.Now().Unix(),
+	})
+	if err != nil {
+		return err
+	}
+
+	// 1. Group broadcast signals (group_join, group_leave, group_ping) sent to channel members
+	if (frame.SignalType == "group_join" || frame.SignalType == "group_leave" || frame.SignalType == "group_ping") && frame.ChannelID != "" {
+		if frame.ChannelID == "chan_public" || frame.ChannelID == "public" {
+			r.hub.BroadcastAll(conn.UserID, pushPayload)
+		} else if strings.HasPrefix(frame.ChannelID, "chan_") {
+			cleanID := strings.TrimPrefix(frame.ChannelID, "chan_")
+			var memberIDs []string
+			if r.channelClient != nil {
+				resp, err := r.channelClient.GetChannelMembers(ctx, &chatv1.GetChannelMembersRequest{
+					ChannelId: cleanID,
+				})
+				if err == nil {
+					for _, m := range resp.GetMembers() {
+						if m.GetUserId() != conn.UserID {
+							memberIDs = append(memberIDs, m.GetUserId())
+						}
+					}
+				}
+			}
+
+			if len(memberIDs) > 0 {
+				for _, uid := range memberIDs {
+					r.hub.SendToUser(uid, pushPayload)
+				}
+			}
+		} else {
+			// 1:1 direct channel broadcast
+			r.hub.SendToUser(frame.ChannelID, pushPayload)
+		}
+
+		slog.Info("group call signal broadcast",
+			"signal_type", frame.SignalType,
+			"sender", conn.UserID,
+			"channel", frame.ChannelID,
+			"call_id", frame.CallID,
+		)
+		return nil
+	}
+
+	// 2. Direct peer-addressed signal (offer, answer, ice_candidate, hangup, reject)
+	if frame.TargetUserID == "" {
+		return r.sendError(conn, "MISSING_FIELDS", "target_user_id is required for direct call signals")
 	}
 
 	// If recipient is offline and this is an offer, inform caller immediately
@@ -697,26 +760,14 @@ func (r *Router) handleCallSignal(conn *ws.Conn, data []byte) error {
 			Type:         "call_signal",
 			SignalType:   "peer_offline",
 			CallID:       frame.CallID,
+			ChannelID:    frame.ChannelID,
 			SenderID:     frame.TargetUserID,
 			TargetUserID: conn.UserID,
 			CallType:     frame.CallType,
+			ServerTime:   time.Now().Unix(),
 		})
 		r.hub.SendToUser(conn.UserID, offlineNotice)
 		return nil
-	}
-
-	pushPayload, err := json.Marshal(CallSignalPushFrame{
-		Type:         "call_signal",
-		SignalType:   frame.SignalType,
-		CallID:       frame.CallID,
-		SenderID:     conn.UserID,
-		TargetUserID: frame.TargetUserID,
-		CallType:     frame.CallType,
-		SDP:          frame.SDP,
-		Candidate:    frame.Candidate,
-	})
-	if err != nil {
-		return err
 	}
 
 	r.hub.SendToUser(frame.TargetUserID, pushPayload)
@@ -725,6 +776,7 @@ func (r *Router) handleCallSignal(conn *ws.Conn, data []byte) error {
 		"caller", conn.UserID,
 		"target", frame.TargetUserID,
 		"call_id", frame.CallID,
+		"channel", frame.ChannelID,
 	)
 	return nil
 }
