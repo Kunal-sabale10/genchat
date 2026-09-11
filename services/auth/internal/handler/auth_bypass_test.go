@@ -58,6 +58,20 @@ func (m *mockAuthStore) ListUsers(ctx context.Context, limit int) ([]*store.User
 	return list, nil
 }
 
+func (m *mockAuthStore) UpdateUserProfile(ctx context.Context, userID uuid.UUID, displayName, avatarURL string) error {
+	u, ok := m.users[userID]
+	if !ok {
+		return status.Errorf(codes.NotFound, "user not found")
+	}
+	if displayName != "" {
+		u.DisplayName = displayName
+	}
+	if avatarURL != "" {
+		u.AvatarURL = avatarURL
+	}
+	return nil
+}
+
 func (m *mockAuthStore) CreateDevice(ctx context.Context, userID uuid.UUID, identityKey []byte, label string, webauthnCred []byte) (uuid.UUID, error) {
 	id := uuid.New()
 	m.devices[id] = &store.Device{ID: id, UserID: userID, IdentityKey: identityKey, Label: label}

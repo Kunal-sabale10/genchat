@@ -406,6 +406,7 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 		type UserItem struct {
 			UserID      string `json:"userId"`
 			DisplayName string `json:"displayName"`
+			AvatarURL   string `json:"avatarUrl"`
 			CreatedAt   int64  `json:"createdAt"`
 			IsSelf      bool   `json:"isSelf"`
 		}
@@ -415,6 +416,7 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			userList = append(userList, UserItem{
 				UserID:      u.ID.String(),
 				DisplayName: u.DisplayName,
+				AvatarURL:   u.AvatarURL,
 				CreatedAt:   u.CreatedAt.Unix(),
 				IsSelf:      u.ID.String() == claims.Sub,
 			})
@@ -423,6 +425,100 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"users": userList,
+		})
+	}))
+
+	// GetProfile returns the authenticated user's profile
+	mux.HandleFunc("/chat.v1.AuthService/GetProfile", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, nil)
+			return
+		}
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		claims, err := h.VerifyJWT(token)
+		if err != nil {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, err)
+			return
+		}
+
+		userUUID, err := uuid.Parse(claims.Sub)
+		if err != nil {
+			writeErrorJSON(w, r, "invalid user id in token", http.StatusBadRequest, err)
+			return
+		}
+
+		u, err := h.store.GetUserByID(r.Context(), userUUID)
+		if err != nil {
+			writeErrorJSON(w, r, "user not found", http.StatusNotFound, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"userId":      u.ID.String(),
+			"displayName": u.DisplayName,
+			"avatarUrl":   u.AvatarURL,
+			"createdAt":   u.CreatedAt.Unix(),
+		})
+	}))
+
+	// UpdateProfile updates the authenticated user's display name and/or avatar URL
+	mux.HandleFunc("/chat.v1.AuthService/UpdateProfile", cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, nil)
+			return
+		}
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		claims, err := h.VerifyJWT(token)
+		if err != nil {
+			writeErrorJSON(w, r, "unauthorized", http.StatusUnauthorized, err)
+			return
+		}
+
+		userUUID, err := uuid.Parse(claims.Sub)
+		if err != nil {
+			writeErrorJSON(w, r, "invalid user id in token", http.StatusBadRequest, err)
+			return
+		}
+
+		var req struct {
+			DisplayName string `json:"displayName"`
+			AvatarURL   string `json:"avatarUrl"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErrorJSON(w, r, "invalid request body", http.StatusBadRequest, err)
+			return
+		}
+
+		if err := h.store.UpdateUserProfile(r.Context(), userUUID, req.DisplayName, req.AvatarURL); err != nil {
+			writeErrorJSON(w, r, "failed to update profile", http.StatusInternalServerError, err)
+			return
+		}
+
+		u, err := h.store.GetUserByID(r.Context(), userUUID)
+		if err != nil {
+			writeErrorJSON(w, r, "failed to retrieve updated profile", http.StatusInternalServerError, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"userId":      u.ID.String(),
+			"displayName": u.DisplayName,
+			"avatarUrl":   u.AvatarURL,
+			"createdAt":   u.CreatedAt.Unix(),
 		})
 	}))
 

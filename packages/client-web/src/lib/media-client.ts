@@ -120,4 +120,48 @@ export class MediaClient {
     const data = await res.json();
     return data.download_url || '';
   }
+
+  /**
+   * Uploads an unencrypted image avatar directly to MinIO for public profile display.
+   * Returns the accessible download/view URL.
+   */
+  public async uploadAvatar(file: File | Blob): Promise<string> {
+    const uploadEndpoint = this.getEndpoint('upload');
+    const contentType = file.type || 'image/png';
+    const res = await fetch(uploadEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content_type: contentType,
+        content_length: file.size,
+        byte_size: file.size,
+      }),
+    });
+
+    if (!res.ok) {
+      const errorText = await res.text().catch(() => res.statusText);
+      throw new Error(`Avatar upload request failed (${res.status}): ${errorText}`);
+    }
+
+    const presigned: PresignedUploadResponse = await res.json();
+    const blobId = presigned.blob_id || presigned.object_key || '';
+
+    // Upload image raw bytes directly to MinIO presigned URL
+    const uploadRes = await fetch(presigned.upload_url, {
+      method: 'PUT',
+      headers: { 'Content-Type': contentType },
+      body: file,
+    });
+
+    if (!uploadRes.ok) {
+      throw new Error(`MinIO avatar upload failed (${uploadRes.status}): ${uploadRes.statusText}`);
+    }
+
+    let downloadUrl = presigned.download_url;
+    if (!downloadUrl && blobId) {
+      downloadUrl = await this.getDownloadUrl(blobId);
+    }
+
+    return downloadUrl || presigned.upload_url.split('?')[0];
+  }
 }

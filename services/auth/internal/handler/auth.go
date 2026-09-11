@@ -28,6 +28,7 @@ type AuthStore interface {
 	GetUserByID(ctx context.Context, id uuid.UUID) (*store.User, error)
 	GetUserByIdentityKey(ctx context.Context, key []byte) (*store.User, error)
 	ListUsers(ctx context.Context, limit int) ([]*store.User, error)
+	UpdateUserProfile(ctx context.Context, userID uuid.UUID, displayName, avatarURL string) error
 
 	CreateDevice(ctx context.Context, userID uuid.UUID, identityKey []byte, label string, webauthnCred []byte) (uuid.UUID, error)
 	GetDeviceByID(ctx context.Context, id uuid.UUID) (*store.Device, error)

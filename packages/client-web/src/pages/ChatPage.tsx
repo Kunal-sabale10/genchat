@@ -30,6 +30,8 @@ import { GroupWebRtcManager } from '@/lib/group-webrtc-manager'
 import { GroupCallModal } from '@/components/GroupCallModal'
 import { ActiveCallBanner } from '@/components/ActiveCallBanner'
 import { DeleteMessageModal } from '@/components/DeleteMessageModal'
+import { UserAvatar } from '@/components/UserAvatar'
+import { ProfileModal } from '@/components/ProfileModal'
 import { AuthService } from '@/lib/grpc-client'
 import { PushClient } from '@/lib/push-client'
 import { PreKeyManager } from '@/lib/prekey-manager'
@@ -106,6 +108,7 @@ interface ConversationItem {
   id: string
   name: string
   isDirect: boolean
+  avatarUrl?: string
 }
 
 function formatTtlLabel(sec: number): string {
@@ -122,7 +125,7 @@ function formatTtlLabel(sec: number): string {
 }
 
 export default function ChatPage() {
-  const { user, accessToken, logout } = useAuth()
+  const { user, accessToken, logout, updateUser } = useAuth()
   
   const [conversations, setConversations] = useState<ConversationItem[]>([])
   const [activeChannelId, setActiveChannelId] = useState<string>('')
@@ -139,11 +142,23 @@ export default function ChatPage() {
   const [isConnected, setIsConnected] = useState(false)
   
   // Modals state
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false)
   const [showNewDmModal, setShowNewDmModal] = useState(false)
   const [newDmUserId, setNewDmUserId] = useState('')
-  const [availableUsers, setAvailableUsers] = useState<Array<{ userId: string; displayName: string; isSelf: boolean }>>([])
+  const [availableUsers, setAvailableUsers] = useState<Array<{ userId: string; displayName: string; avatarUrl?: string; isSelf: boolean }>>([])
   const [isLoadingUsers, setIsLoadingUsers] = useState(false)
   const [userSearchQuery, setUserSearchQuery] = useState('')
+
+  const userProfiles = useMemo(() => {
+    const map = new Map<string, { displayName?: string; avatarUrl?: string }>()
+    if (user) {
+      map.set(user.userId, { displayName: user.displayName, avatarUrl: user.avatarUrl })
+    }
+    availableUsers.forEach((u) => {
+      map.set(u.userId, { displayName: u.displayName, avatarUrl: u.avatarUrl })
+    })
+    return map
+  }, [availableUsers, user])
   const [showNewChanModal, setShowNewChanModal] = useState(false)
   const [newChanName, setNewChanName] = useState('')
   const [selectedGroupMembers, setSelectedGroupMembers] = useState<string[]>([])
@@ -2141,8 +2156,12 @@ export default function ChatPage() {
                       : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
                   }`}
                 >
-                  <div className="flex items-center space-x-2 truncate">
-                    <User className="h-4 w-4 shrink-0 text-slate-500" />
+                  <div className="flex items-center space-x-2.5 truncate">
+                    <UserAvatar
+                      name={dm.name}
+                      avatarUrl={dm.avatarUrl || userProfiles.get(dm.id)?.avatarUrl}
+                      size="xs"
+                    />
                     <span className="truncate">{dm.name}</span>
                     {verifiedPeerIds.has(dm.id) && (
                       <span title="Cryptographically Verified Contact">
@@ -2164,21 +2183,48 @@ export default function ChatPage() {
         {/* Current User Card + Copy ID Button */}
         <div className="border-t border-slate-800 p-3 bg-slate-900/80 flex flex-col space-y-2">
           <div className="flex items-center justify-between">
-            <div className="min-w-0 pr-2">
-              <div className="flex items-center space-x-1.5">
-                <span className="truncate text-xs font-medium text-slate-200">{user?.userId}</span>
-              </div>
-              <p className="truncate text-[10px] text-slate-500 font-mono">
-                Device: {user?.deviceId?.slice(0, 8)}...
-              </p>
-            </div>
             <button
-              onClick={logout}
-              className="rounded p-1.5 text-slate-400 hover:bg-slate-800 hover:text-rose-400 transition shrink-0"
-              title="Sign Out"
+              type="button"
+              onClick={() => setIsProfileModalOpen(true)}
+              className="flex items-center space-x-2.5 min-w-0 pr-2 text-left group hover:opacity-95 transition"
+              title="Edit Profile & Avatar"
             >
-              <LogOut className="h-4 w-4" />
+              <UserAvatar
+                name={user?.displayName || user?.userId}
+                avatarUrl={user?.avatarUrl}
+                size="sm"
+                status="online"
+                className="group-hover:ring-2 group-hover:ring-indigo-500 transition-all shrink-0"
+              />
+              <div className="min-w-0">
+                <div className="flex items-center space-x-1">
+                  <span className="truncate text-xs font-semibold text-slate-200 group-hover:text-indigo-300 transition-colors">
+                    {user?.displayName || user?.userId?.slice(0, 12)}
+                  </span>
+                </div>
+                <p className="truncate text-[10px] text-slate-500 font-mono">
+                  {user?.displayName ? user?.userId?.slice(0, 10) + '...' : `Device: ${user?.deviceId?.slice(0, 8)}...`}
+                </p>
+              </div>
             </button>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => setIsProfileModalOpen(true)}
+                className="rounded p-1.5 text-slate-400 hover:bg-slate-800 hover:text-indigo-400 transition"
+                title="Edit Profile"
+              >
+                <User className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={logout}
+                className="rounded p-1.5 text-slate-400 hover:bg-slate-800 hover:text-rose-400 transition shrink-0"
+                title="Sign Out"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
+            </div>
           </div>
 
           <button
@@ -2218,9 +2264,15 @@ export default function ChatPage() {
         <header className="flex h-16 items-center justify-between border-b border-slate-800 px-6 bg-slate-900/30">
           <div className="flex items-center space-x-3">
             {activeConversation?.isDirect ? (
-              <User className="h-5 w-5 text-indigo-400" />
+              <UserAvatar
+                name={activeConversation?.name}
+                avatarUrl={activeConversation?.avatarUrl || userProfiles.get(activeConversation.id)?.avatarUrl}
+                size="md"
+              />
             ) : (
-              <Hash className="h-5 w-5 text-slate-400" />
+              <div className="w-10 h-10 rounded-full bg-slate-800/80 flex items-center justify-center text-slate-300 shrink-0">
+                <Hash className="h-5 w-5" />
+              </div>
             )}
             <div>
               <div className="flex items-center space-x-2">
@@ -2515,7 +2567,16 @@ export default function ChatPage() {
                   }`}
                 >
                   {!isMe && (
-                    <span className="text-[11px] text-slate-500 mb-1 px-1">{m.senderId}</span>
+                    <div className="flex items-center space-x-1.5 mb-1 px-1">
+                      <UserAvatar
+                        name={userProfiles.get(m.senderId)?.displayName || m.senderId}
+                        avatarUrl={userProfiles.get(m.senderId)?.avatarUrl}
+                        size="xs"
+                      />
+                      <span className="text-[11px] font-medium text-slate-400">
+                        {userProfiles.get(m.senderId)?.displayName || (activeConversation?.isDirect ? activeConversation.name : m.senderId.slice(0, 12))}
+                      </span>
+                    </div>
                   )}
 
                   {/* Floating Action Menu on Bubble Hover */}
@@ -3255,9 +3316,11 @@ export default function ChatPage() {
                           className="flex items-center justify-between p-2.5 rounded-xl border border-slate-800/60 bg-slate-950/40 hover:bg-indigo-600/10 hover:border-indigo-500/30 cursor-pointer transition group"
                         >
                           <div className="flex items-center space-x-3 min-w-0">
-                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-indigo-600/20 text-indigo-300 font-semibold text-xs border border-indigo-500/30">
-                              {(u.displayName || u.userId).slice(0, 2).toUpperCase()}
-                            </div>
+                            <UserAvatar
+                              name={u.displayName || u.userId}
+                              avatarUrl={u.avatarUrl}
+                              size="sm"
+                            />
                             <div className="min-w-0">
                               <p className="text-xs font-semibold text-slate-200 group-hover:text-indigo-200 truncate">
                                 {u.displayName || 'Anonymous User'}
@@ -3431,6 +3494,29 @@ export default function ChatPage() {
             : deleteTargetMessage?.attachment?.fileName || 'Attachment')
         }
       />
+
+      {/* User Profile & Custom Avatar Modal */}
+      {user && (
+        <ProfileModal
+          isOpen={isProfileModalOpen}
+          onClose={() => setIsProfileModalOpen(false)}
+          currentUserId={user.userId}
+          currentDeviceId={user.deviceId}
+          currentDisplayName={user.displayName}
+          currentAvatarUrl={user.avatarUrl}
+          accessToken={accessToken}
+          onProfileUpdated={(updates) => {
+            updateUser(updates)
+            if (accessToken) {
+              AuthService.listUsers(accessToken)
+                .then((res) => {
+                  if (res.users) setAvailableUsers(res.users)
+                })
+                .catch(() => {})
+            }
+          }}
+        />
+      )}
     </div>
   )
 }

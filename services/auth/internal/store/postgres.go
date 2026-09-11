@@ -16,6 +16,7 @@ type PostgresStore struct {
 }
 
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
+	_, _ = pool.Exec(context.Background(), `ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;`)
 	return &PostgresStore{pool: pool}
 }
 
@@ -23,6 +24,7 @@ type User struct {
 	ID          uuid.UUID
 	DisplayName string
 	IdentityKey []byte
+	AvatarURL   string
 	CreatedAt   time.Time
 }
 
@@ -80,16 +82,16 @@ type Ceremony struct {
 func (s *PostgresStore) CreateUser(ctx context.Context, displayName string, identityKey []byte) (uuid.UUID, error) {
 	var id uuid.UUID
 	err := s.pool.QueryRow(ctx, 
-		`INSERT INTO users (id, display_name, identity_key, created_at) 
-		 VALUES ($1, $2, $3, $4) RETURNING id`, 
+		`INSERT INTO users (id, display_name, identity_key, avatar_url, created_at) 
+		 VALUES ($1, $2, $3, '', $4) RETURNING id`, 
 		uuid.New(), displayName, identityKey, time.Now()).Scan(&id)
 	return id, err
 }
 
 func (s *PostgresStore) GetUserByID(ctx context.Context, id uuid.UUID) (*User, error) {
 	u := &User{}
-	err := s.pool.QueryRow(ctx, `SELECT id, display_name, identity_key, created_at FROM users WHERE id = $1`, id).
-		Scan(&u.ID, &u.DisplayName, &u.IdentityKey, &u.CreatedAt)
+	err := s.pool.QueryRow(ctx, `SELECT id, display_name, identity_key, COALESCE(avatar_url, ''), created_at FROM users WHERE id = $1`, id).
+		Scan(&u.ID, &u.DisplayName, &u.IdentityKey, &u.AvatarURL, &u.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get user by id failed: %w", err)
 	}
@@ -98,8 +100,8 @@ func (s *PostgresStore) GetUserByID(ctx context.Context, id uuid.UUID) (*User, e
 
 func (s *PostgresStore) GetUserByIdentityKey(ctx context.Context, key []byte) (*User, error) {
 	u := &User{}
-	err := s.pool.QueryRow(ctx, `SELECT id, display_name, identity_key, created_at FROM users WHERE identity_key = $1`, key).
-		Scan(&u.ID, &u.DisplayName, &u.IdentityKey, &u.CreatedAt)
+	err := s.pool.QueryRow(ctx, `SELECT id, display_name, identity_key, COALESCE(avatar_url, ''), created_at FROM users WHERE identity_key = $1`, key).
+		Scan(&u.ID, &u.DisplayName, &u.IdentityKey, &u.AvatarURL, &u.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get user by identity key failed: %w", err)
 	}
@@ -110,7 +112,7 @@ func (s *PostgresStore) ListUsers(ctx context.Context, limit int) ([]*User, erro
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id, display_name, identity_key, created_at FROM users ORDER BY created_at DESC LIMIT $1`, limit)
+	rows, err := s.pool.Query(ctx, `SELECT id, display_name, identity_key, COALESCE(avatar_url, ''), created_at FROM users ORDER BY created_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list users query failed: %w", err)
 	}
@@ -119,12 +121,29 @@ func (s *PostgresStore) ListUsers(ctx context.Context, limit int) ([]*User, erro
 	var users []*User
 	for rows.Next() {
 		u := &User{}
-		if err := rows.Scan(&u.ID, &u.DisplayName, &u.IdentityKey, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.DisplayName, &u.IdentityKey, &u.AvatarURL, &u.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan user row failed: %w", err)
 		}
 		users = append(users, u)
 	}
 	return users, rows.Err()
+}
+
+func (s *PostgresStore) UpdateUserProfile(ctx context.Context, userID uuid.UUID, displayName, avatarURL string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE users 
+		 SET display_name = CASE WHEN $2 <> '' THEN $2 ELSE display_name END,
+		     avatar_url = $3,
+		     updated_at = now() 
+		 WHERE id = $1`,
+		userID, displayName, avatarURL)
+	if err != nil {
+		return fmt.Errorf("update user profile failed: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("user not found")
+	}
+	return nil
 }
 
 func (s *PostgresStore) CreateDevice(ctx context.Context, userID uuid.UUID, identityKey []byte, label string, webauthnCred []byte) (uuid.UUID, error) {

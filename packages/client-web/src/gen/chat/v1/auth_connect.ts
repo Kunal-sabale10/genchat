@@ -18,12 +18,25 @@ import type {
 export interface UserSummary {
   userId: string
   displayName: string
+  avatarUrl?: string
   createdAt: string
   isSelf: boolean
 }
 
 export interface ListUsersResponse {
   users: UserSummary[]
+}
+
+export interface UserProfileResponse {
+  userId: string
+  displayName: string
+  avatarUrl: string
+  createdAt: string
+}
+
+export interface UpdateProfileRequest {
+  displayName?: string
+  avatarUrl?: string
 }
 
 const BASE_URL = import.meta.env.VITE_AUTH_URL || ''
@@ -66,6 +79,12 @@ export const AuthService = {
   },
   listUsers(token?: string): Promise<ListUsersResponse> {
     return grpcUnary('chat.v1.AuthService', 'ListUsers', {}, token)
+  },
+  getProfile(token: string): Promise<UserProfileResponse> {
+    return grpcUnary('chat.v1.AuthService', 'GetProfile', {}, token)
+  },
+  updateProfile(req: UpdateProfileRequest, token: string): Promise<UserProfileResponse> {
+    return grpcUnary('chat.v1.AuthService', 'UpdateProfile', req, token)
   },
 }
 

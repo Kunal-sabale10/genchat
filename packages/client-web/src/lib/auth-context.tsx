@@ -1,18 +1,21 @@
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react'
 import { AuthService } from './grpc-client'
 
-interface AuthUser {
+export interface AuthUser {
   userId: string
   deviceId: string
+  displayName?: string
+  avatarUrl?: string
 }
 
-interface AuthContextValue {
+export interface AuthContextValue {
   user: AuthUser | null
   accessToken: string | null
   isLoading: boolean
-  login: (accessToken: string, refreshToken: string, userId: string, deviceId: string) => void
+  login: (accessToken: string, refreshToken: string, userId: string, deviceId: string, displayName?: string, avatarUrl?: string) => void
   logout: () => void
   refreshAccessToken: () => Promise<void>
+  updateUser: (updates: { displayName?: string; avatarUrl?: string }) => void
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -29,13 +32,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // WebSocket is now managed by ChatPage's GatewayClient — no dual connection
 
-  const login = useCallback((token: string, refreshToken: string, userId: string, deviceId: string) => {
-    const authUser = { userId, deviceId }
+  const login = useCallback((token: string, refreshToken: string, userId: string, deviceId: string, displayName?: string, avatarUrl?: string) => {
+    const authUser: AuthUser = { userId, deviceId, displayName, avatarUrl }
     setUser(authUser)
     setAccessToken(token)
     sessionStorage.setItem('genchat_user', JSON.stringify(authUser))
     sessionStorage.setItem('genchat_access_token', token)
     sessionStorage.setItem('genchat_refresh_token', refreshToken)
+  }, [])
+
+  const updateUser = useCallback((updates: { displayName?: string; avatarUrl?: string }) => {
+    setUser(prev => {
+      if (!prev) return null
+      const next = { ...prev, ...updates }
+      sessionStorage.setItem('genchat_user', JSON.stringify(next))
+      return next
+    })
   }, [])
 
   const logout = useCallback(() => {
@@ -65,8 +77,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [logout])
 
+  // Refresh profile if displayName or avatarUrl is not populated yet
+  useEffect(() => {
+    if (!accessToken || !user) return
+    if (!user.displayName && !user.avatarUrl) {
+      AuthService.getProfile(accessToken)
+        .then(profile => {
+          if (profile && (profile.displayName || profile.avatarUrl)) {
+            updateUser({ displayName: profile.displayName, avatarUrl: profile.avatarUrl })
+          }
+        })
+        .catch(() => {
+          // ignore silent network fallback
+        })
+    }
+  }, [accessToken, user, updateUser])
+
   return (
-    <AuthContext.Provider value={{ user, accessToken, isLoading, login, logout, refreshAccessToken }}>
+    <AuthContext.Provider value={{ user, accessToken, isLoading, login, logout, refreshAccessToken, updateUser }}>
       {children}
     </AuthContext.Provider>
   )

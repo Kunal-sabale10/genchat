@@ -195,6 +195,9 @@ jobs:
       - name: Run Cryptographic Pinned Messages & Quick-Jump Verification
         run: node tests/integration/test_pinned_messages.mjs
 
+      - name: Run User Profile Pictures & Custom Avatars Verification
+        run: node tests/integration/test_user_avatars.mjs
+
       - name: Run Phase 2 Full Features & Anti-Spoofing Interceptor Verification
         run: node tests/integration/test_phase2_full_features.mjs
 

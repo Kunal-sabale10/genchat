@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS users (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     display_name    TEXT NOT NULL,
     identity_key    BYTEA NOT NULL,          -- Ed25519 public key (32 bytes)
+    avatar_url      TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
