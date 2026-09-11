@@ -23,6 +23,7 @@ type Message struct {
 	EncryptedPayload []byte
 	SenderRatchetKey []byte
 	MessageIndex     int
+	EphemeralTTLSec  int64
 }
 
 type StoredMessage struct {
@@ -37,6 +38,7 @@ type StoredMessage struct {
 	MessageIndex     int
 	CreatedAt        time.Time
 	Deduplicated     bool
+	EphemeralTTLSec  int64
 }
 
 type DedupRecord struct {
@@ -59,6 +61,17 @@ func (s *ScyllaStore) InsertMessage(ctx context.Context, msg *StoredMessage) err
 	msgID, err := gocql.ParseUUID(msg.MessageID.String())
 	if err != nil {
 		return err
+	}
+	if msg.EphemeralTTLSec > 0 {
+		return s.session.Query(
+			`INSERT INTO genchat.messages 
+			(conversation_id, bucket, message_id, sequence_num, sender_id, client_msg_id, 
+			 encrypted_payload, sender_ratchet_key, message_index, created_at) 
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) USING TTL ?`,
+			msg.ConversationID, msg.Bucket, msgID, msg.SequenceNum,
+			msg.SenderID, msg.ClientMsgID, msg.EncryptedPayload, msg.SenderRatchetKey,
+			msg.MessageIndex, msg.CreatedAt, msg.EphemeralTTLSec,
+		).WithContext(ctx).Exec()
 	}
 	return s.session.Query(
 		`INSERT INTO genchat.messages 
@@ -114,7 +127,13 @@ func (s *ScyllaStore) CheckDedup(ctx context.Context, conversationID, clientMsgI
 	return rec != nil, nil
 }
 
-func (s *ScyllaStore) InsertDedup(ctx context.Context, conversationID, clientMsgID string, messageID gocql.UUID, sequenceNum int64) error {
+func (s *ScyllaStore) InsertDedup(ctx context.Context, conversationID, clientMsgID string, messageID gocql.UUID, sequenceNum int64, ttlSec int64) error {
+	if ttlSec > 0 {
+		return s.session.Query(
+			`INSERT INTO genchat.client_dedup (conversation_id, client_msg_id, message_id, sequence_num, created_at) VALUES (?, ?, ?, ?, ?) USING TTL ?`,
+			conversationID, clientMsgID, messageID, sequenceNum, time.Now(), ttlSec,
+		).WithContext(ctx).Exec()
+	}
 	return s.session.Query(
 		`INSERT INTO genchat.client_dedup (conversation_id, client_msg_id, message_id, sequence_num, created_at) VALUES (?, ?, ?, ?, ?)`,
 		conversationID, clientMsgID, messageID, sequenceNum, time.Now(),
@@ -131,14 +150,14 @@ func (s *ScyllaStore) FetchMessages(ctx context.Context, conversationID, bucket 
 			return nil, err
 		}
 		query = `SELECT message_id, sequence_num, sender_id, client_msg_id, encrypted_payload, 
-			sender_ratchet_key, message_index, created_at 
+			sender_ratchet_key, message_index, created_at, TTL(encrypted_payload) 
 			FROM genchat.messages 
 			WHERE conversation_id = ? AND bucket = ? AND message_id < ? 
 			LIMIT ?`
 		args = []interface{}{conversationID, bucket, gocqlBeforeID, limit}
 	} else {
 		query = `SELECT message_id, sequence_num, sender_id, client_msg_id, encrypted_payload, 
-			sender_ratchet_key, message_index, created_at 
+			sender_ratchet_key, message_index, created_at, TTL(encrypted_payload) 
 			FROM genchat.messages 
 			WHERE conversation_id = ? AND bucket = ? 
 			LIMIT ?`
@@ -156,9 +175,14 @@ func (s *ScyllaStore) FetchMessages(ctx context.Context, conversationID, bucket 
 	var senderRatchKey []byte
 	var msgIndex int
 	var createdAt time.Time
+	var ttlSec *int
 	
-	for iter.Scan(&msgID, &seqNum, &senderID, &clientMsgID, &encPayload, &senderRatchKey, &msgIndex, &createdAt) {
+	for iter.Scan(&msgID, &seqNum, &senderID, &clientMsgID, &encPayload, &senderRatchKey, &msgIndex, &createdAt, &ttlSec) {
 		parsedMsgID, _ := uuid.Parse(msgID.String())
+		var ephemeralTTL int64
+		if ttlSec != nil && *ttlSec > 0 {
+			ephemeralTTL = int64(*ttlSec)
+		}
 		messages = append(messages, &StoredMessage{
 			ConversationID:   conversationID,
 			Bucket:           bucket,
@@ -170,7 +194,9 @@ func (s *ScyllaStore) FetchMessages(ctx context.Context, conversationID, bucket 
 			SenderRatchetKey: senderRatchKey,
 			MessageIndex:     msgIndex,
 			CreatedAt:        createdAt,
+			EphemeralTTLSec:  ephemeralTTL,
 		})
+		ttlSec = nil
 	}
 	
 	return messages, iter.Close()

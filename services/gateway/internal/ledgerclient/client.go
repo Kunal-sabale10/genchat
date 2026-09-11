@@ -63,7 +63,7 @@ type StoreMessageResult struct {
 // message ID + sequence number the ledger assigned. Idempotent: a retry with
 // the same (conversation_id, client_msg_id) gets back Deduplicated=true along
 // with the original message_id and sequence_num assigned on first store.
-func (c *Client) StoreMessage(ctx context.Context, conversationID, senderID, clientMsgID string, encryptedPayload, senderRatchetKey []byte, messageIndex uint32) (*StoreMessageResult, error) {
+func (c *Client) StoreMessage(ctx context.Context, conversationID, senderID, clientMsgID string, encryptedPayload, senderRatchetKey []byte, messageIndex uint32, ephemeralTTLSec int64) (*StoreMessageResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -74,6 +74,7 @@ func (c *Client) StoreMessage(ctx context.Context, conversationID, senderID, cli
 		EncryptedPayload: encryptedPayload,
 		SenderRatchetKey: senderRatchetKey,
 		MessageIndex:     messageIndex,
+		EphemeralTtlSec:  ephemeralTTLSec,
 	})
 	if err != nil {
 		if status.Code(err) == codes.AlreadyExists {
@@ -98,6 +99,7 @@ type LedgerMessage struct {
 	ClientMsgID      string    `json:"client_msg_id"`
 	EncryptedPayload []byte    `json:"encrypted_payload"`
 	CreatedAt        time.Time `json:"created_at"`
+	EphemeralTTLSec  int64     `json:"ephemeral_ttl_sec,omitempty"`
 }
 
 // FetchMessages retrieves historical messages for a conversation/channel.
@@ -136,6 +138,7 @@ func (c *Client) FetchMessages(ctx context.Context, conversationID, bucket strin
 			ClientMsgID:      m.GetClientMsgId(),
 			EncryptedPayload: m.GetEncryptedPayload(),
 			CreatedAt:        createdAt,
+			EphemeralTTLSec:  m.GetEphemeralTtlSec(),
 		})
 	}
 	return msgs, nil

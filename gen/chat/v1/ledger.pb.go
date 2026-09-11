@@ -32,6 +32,7 @@ type StoreMessageRequest struct {
 	EncryptedPayload []byte `protobuf:"bytes,4,opt,name=encrypted_payload,json=encryptedPayload,proto3" json:"encrypted_payload,omitempty"`
 	SenderRatchetKey []byte `protobuf:"bytes,5,opt,name=sender_ratchet_key,json=senderRatchetKey,proto3" json:"sender_ratchet_key,omitempty"`
 	MessageIndex     uint32 `protobuf:"varint,6,opt,name=message_index,json=messageIndex,proto3" json:"message_index,omitempty"`
+	EphemeralTtlSec  int64  `protobuf:"varint,7,opt,name=ephemeral_ttl_sec,json=ephemeralTtlSec,proto3" json:"ephemeral_ttl_sec,omitempty"`
 }
 
 func (x *StoreMessageRequest) Reset() {
@@ -108,6 +109,13 @@ func (x *StoreMessageRequest) GetMessageIndex() uint32 {
 	return 0
 }
 
+func (x *StoreMessageRequest) GetEphemeralTtlSec() int64 {
+	if x != nil {
+		return x.EphemeralTtlSec
+	}
+	return 0
+}
+
 type StoredMessageResponse struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -122,6 +130,7 @@ type StoredMessageResponse struct {
 	SenderRatchetKey []byte                 `protobuf:"bytes,7,opt,name=sender_ratchet_key,json=senderRatchetKey,proto3" json:"sender_ratchet_key,omitempty"`
 	MessageIndex     uint32                 `protobuf:"varint,8,opt,name=message_index,json=messageIndex,proto3" json:"message_index,omitempty"`
 	CreatedAt        *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	EphemeralTtlSec  int64                  `protobuf:"varint,10,opt,name=ephemeral_ttl_sec,json=ephemeralTtlSec,proto3" json:"ephemeral_ttl_sec,omitempty"`
 }
 
 func (x *StoredMessageResponse) Reset() {
@@ -217,6 +226,13 @@ func (x *StoredMessageResponse) GetCreatedAt() *timestamppb.Timestamp {
 		return x.CreatedAt
 	}
 	return nil
+}
+
+func (x *StoredMessageResponse) GetEphemeralTtlSec() int64 {
+	if x != nil {
+		return x.EphemeralTtlSec
+	}
+	return 0
 }
 
 type StoreMessageResponse struct {

@@ -258,6 +258,121 @@ assert.strictEqual(isCritical, true, 'Message with 5s remaining should trigger c
 assert.strictEqual(formatRemainingCountdown(remainingSec), '5s');
 console.log(`✓ Imminent self-destruct threshold detected (${remainingSec}s remaining, critical=${isCritical}).`);
 
+// -------------------------------------------------------------
+// Part 5: ScyllaDB Native Per-Row TTL & History Persistence Flow
+// -------------------------------------------------------------
+console.log('\n--- Testing ScyllaDB Native Per-Row TTL & History Flow ---');
+
+// Emulate ScyllaDB storage with per-row TTL & TTL(encrypted_payload) retrieval
+class MockScyllaStore {
+  constructor() {
+    this.messages = [];
+    this.dedup = new Map();
+  }
+
+  insertMessage(msg) {
+    const expiresAt = msg.ephemeral_ttl_sec > 0 ? Date.now() + msg.ephemeral_ttl_sec * 1000 : null;
+    this.messages.push({
+      ...msg,
+      _expiresAt: expiresAt,
+    });
+  }
+
+  insertDedup(convId, clientMsgId, ttlSec) {
+    const expiresAt = ttlSec > 0 ? Date.now() + ttlSec * 1000 : null;
+    this.dedup.set(`${convId}:${clientMsgId}`, { expiresAt });
+  }
+
+  fetchMessages(convId) {
+    const now = Date.now();
+    // ScyllaDB automatically drops expired rows
+    const valid = this.messages.filter(m => m.conversation_id === convId && (!m._expiresAt || m._expiresAt > now));
+    return valid.map(m => {
+      let remainingTtl = 0;
+      if (m._expiresAt) {
+        remainingTtl = Math.max(1, Math.round((m._expiresAt - now) / 1000));
+      }
+      return {
+        conversation_id: m.conversation_id,
+        message_id: m.message_id,
+        sequence_num: m.sequence_num,
+        sender_id: m.sender_id,
+        client_msg_id: m.client_msg_id,
+        encrypted_payload: m.encrypted_payload,
+        ephemeral_ttl_sec: remainingTtl,
+      };
+    });
+  }
+}
+
+const scylla = new MockScyllaStore();
+
+// 1. Insert normal persistent message (ephemeral_ttl_sec = 0)
+scylla.insertMessage({
+  conversation_id: 'conv_123',
+  message_id: 'msg_001',
+  sequence_num: 1,
+  sender_id: 'alice',
+  client_msg_id: 'cli_001',
+  encrypted_payload: Buffer.from('persistent cipher'),
+  ephemeral_ttl_sec: 0,
+});
+scylla.insertDedup('conv_123', 'cli_001', 0);
+
+// 2. Insert ephemeral message with native ScyllaDB TTL (300 seconds)
+scylla.insertMessage({
+  conversation_id: 'conv_123',
+  message_id: 'msg_002',
+  sequence_num: 2,
+  sender_id: 'bob',
+  client_msg_id: 'cli_002',
+  encrypted_payload: Buffer.from('ephemeral cipher'),
+  ephemeral_ttl_sec: 300,
+});
+scylla.insertDedup('conv_123', 'cli_002', 300);
+
+// Fetch messages via Scylla query simulating TTL(encrypted_payload)
+const fetched = scylla.fetchMessages('conv_123');
+assert.strictEqual(fetched.length, 2, 'Both persistent and active ephemeral messages should be fetched');
+
+const permMsg = fetched.find(m => m.client_msg_id === 'cli_001');
+assert.strictEqual(permMsg.ephemeral_ttl_sec, 0, 'Persistent message should have 0 TTL');
+
+const ephemMsg = fetched.find(m => m.client_msg_id === 'cli_002');
+assert(ephemMsg.ephemeral_ttl_sec > 290 && ephemMsg.ephemeral_ttl_sec <= 300, 'Ephemeral message should retain remaining TTL');
+
+// Emulate Gateway -> Client History Frame normalization
+const historyFrame = {
+  type: 'history',
+  channel_id: 'bob',
+  messages: fetched.map(m => ({
+    server_id: m.message_id,
+    sequence_num: m.sequence_num,
+    sender_id: m.sender_id,
+    client_msg_id: m.client_msg_id,
+    ciphertext_base64: m.encrypted_payload.toString('base64'),
+    ephemeral_ttl_sec: m.ephemeral_ttl_sec > 0 ? m.ephemeral_ttl_sec : undefined,
+  })),
+};
+
+// Emulate Client Web receiving and parsing history frame
+const envelopes = historyFrame.messages.map(m => ({
+  type: 'message',
+  channelId: historyFrame.channel_id,
+  senderId: m.sender_id,
+  clientMsgId: m.client_msg_id || m.server_id,
+  sequenceNum: m.sequence_num,
+  ciphertext: Buffer.from(m.ciphertext_base64, 'base64').toString(),
+  ephemeralTtlSec: m.ephemeral_ttl_sec != null ? Number(m.ephemeral_ttl_sec) : undefined,
+}));
+
+assert.strictEqual(envelopes.length, 2);
+assert.strictEqual(envelopes[0].ephemeralTtlSec, undefined, 'Persistent history envelope should not have ephemeralTtlSec');
+assert(envelopes[1].ephemeralTtlSec >= 290, 'Ephemeral history envelope must carry remaining TTL to client');
+
+console.log('✓ ScyllaDB native per-row TTL and history propagation verified.');
+
 console.log('\n=============================================================');
 console.log('🎉 All Disappearing / Ephemeral Messages Tests Passed! (100% GREEN)');
 console.log('=============================================================');
+

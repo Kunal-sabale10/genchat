@@ -20,6 +20,7 @@ message StoreMessageRequest {
   bytes encrypted_payload = 4;
   bytes sender_ratchet_key = 5;
   uint32 message_index = 6;
+  int64 ephemeral_ttl_sec = 7;
 }
 
 message StoredMessageResponse {
@@ -32,6 +33,7 @@ message StoredMessageResponse {
   bytes sender_ratchet_key = 7;
   uint32 message_index = 8;
   google.protobuf.Timestamp created_at = 9;
+  int64 ephemeral_ttl_sec = 10;
 }
 
 message StoreMessageResponse {

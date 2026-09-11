@@ -237,6 +237,7 @@ export class GatewayClient {
               clientMsgId: m.client_msg_id || m.server_id,
               sequenceNum: m.sequence_num,
               ciphertext: decodedCiphertext,
+              ephemeralTtlSec: m.ephemeral_ttl_sec != null ? Number(m.ephemeral_ttl_sec) : undefined,
             }
             this.messageHandlers.forEach((handler) => handler(histEnvelope))
           }

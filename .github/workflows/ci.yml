@@ -171,6 +171,9 @@ jobs:
       - name: Run Bi-directional Chat, Dedup & ScyllaDB Persistence Verification
         run: node tests/integration/test_bidirectional_chat.mjs
 
+      - name: Run Disappearing / Ephemeral Messages & Native ScyllaDB TTL Verification
+        run: node tests/integration/test_ephemeral_messages.mjs
+
       - name: Run Phase 2 Full Features & Anti-Spoofing Interceptor Verification
         run: node tests/integration/test_phase2_full_features.mjs
 

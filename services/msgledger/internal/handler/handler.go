@@ -38,6 +38,7 @@ func (h *LedgerHandler) StoreMessage(ctx context.Context, req *chatv1.StoreMessa
 		EncryptedPayload: req.EncryptedPayload,
 		SenderRatchetKey: req.SenderRatchetKey,
 		MessageIndex:     int(req.MessageIndex),
+		EphemeralTTLSec:  req.EphemeralTtlSec,
 	}
 
 	storedMsg, err := h.StoreMessageDirect(ctx, msg)
@@ -56,6 +57,7 @@ func (h *LedgerHandler) StoreMessage(ctx context.Context, req *chatv1.StoreMessa
 			SenderRatchetKey: storedMsg.SenderRatchetKey,
 			MessageIndex:     uint32(storedMsg.MessageIndex),
 			CreatedAt:        timestamppb.New(storedMsg.CreatedAt),
+			EphemeralTtlSec:  storedMsg.EphemeralTTLSec,
 		},
 		Deduplicated: storedMsg.Deduplicated,
 	}, nil
@@ -78,6 +80,7 @@ func (h *LedgerHandler) StoreMessageDirect(ctx context.Context, msg *store.Messa
 			MessageIndex:     msg.MessageIndex,
 			CreatedAt:        dedup.CreatedAt,
 			Deduplicated:     true,
+			EphemeralTTLSec:  msg.EphemeralTTLSec,
 		}, nil
 	}
 
@@ -106,6 +109,7 @@ func (h *LedgerHandler) StoreMessageDirect(ctx context.Context, msg *store.Messa
 		MessageIndex:     msg.MessageIndex,
 		CreatedAt:        now,
 		Deduplicated:     false,
+		EphemeralTTLSec:  msg.EphemeralTTLSec,
 	}
 
 	if err := h.store.InsertMessage(ctx, storedMsg); err != nil {
@@ -113,7 +117,7 @@ func (h *LedgerHandler) StoreMessageDirect(ctx context.Context, msg *store.Messa
 	}
 
 	gocqlMsgID, _ := gocql.ParseUUID(msgID.String())
-	if err := h.store.InsertDedup(ctx, msg.ConversationID, msg.ClientMsgID, gocqlMsgID, seq); err != nil {
+	if err := h.store.InsertDedup(ctx, msg.ConversationID, msg.ClientMsgID, gocqlMsgID, seq, msg.EphemeralTTLSec); err != nil {
 		// Log error but proceed
 	}
 
@@ -146,6 +150,7 @@ func (h *LedgerHandler) FetchMessages(ctx context.Context, req *chatv1.FetchMess
 			SenderRatchetKey: m.SenderRatchetKey,
 			MessageIndex:     uint32(m.MessageIndex),
 			CreatedAt:        timestamppb.New(m.CreatedAt),
+			EphemeralTtlSec:  m.EphemeralTTLSec,
 		})
 	}
 

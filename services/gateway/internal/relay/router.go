@@ -70,12 +70,13 @@ type HistoryResponseFrame struct {
 }
 
 type HistoryMessageDTO struct {
-	ServerID      string `json:"server_id"`
-	SequenceNum   int64  `json:"sequence_num"`
-	SenderID      string `json:"sender_id"`
-	ClientMsgID   string `json:"client_msg_id"`
-	CiphertextB64 string `json:"ciphertext_base64"`
-	CreatedAtUnix int64  `json:"created_at_unix"`
+	ServerID        string `json:"server_id"`
+	SequenceNum     int64  `json:"sequence_num"`
+	SenderID        string `json:"sender_id"`
+	ClientMsgID     string `json:"client_msg_id"`
+	CiphertextB64   string `json:"ciphertext_base64"`
+	CreatedAtUnix   int64  `json:"created_at_unix"`
+	EphemeralTTLSec int64  `json:"ephemeral_ttl_sec,omitempty"`
 }
 
 // TypingFrame is sent by client when typing state changes.
@@ -244,7 +245,7 @@ func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []by
 	// unreachable, etc.) the sender gets an error instead of a false ACK —
 	// no message should ever be acknowledged unless it's durably stored.
 	conversationID := getConversationID(conn.UserID, frame.ChannelID)
-	stored, err := r.ledger.StoreMessage(ctx, conversationID, conn.UserID, frame.ClientMsgID, ciphertext, nil, uint32(frame.MessageType))
+	stored, err := r.ledger.StoreMessage(ctx, conversationID, conn.UserID, frame.ClientMsgID, ciphertext, nil, uint32(frame.MessageType), frame.EphemeralTTLSec)
 	if err != nil {
 		slog.Error("failed to persist message", "error", err, "sender", conn.UserID, "channel", frame.ChannelID)
 		return r.sendError(conn, "PERSISTENCE_FAILED", "message could not be stored")
@@ -506,12 +507,13 @@ func (r *Router) handleFetchHistory(ctx context.Context, conn *ws.Conn, data []b
 	var dtos []HistoryMessageDTO
 	for _, m := range msgs {
 		dtos = append(dtos, HistoryMessageDTO{
-			ServerID:      m.MessageID,
-			SequenceNum:   m.SequenceNum,
-			SenderID:      m.SenderID,
-			ClientMsgID:   m.ClientMsgID,
-			CiphertextB64: base64.StdEncoding.EncodeToString(m.EncryptedPayload),
-			CreatedAtUnix: m.CreatedAt.Unix(),
+			ServerID:        m.MessageID,
+			SequenceNum:     m.SequenceNum,
+			SenderID:        m.SenderID,
+			ClientMsgID:     m.ClientMsgID,
+			CiphertextB64:   base64.StdEncoding.EncodeToString(m.EncryptedPayload),
+			CreatedAtUnix:   m.CreatedAt.Unix(),
+			EphemeralTTLSec: m.EphemeralTTLSec,
 		})
 	}
 
