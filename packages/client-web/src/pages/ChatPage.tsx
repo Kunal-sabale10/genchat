@@ -20,6 +20,7 @@ import { VoiceNotePlayer } from '@/components/VoiceNotePlayer'
 import { VoiceRecorderBar } from '@/components/VoiceRecorderBar'
 import { ReactionPicker } from '@/components/ReactionPicker'
 import { QuotedReplyBanner } from '@/components/QuotedReplyBanner'
+import { EditingBanner } from '@/components/EditingBanner'
 import { QuotedReply } from '@/lib/local-storage-db'
 import { VoiceRecordingResult } from '@/lib/voice-recorder'
 import { SafetyNumberManager, TrustRecord } from '@/lib/safety-numbers'
@@ -68,7 +69,8 @@ import {
   Smile,
   CornerUpLeft,
   Trash2,
-  Ban
+  Ban,
+  Pencil
 } from 'lucide-react'
 
 interface MessageItem {
@@ -90,6 +92,8 @@ interface MessageItem {
   deletedAt?: number
   deletedBy?: string
   deleteScope?: 'everyone' | 'me'
+  isEdited?: boolean
+  editedAt?: number
 }
 
 interface ConversationItem {
@@ -218,6 +222,7 @@ export default function ChatPage() {
   const [activeReactionPickerMsgId, setActiveReactionPickerMsgId] = useState<string | null>(null)
   const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null)
   const [deleteTargetMessage, setDeleteTargetMessage] = useState<MessageItem | null>(null)
+  const [editingMessage, setEditingMessage] = useState<MessageItem | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const photoInputRef = useRef<HTMLInputElement>(null)
@@ -291,6 +296,8 @@ export default function ChatPage() {
 
       // Load encrypted messages for current channel and decrypt them
       if (activeChannelId) {
+        setReplyingTo(null)
+        setEditingMessage(null)
         const cachedMsgs = await LocalEncryptedCache.loadMessages(activeChannelId)
         if (cachedMsgs && cachedMsgs.length > 0) {
           const now = Date.now()
@@ -650,6 +657,44 @@ export default function ChatPage() {
       }
     })
 
+    // Handle incoming message editing
+    const unsubEditMessage = gateway.onEditMessage(async (ev) => {
+      console.log('[ChatPage] EditMessage received:', ev)
+      let plaintext = ev.ciphertext
+      try {
+        if (ev.ciphertext.includes('"protocol":"genchat-mls-v1"') || ev.channelId.startsWith('chan_')) {
+          plaintext = await MlsGroupManager.decryptGroupMessage(ev.channelId, ev.ciphertext)
+        } else {
+          const myUserId = userIdRef.current || user?.userId || ''
+          const effectiveChannelId = ev.channelId.startsWith('dm_')
+            ? ev.channelId.replace('dm_', '').replace(myUserId, '').replace('_', '') || ev.senderId
+            : (ev.senderId && ev.senderId !== myUserId ? ev.senderId : ev.channelId)
+          const dec = await E2eeService.decrypt(ev.ciphertext, effectiveChannelId, myUserId)
+          plaintext = dec.text
+        }
+      } catch (err) {
+        console.warn('[ChatPage] Failed to decrypt edited message:', err)
+      }
+
+      const editedAtMs = ev.serverTime ? ev.serverTime * 1000 : Date.now()
+
+      setMessages((prev) =>
+        prev.map((m) => {
+          const mKey = m.clientMsgId || m.id
+          if (mKey === ev.messageId || m.id === ev.messageId) {
+            return {
+              ...m,
+              text: plaintext,
+              isEdited: true,
+              editedAt: editedAtMs,
+            }
+          }
+          return m
+        })
+      )
+      localDb.updateMessageText(ev.messageId, ev.channelId, plaintext, editedAtMs)
+    })
+
     gateway.connect()
 
     // Handle incoming messages (push & history) and MLS group commits
@@ -847,6 +892,7 @@ export default function ChatPage() {
       unsubEphemeral()
       unsubReaction()
       unsubDeleteMessage()
+      unsubEditMessage()
       unsubMessages()
       gateway.disconnect()
     }
@@ -1082,6 +1128,51 @@ export default function ChatPage() {
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
     gatewayRef.current?.sendTyping(activeChannelId, false)
     lastTypingSentRef.current = 0
+
+    // --- Case 0: Editing an Existing Message ---
+    if (editingMessage) {
+      const msgToEdit = editingMessage
+      const newText = inputText.trim()
+      setEditingMessage(null)
+      setInputText('')
+
+      if (!newText) return
+
+      const editedAt = Date.now()
+      const msgKey = msgToEdit.clientMsgId || msgToEdit.id
+
+      // Optimistically update message
+      setMessages((prev) =>
+        prev.map((m) => {
+          const mKey = m.clientMsgId || m.id
+          if (mKey === msgKey) {
+            return {
+              ...m,
+              text: newText,
+              isEdited: true,
+              editedAt,
+            }
+          }
+          return m
+        })
+      )
+
+      await localDb.updateMessageText(msgKey, activeChannelId, newText, editedAt)
+
+      let wireCiphertext = newText
+      try {
+        if (activeChannelId.startsWith('chan_')) {
+          wireCiphertext = await MlsGroupManager.encryptGroupMessage(activeChannelId, user.userId, newText)
+        } else {
+          wireCiphertext = await E2eeService.encrypt(newText, activeChannelId, user.userId)
+        }
+      } catch (err) {
+        console.warn('[E2EE] Edit encryption fallback:', err)
+      }
+
+      gatewayRef.current?.sendEditMessage(activeChannelId, msgKey, wireCiphertext)
+      return
+    }
 
     const currentReply = replyingTo
     setReplyingTo(null)
@@ -2394,6 +2485,23 @@ export default function ChatPage() {
                         >
                           <CornerUpLeft className="h-3.5 w-3.5" />
                         </button>
+
+                        {isMe && !m.attachment?.isVoiceNote && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setEditingMessage(m)
+                              setReplyingTo(null)
+                              setInputText(m.text || '')
+                              chatInputRef.current?.focus()
+                            }}
+                            className="p-1 text-slate-400 hover:text-amber-400 hover:bg-slate-800 rounded-full transition"
+                            title="Edit message"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                       </>
                     )}
 
@@ -2572,6 +2680,14 @@ export default function ChatPage() {
 
                   <div className="flex items-center space-x-1.5 mt-1 px-1 text-[10px] text-slate-500">
                     <span>{m.timestamp}</span>
+                    {m.isEdited && (
+                      <span
+                        className="text-[9px] text-amber-400/90 font-medium italic cursor-help"
+                        title={m.editedAt ? `Edited at ${new Date(m.editedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Edited'}
+                      >
+                        (edited)
+                      </span>
+                    )}
                     {m.isEncrypted && (
                       <span title="End-to-End Encrypted">
                         <Lock className="h-2.5 w-2.5 text-emerald-400" />
@@ -2629,6 +2745,17 @@ export default function ChatPage() {
             isUploading={isUploading}
             onRemove={() => setStagedFile(null)}
           />
+
+          {/* Editing Banner */}
+          {editingMessage && (
+            <EditingBanner
+              originalText={editingMessage.text || ''}
+              onCancel={() => {
+                setEditingMessage(null)
+                setInputText('')
+              }}
+            />
+          )}
 
           {/* Quoted Reply Banner */}
           {replyingTo && (

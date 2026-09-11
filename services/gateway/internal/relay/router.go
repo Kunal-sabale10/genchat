@@ -98,6 +98,33 @@ type AckDeleteFrame struct {
 	DeleteScope string `json:"delete_scope"`
 }
 
+// EditMessageInboundFrame is sent by a client to edit a previously sent message.
+type EditMessageInboundFrame struct {
+	Action        string `json:"action"`                  // "edit_message"
+	ChannelID     string `json:"channel_id"`              // channel ID or recipient user ID
+	MessageID     string `json:"message_id"`              // target message ID
+	ClientMsgID   string `json:"client_msg_id,omitempty"` // alias for target message ID
+	CiphertextB64 string `json:"ciphertext_base64"`      // updated encrypted ciphertext
+}
+
+// EditMessagePushFrame is relayed to conversation participants when a message is edited.
+type EditMessagePushFrame struct {
+	Type          string `json:"type"`              // "message_edited"
+	ChannelID     string `json:"channel_id"`
+	MessageID     string `json:"message_id"`
+	SenderID      string `json:"sender_id"`
+	CiphertextB64 string `json:"ciphertext_base64"`
+	ServerTime    int64  `json:"server_time"`
+}
+
+// AckEditFrame is sent back to the requester confirming edit relay.
+type AckEditFrame struct {
+	Type       string `json:"type"`       // "ack_edit"
+	MessageID  string `json:"message_id"`
+	ChannelID  string `json:"channel_id"`
+	ServerTime int64  `json:"server_time"`
+}
+
 // ErrorFrame is sent when a frame cannot be processed.
 type ErrorFrame struct {
 	Type    string `json:"type"`
@@ -257,6 +284,8 @@ func (r *Router) Handle(ctx context.Context, conn *ws.Conn, data []byte) error {
 		return r.handleReaction(ctx, conn, data)
 	case "delete_message":
 		return r.handleDeleteMessage(ctx, conn, data)
+	case "edit_message":
+		return r.handleEditMessage(ctx, conn, data)
 	case "group_commit", "mls_commit":
 		return r.handleGroupCommit(ctx, conn, data)
 	case "fetch_history":
@@ -1013,6 +1042,80 @@ func (r *Router) handleDeleteMessage(ctx context.Context, conn *ws.Conn, data []
 		"channel", frame.ChannelID,
 		"message_id", messageID,
 		"scope", scope,
+		"sender", conn.UserID,
+	)
+	return nil
+}
+
+func (r *Router) handleEditMessage(ctx context.Context, conn *ws.Conn, data []byte) error {
+	var frame EditMessageInboundFrame
+	if err := json.Unmarshal(data, &frame); err != nil {
+		return r.sendError(conn, "INVALID_FRAME", "could not parse edit_message frame")
+	}
+	messageID := frame.MessageID
+	if messageID == "" {
+		messageID = frame.ClientMsgID
+	}
+	if frame.ChannelID == "" || messageID == "" || frame.CiphertextB64 == "" {
+		return r.sendError(conn, "MISSING_FIELDS", "channel_id, message_id, and ciphertext_base64 are required")
+	}
+
+	serverTime := time.Now().Unix()
+
+	// 1. Broadcast push frame to conversation participants
+	pushPayload, err := json.Marshal(EditMessagePushFrame{
+		Type:          "message_edited",
+		ChannelID:     frame.ChannelID,
+		MessageID:     messageID,
+		SenderID:      conn.UserID,
+		CiphertextB64: frame.CiphertextB64,
+		ServerTime:    serverTime,
+	})
+	if err != nil {
+		return err
+	}
+
+	if strings.HasPrefix(frame.ChannelID, "chan_") {
+		cleanID := strings.TrimPrefix(frame.ChannelID, "chan_")
+		var memberIDs []string
+		if r.channelClient != nil {
+			resp, err := r.channelClient.GetChannelMembers(ctx, &chatv1.GetChannelMembersRequest{
+				ChannelId: cleanID,
+			})
+			if err == nil {
+				for _, m := range resp.GetMembers() {
+					memberIDs = append(memberIDs, m.GetUserId())
+				}
+			}
+		}
+
+		if len(memberIDs) > 0 {
+			for _, uid := range memberIDs {
+				r.hub.SendToUser(uid, pushPayload)
+			}
+		} else if frame.ChannelID == "chan_public" {
+			r.hub.BroadcastAll("", pushPayload)
+		}
+	} else {
+		// 1:1 direct message: send to peer and echo back to sender
+		r.hub.SendToUser(frame.ChannelID, pushPayload)
+		if frame.ChannelID != conn.UserID {
+			r.hub.SendToUser(conn.UserID, pushPayload)
+		}
+	}
+
+	// 2. ACK the editor
+	ackPayload, _ := json.Marshal(AckEditFrame{
+		Type:       "ack_edit",
+		MessageID:  messageID,
+		ChannelID:  frame.ChannelID,
+		ServerTime: serverTime,
+	})
+	r.hub.SendToUser(conn.UserID, ackPayload)
+
+	slog.Info("message edit processed",
+		"channel", frame.ChannelID,
+		"message_id", messageID,
 		"sender", conn.UserID,
 	)
 	return nil

@@ -1,5 +1,5 @@
 export interface GatewayEnvelope {
-  type: 'message' | 'ack' | 'presence' | 'heartbeat' | 'push' | 'error' | 'pong' | 'typing' | 'read_receipt' | 'group_commit' | 'ephemeral_setting' | 'reaction' | 'message_deleted' | 'ack_delete'
+  type: 'message' | 'ack' | 'presence' | 'heartbeat' | 'push' | 'error' | 'pong' | 'typing' | 'read_receipt' | 'group_commit' | 'ephemeral_setting' | 'reaction' | 'message_deleted' | 'ack_delete' | 'message_edited' | 'ack_edit'
   channelId?: string
   senderId?: string
   clientMsgId?: string
@@ -15,6 +15,14 @@ export interface DeleteMessageEvent {
   messageId: string
   senderId: string
   deleteScope: 'everyone' | 'me'
+  serverTime?: number
+}
+
+export interface EditMessageEvent {
+  channelId: string
+  messageId: string
+  senderId: string
+  ciphertext: string
   serverTime?: number
 }
 
@@ -78,6 +86,7 @@ export type EphemeralSettingHandler = (event: EphemeralSettingEvent) => void
 export type ReactionHandler = (event: ReactionEvent) => void
 export type CallSignalHandler = (event: CallSignalEvent) => void
 export type DeleteMessageHandler = (event: DeleteMessageEvent) => void
+export type EditMessageHandler = (event: EditMessageEvent) => void
 
 export class GatewayClient {
   private ws: WebSocket | null = null
@@ -92,6 +101,7 @@ export class GatewayClient {
   private reactionHandlers: Set<ReactionHandler> = new Set()
   private callSignalHandlers: Set<CallSignalHandler> = new Set()
   private deleteMessageHandlers: Set<DeleteMessageHandler> = new Set()
+  private editMessageHandlers: Set<EditMessageHandler> = new Set()
   private pendingAcks: Map<string, (seq: number) => void> = new Map()
   private pingTimer: ReturnType<typeof setInterval> | null = null
   private isExplicitDisconnect = false
@@ -262,6 +272,21 @@ export class GatewayClient {
               messageId: raw.message_id || raw.messageId,
               senderId: raw.sender_id || raw.senderId,
               deleteScope: raw.delete_scope || raw.deleteScope || 'everyone',
+              serverTime: raw.server_time || raw.serverTime || Date.now(),
+            })
+          )
+          return
+        }
+
+        // 5e. Handle Message Edit
+        if (raw.type === 'message_edited') {
+          console.log('[Gateway] Received message_edited for', raw.message_id, 'in channel:', raw.channel_id, 'by:', raw.sender_id)
+          this.editMessageHandlers.forEach((h) =>
+            h({
+              channelId: raw.channel_id || raw.channelId,
+              messageId: raw.message_id || raw.messageId,
+              senderId: raw.sender_id || raw.senderId,
+              ciphertext: raw.ciphertext_base64 || raw.ciphertext || '',
               serverTime: raw.server_time || raw.serverTime || Date.now(),
             })
           )
@@ -488,6 +513,26 @@ export class GatewayClient {
       delete_scope: scope,
     }
     console.log('[Gateway] Dispatched delete_message:', messageId, 'in:', channelId, 'scope:', scope)
+    this.ws.send(JSON.stringify(frame))
+  }
+
+  public onEditMessage(handler: EditMessageHandler): () => void {
+    this.editMessageHandlers.add(handler)
+    return () => this.editMessageHandlers.delete(handler)
+  }
+
+  public sendEditMessage(channelId: string, messageId: string, ciphertextB64: string): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn('[Gateway] Cannot send edit_message, WebSocket not open')
+      return
+    }
+    const frame = {
+      action: 'edit_message',
+      channel_id: channelId,
+      message_id: messageId,
+      ciphertext_base64: ciphertextB64,
+    }
+    console.log('[Gateway] Dispatched edit_message:', messageId, 'in:', channelId)
     this.ws.send(JSON.stringify(frame))
   }
 

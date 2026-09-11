@@ -189,6 +189,9 @@ jobs:
       - name: Run Message Revocation & Deletion Verification
         run: node tests/integration/test_message_deletion.mjs
 
+      - name: Run Cryptographic Message Editing Verification
+        run: node tests/integration/test_message_editing.mjs
+
       - name: Run Phase 2 Full Features & Anti-Spoofing Interceptor Verification
         run: node tests/integration/test_phase2_full_features.mjs
 

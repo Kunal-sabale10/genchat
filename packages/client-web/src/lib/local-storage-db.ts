@@ -30,6 +30,8 @@ export interface StoredMessage {
   deletedAt?: number
   deletedBy?: string
   deleteScope?: 'everyone' | 'me'
+  isEdited?: boolean
+  editedAt?: number
 }
 
 export interface StoredConversation {
@@ -270,6 +272,75 @@ export class LocalStorageDb {
               delete m.attachment
               delete m.replyTo
               delete m.reactions
+              modified = true
+            }
+          }
+          if (modified) {
+            localStorage.setItem(key, JSON.stringify(msgs))
+          }
+        }
+      }
+
+      if (channelId) {
+        updateKey(`genchat_msgs_${channelId}`)
+      } else {
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i)
+          if (key && key.startsWith('genchat_msgs_')) {
+            updateKey(key)
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Updates the plaintext content of an edited message and sets isEdited flag with editedAt timestamp.
+   */
+  public async updateMessageText(
+    idOrClientMsgId: string,
+    channelId: string,
+    newText: string,
+    editedAt: number
+  ): Promise<void> {
+    const db = await this.dbPromise
+    if (db) {
+      await new Promise<void>((resolve) => {
+        try {
+          const tx = db.transaction(STORE_MESSAGES, 'readwrite')
+          const store = tx.objectStore(STORE_MESSAGES)
+          const req = store.get(idOrClientMsgId)
+          req.onsuccess = () => {
+            const msg: StoredMessage = req.result
+            if (msg) {
+              msg.text = newText
+              msg.isEdited = true
+              msg.editedAt = editedAt
+              store.put(msg)
+            }
+            resolve()
+          }
+          req.onerror = () => resolve()
+        } catch {
+          resolve()
+        }
+      })
+    }
+
+    // Also update localStorage fallback
+    try {
+      const updateKey = (key: string) => {
+        const raw = localStorage.getItem(key)
+        if (raw) {
+          const msgs: StoredMessage[] = JSON.parse(raw)
+          let modified = false
+          for (const m of msgs) {
+            if (m.id === idOrClientMsgId || m.clientMsgId === idOrClientMsgId) {
+              m.text = newText
+              m.isEdited = true
+              m.editedAt = editedAt
               modified = true
             }
           }

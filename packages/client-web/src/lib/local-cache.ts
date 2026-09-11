@@ -236,4 +236,16 @@ export class LocalEncryptedCache {
   public static async deleteMessage(idOrClientMsgId: string, channelId?: string): Promise<void> {
     return localDb.deleteMessage(idOrClientMsgId, channelId)
   }
+
+  /**
+   * Updates an edited message in offline storage.
+   */
+  public static async updateMessageText(
+    idOrClientMsgId: string,
+    channelId: string,
+    newText: string,
+    editedAt: number = Date.now()
+  ): Promise<void> {
+    return localDb.updateMessageText(idOrClientMsgId, channelId, newText, editedAt)
+  }
 }
