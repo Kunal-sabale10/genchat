@@ -177,6 +177,9 @@ jobs:
       - name: Run Cryptographic Safety Numbers & Trust Verification
         run: node tests/integration/test_safety_numbers.mjs
 
+      - name: Run Encrypted Voice Notes & Waveform Player Verification
+        run: node tests/integration/test_voice_notes.mjs
+
       - name: Run Phase 2 Full Features & Anti-Spoofing Interceptor Verification
         run: node tests/integration/test_phase2_full_features.mjs
 

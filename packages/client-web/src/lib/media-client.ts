@@ -16,6 +16,17 @@ export interface AttachmentMetadata {
   originalSize: number;
   fileName?: string;
   caption?: string;
+  isVoiceNote?: boolean;
+  durationSec?: number;
+  waveform?: number[];
+}
+
+export interface UploadAttachmentOptions {
+  caption?: string;
+  fileName?: string;
+  isVoiceNote?: boolean;
+  durationSec?: number;
+  waveform?: number[];
 }
 
 export class MediaClient {
@@ -30,9 +41,14 @@ export class MediaClient {
   }
 
   public async uploadEncryptedAttachment(
-    file: File,
-    caption?: string
+    file: File | Blob,
+    optionsOrCaption?: UploadAttachmentOptions | string
   ): Promise<AttachmentMetadata> {
+    const options: UploadAttachmentOptions =
+      typeof optionsOrCaption === 'string'
+        ? { caption: optionsOrCaption }
+        : optionsOrCaption || {};
+
     // 1. Client-side encrypt using WebCrypto AES-256-GCM
     const encrypted = await MediaCryptoService.encryptFile(file);
 
@@ -73,6 +89,10 @@ export class MediaClient {
       downloadUrl = await this.getDownloadUrl(blobId);
     }
 
+    const resolvedFileName =
+      options.fileName ||
+      (file instanceof File ? file.name : options.isVoiceNote ? 'Voice message.webm' : 'attachment');
+
     return {
       blobId,
       downloadUrl: downloadUrl || '',
@@ -80,8 +100,11 @@ export class MediaClient {
       ivHex: encrypted.ivHex,
       mimeType: encrypted.mimeType || file.type || 'application/octet-stream',
       originalSize: encrypted.originalSize,
-      fileName: file.name,
-      caption,
+      fileName: resolvedFileName,
+      caption: options.caption,
+      isVoiceNote: options.isVoiceNote,
+      durationSec: options.durationSec,
+      waveform: options.waveform,
     };
   }
 

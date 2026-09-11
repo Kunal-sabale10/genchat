@@ -16,6 +16,9 @@ import { GroupMembersModal } from '@/components/GroupMembersModal'
 import { DisappearingTimerBadge } from '@/components/DisappearingTimerBadge'
 import { EphemeralSettingsModal } from '@/components/EphemeralSettingsModal'
 import { SafetyNumberModal } from '@/components/SafetyNumberModal'
+import { VoiceNotePlayer } from '@/components/VoiceNotePlayer'
+import { VoiceRecorderBar } from '@/components/VoiceRecorderBar'
+import { VoiceRecordingResult } from '@/lib/voice-recorder'
 import { SafetyNumberManager, TrustRecord } from '@/lib/safety-numbers'
 import { WebRtcManager, fetchDynamicIceServers } from '@/lib/webrtc-manager'
 import { AuthService } from '@/lib/grpc-client'
@@ -53,7 +56,8 @@ import {
   Maximize2,
   Sparkles,
   Timer,
-  AlertTriangle
+  AlertTriangle,
+  Mic
 } from 'lucide-react'
 
 interface MessageItem {
@@ -170,6 +174,7 @@ export default function ChatPage() {
   const [showAttachmentMenu, setShowAttachmentMenu] = useState(false)
   const [viewerImage, setViewerImage] = useState<{ url: string; fileName?: string; fileSize?: number } | null>(null)
   const [isDraggingFile, setIsDraggingFile] = useState(false)
+  const [isRecordingVoice, setIsRecordingVoice] = useState(false)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const photoInputRef = useRef<HTMLInputElement>(null)
@@ -942,6 +947,83 @@ export default function ChatPage() {
         )
         localDb.updateMessageStatus(clientMsgId, 'sent')
       }, 300)
+    }
+  }
+
+  // --- 5B. Encrypted Voice Note Dispatch ---
+  const handleSendVoiceNote = async (result: VoiceRecordingResult) => {
+    if (!user) return
+    setIsUploading(true)
+    const clientMsgId = `cli_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+    const ttlSec = currentChannelTtl
+    const expiresAt = ttlSec > 0 ? Date.now() + (ttlSec * 1000) : undefined
+
+    try {
+      const attachment = await mediaClientRef.current.uploadEncryptedAttachment(result.blob, {
+        isVoiceNote: true,
+        durationSec: result.durationSec,
+        waveform: result.waveform,
+        fileName: 'Voice message.webm',
+      })
+      const localPreviewUrl = URL.createObjectURL(result.blob)
+
+      const optimisticMsg: MessageItem = {
+        id: clientMsgId,
+        clientMsgId,
+        channelId: activeChannelId,
+        senderId: user.userId,
+        attachment: {
+          ...attachment,
+          decryptedUrl: localPreviewUrl,
+          isVoiceNote: true,
+          durationSec: result.durationSec,
+          waveform: result.waveform,
+        },
+        status: 'pending',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        isEncrypted: true,
+        ephemeralTtlSec: ttlSec > 0 ? ttlSec : undefined,
+        expiresAt,
+      }
+
+      setMessages((prev) => [...prev, optimisticMsg])
+      localDb.saveMessage({ ...optimisticMsg, createdAt: Date.now() })
+
+      // Encrypt attachment metadata envelope
+      const metaJson = JSON.stringify({
+        ...attachment,
+        isVoiceNote: true,
+        durationSec: result.durationSec,
+        waveform: result.waveform,
+      })
+
+      let wireCiphertext = metaJson
+      if (activeChannelId.startsWith('chan_')) {
+        wireCiphertext = await MlsGroupManager.encryptGroupMessage(activeChannelId, user.userId, metaJson)
+      } else {
+        wireCiphertext = await E2eeService.encrypt(metaJson, activeChannelId, user.userId)
+      }
+
+      if (gatewayRef.current) {
+        await gatewayRef.current.sendEnvelope({
+          type: 'message',
+          channelId: activeChannelId,
+          senderId: user.userId,
+          clientMsgId,
+          ciphertext: wireCiphertext,
+          ephemeralTtlSec: ttlSec > 0 ? ttlSec : undefined,
+        })
+
+        setMessages((prev) =>
+          prev.map((m) => (m.clientMsgId === clientMsgId ? { ...m, status: 'sent' } : m))
+        )
+        localDb.updateMessageStatus(clientMsgId, 'sent')
+      }
+    } catch (err) {
+      console.error('[VoiceNote] Upload & dispatch failed:', err)
+    } finally {
+      setIsUploading(false)
+      setIsRecordingVoice(false)
     }
   }
 
@@ -1757,7 +1839,15 @@ export default function ChatPage() {
 
                     {m.attachment && (
                       <div className="space-y-2">
-                        {m.attachment.mimeType.startsWith('image/') ? (
+                        {m.attachment.isVoiceNote || m.attachment.mimeType.startsWith('audio/') ? (
+                          <div className="mt-1">
+                            <VoiceNotePlayer
+                              attachment={m.attachment}
+                              isMe={isMe}
+                              onRenewDownloadUrl={(blobId) => mediaClientRef.current.getDownloadUrl(blobId)}
+                            />
+                          </div>
+                        ) : m.attachment.mimeType.startsWith('image/') ? (
                           m.attachment.decryptedUrl ? (
                             <div
                               onClick={() =>
@@ -1797,15 +1887,17 @@ export default function ChatPage() {
                           </div>
                         )}
 
-                        <div className="flex items-center justify-between text-[10px] opacity-75">
-                          <span className="truncate max-w-[180px]">
-                            {m.attachment.fileName || m.attachment.blobId}
-                          </span>
-                          <span className="flex items-center space-x-1">
-                            <Lock className="h-2.5 w-2.5" />
-                            <span>{(m.attachment.originalSize / 1024).toFixed(1)} KB</span>
-                          </span>
-                        </div>
+                        {!m.attachment.isVoiceNote && (
+                          <div className="flex items-center justify-between text-[10px] opacity-75">
+                            <span className="truncate max-w-[180px]">
+                              {m.attachment.fileName || m.attachment.blobId}
+                            </span>
+                            <span className="flex items-center space-x-1">
+                              <Lock className="h-2.5 w-2.5" />
+                              <span>{(m.attachment.originalSize / 1024).toFixed(1)} KB</span>
+                            </span>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1893,110 +1985,128 @@ export default function ChatPage() {
             </div>
           )}
 
-          <form onSubmit={handleSendMessage} className="flex items-center space-x-2">
-            {/* Hidden File Inputs */}
-            <input
-              type="file"
-              ref={photoInputRef}
-              onChange={handleSelectFile}
-              className="hidden"
-              accept="image/*,video/*"
+          {isRecordingVoice ? (
+            <VoiceRecorderBar
+              onSend={handleSendVoiceNote}
+              onCancel={() => setIsRecordingVoice(false)}
+              isUploading={isUploading}
             />
-            <input
-              type="file"
-              ref={docInputRef}
-              onChange={handleSelectFile}
-              className="hidden"
-              accept="*/*"
-            />
+          ) : (
+            <form onSubmit={handleSendMessage} className="flex items-center space-x-2">
+              {/* Hidden File Inputs */}
+              <input
+                type="file"
+                ref={photoInputRef}
+                onChange={handleSelectFile}
+                className="hidden"
+                accept="image/*,video/*"
+              />
+              <input
+                type="file"
+                ref={docInputRef}
+                onChange={handleSelectFile}
+                className="hidden"
+                accept="*/*"
+              />
 
-            {/* Attachment Plus Button & Menu */}
-            <div className="relative" ref={attachmentMenuRef}>
+              {/* Attachment Plus Button & Menu */}
+              <div className="relative" ref={attachmentMenuRef}>
+                <button
+                  type="button"
+                  disabled={isUploading}
+                  onClick={() => setShowAttachmentMenu((prev) => !prev)}
+                  className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-800 bg-slate-900 text-slate-400 hover:text-indigo-400 hover:border-slate-700 disabled:opacity-50 transition shrink-0"
+                  title="Attach photo, camera snapshot, or document"
+                >
+                  {isUploading ? (
+                    <Loader2 className="h-5 w-5 animate-spin text-indigo-400" />
+                  ) : (
+                    <Plus className="h-5 w-5" />
+                  )}
+                </button>
+
+                {showAttachmentMenu && (
+                  <div className="absolute bottom-14 left-0 z-40 w-52 rounded-2xl border border-slate-800 bg-slate-900/95 p-1.5 shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-2 duration-150">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false)
+                        setShowCameraModal(true)
+                      }}
+                      className="flex items-center space-x-2.5 w-full rounded-xl px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800/80 hover:text-white transition"
+                    >
+                      <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-500/20 text-indigo-400">
+                        <Camera className="h-4 w-4" />
+                      </div>
+                      <span>Take Photo</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false)
+                        photoInputRef.current?.click()
+                      }}
+                      className="flex items-center space-x-2.5 w-full rounded-xl px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800/80 hover:text-white transition"
+                    >
+                      <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-purple-500/20 text-purple-400">
+                        <ImageIcon className="h-4 w-4" />
+                      </div>
+                      <span>Photos & Videos</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAttachmentMenu(false)
+                        docInputRef.current?.click()
+                      }}
+                      className="flex items-center space-x-2.5 w-full rounded-xl px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800/80 hover:text-white transition"
+                    >
+                      <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/20 text-emerald-400">
+                        <FolderOpen className="h-4 w-4" />
+                      </div>
+                      <span>Browse Documents</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <input
+                ref={chatInputRef}
+                type="text"
+                value={inputText}
+                onChange={handleInputChange}
+                placeholder={
+                  stagedFile
+                    ? `Add a caption for ${stagedFile.name}...`
+                    : activeConversation?.isDirect
+                    ? `Message @${activeConversation.name} (E2EE encrypted)...`
+                    : `Message #${activeConversation?.name || 'channel'}...`
+                }
+                className="flex-1 rounded-xl bg-slate-900 border border-slate-800 px-4 py-3 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
+              />
+
               <button
                 type="button"
+                onClick={() => setIsRecordingVoice(true)}
                 disabled={isUploading}
-                onClick={() => setShowAttachmentMenu((prev) => !prev)}
-                className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-800 bg-slate-900 text-slate-400 hover:text-indigo-400 hover:border-slate-700 disabled:opacity-50 transition shrink-0"
-                title="Attach photo, camera snapshot, or document"
+                className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-800 bg-slate-900 text-slate-400 hover:text-indigo-400 hover:border-slate-700 disabled:opacity-50 transition shrink-0 shadow-sm"
+                title="Record encrypted voice note"
               >
-                {isUploading ? (
-                  <Loader2 className="h-5 w-5 animate-spin text-indigo-400" />
-                ) : (
-                  <Plus className="h-5 w-5" />
-                )}
+                <Mic className="h-5 w-5" />
               </button>
 
-              {showAttachmentMenu && (
-                <div className="absolute bottom-14 left-0 z-40 w-52 rounded-2xl border border-slate-800 bg-slate-900/95 p-1.5 shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-2 duration-150">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAttachmentMenu(false)
-                      setShowCameraModal(true)
-                    }}
-                    className="flex items-center space-x-2.5 w-full rounded-xl px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800/80 hover:text-white transition"
-                  >
-                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-500/20 text-indigo-400">
-                      <Camera className="h-4 w-4" />
-                    </div>
-                    <span>Take Photo</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAttachmentMenu(false)
-                      photoInputRef.current?.click()
-                    }}
-                    className="flex items-center space-x-2.5 w-full rounded-xl px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800/80 hover:text-white transition"
-                  >
-                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-purple-500/20 text-purple-400">
-                      <ImageIcon className="h-4 w-4" />
-                    </div>
-                    <span>Photos & Videos</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAttachmentMenu(false)
-                      docInputRef.current?.click()
-                    }}
-                    className="flex items-center space-x-2.5 w-full rounded-xl px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800/80 hover:text-white transition"
-                  >
-                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/20 text-emerald-400">
-                      <FolderOpen className="h-4 w-4" />
-                    </div>
-                    <span>Browse Documents</span>
-                  </button>
-                </div>
-              )}
-            </div>
-
-            <input
-              ref={chatInputRef}
-              type="text"
-              value={inputText}
-              onChange={handleInputChange}
-              placeholder={
-                stagedFile
-                  ? `Add a caption for ${stagedFile.name}...`
-                  : activeConversation?.isDirect
-                  ? `Message @${activeConversation.name} (E2EE encrypted)...`
-                  : `Message #${activeConversation?.name || 'channel'}...`
-              }
-              className="flex-1 rounded-xl bg-slate-900 border border-slate-800 px-4 py-3 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
-            />
-
-            <button
-              type="submit"
-              disabled={(!inputText.trim() && !stagedFile) || isUploading}
-              className="flex h-11 w-11 items-center justify-center rounded-xl bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 disabled:hover:bg-indigo-600 transition shrink-0 shadow-lg shadow-indigo-600/20"
-              title="Send message (Enter)"
-            >
-              <Send className="h-5 w-5" />
-            </button>
-          </form>
+              <button
+                type="submit"
+                disabled={(!inputText.trim() && !stagedFile) || isUploading}
+                className="flex h-11 w-11 items-center justify-center rounded-xl bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 disabled:hover:bg-indigo-600 transition shrink-0 shadow-lg shadow-indigo-600/20"
+                title="Send message (Enter)"
+              >
+                <Send className="h-5 w-5" />
+              </button>
+            </form>
+          )}
         </div>
           </>
         )}

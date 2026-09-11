@@ -10,7 +10,7 @@ export class MediaCryptoService {
   /**
    * Generates an ephemeral AES-256-GCM key and encrypts raw file bytes
    */
-  public static async encryptFile(file: File): Promise<EncryptedMediaPayload> {
+  public static async encryptFile(file: File | Blob): Promise<EncryptedMediaPayload> {
     const key = await window.crypto.subtle.generateKey(
       { name: 'AES-GCM', length: 256 },
       true,
@@ -38,7 +38,7 @@ export class MediaCryptoService {
       ciphertextBlob: new Blob([encryptedBuffer], { type: 'application/octet-stream' }),
       encryptionKeyHex: keyHex,
       ivHex,
-      mimeType: file.type,
+      mimeType: file.type || 'application/octet-stream',
       originalSize: file.size,
     };
   }
