@@ -192,6 +192,9 @@ jobs:
       - name: Run Cryptographic Message Editing Verification
         run: node tests/integration/test_message_editing.mjs
 
+      - name: Run Cryptographic Pinned Messages & Quick-Jump Verification
+        run: node tests/integration/test_pinned_messages.mjs
+
       - name: Run Phase 2 Full Features & Anti-Spoofing Interceptor Verification
         run: node tests/integration/test_phase2_full_features.mjs
 

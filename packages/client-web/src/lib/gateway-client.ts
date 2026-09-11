@@ -1,5 +1,5 @@
 export interface GatewayEnvelope {
-  type: 'message' | 'ack' | 'presence' | 'heartbeat' | 'push' | 'error' | 'pong' | 'typing' | 'read_receipt' | 'group_commit' | 'ephemeral_setting' | 'reaction' | 'message_deleted' | 'ack_delete' | 'message_edited' | 'ack_edit'
+  type: 'message' | 'ack' | 'presence' | 'heartbeat' | 'push' | 'error' | 'pong' | 'typing' | 'read_receipt' | 'group_commit' | 'ephemeral_setting' | 'reaction' | 'message_deleted' | 'ack_delete' | 'message_edited' | 'ack_edit' | 'message_pinned' | 'ack_pin'
   channelId?: string
   senderId?: string
   clientMsgId?: string
@@ -23,6 +23,14 @@ export interface EditMessageEvent {
   messageId: string
   senderId: string
   ciphertext: string
+  serverTime?: number
+}
+
+export interface PinMessageEvent {
+  channelId: string
+  messageId: string
+  senderId: string
+  op: 'pin' | 'unpin'
   serverTime?: number
 }
 
@@ -87,6 +95,7 @@ export type ReactionHandler = (event: ReactionEvent) => void
 export type CallSignalHandler = (event: CallSignalEvent) => void
 export type DeleteMessageHandler = (event: DeleteMessageEvent) => void
 export type EditMessageHandler = (event: EditMessageEvent) => void
+export type PinMessageHandler = (event: PinMessageEvent) => void
 
 export class GatewayClient {
   private ws: WebSocket | null = null
@@ -102,6 +111,7 @@ export class GatewayClient {
   private callSignalHandlers: Set<CallSignalHandler> = new Set()
   private deleteMessageHandlers: Set<DeleteMessageHandler> = new Set()
   private editMessageHandlers: Set<EditMessageHandler> = new Set()
+  private pinMessageHandlers: Set<PinMessageHandler> = new Set()
   private pendingAcks: Map<string, (seq: number) => void> = new Map()
   private pingTimer: ReturnType<typeof setInterval> | null = null
   private isExplicitDisconnect = false
@@ -287,6 +297,21 @@ export class GatewayClient {
               messageId: raw.message_id || raw.messageId,
               senderId: raw.sender_id || raw.senderId,
               ciphertext: raw.ciphertext_base64 || raw.ciphertext || '',
+              serverTime: raw.server_time || raw.serverTime || Date.now(),
+            })
+          )
+          return
+        }
+
+        // 5f. Handle Message Pin
+        if (raw.type === 'message_pinned') {
+          console.log('[Gateway] Received message_pinned for', raw.message_id, 'in channel:', raw.channel_id, 'op:', raw.op, 'by:', raw.sender_id)
+          this.pinMessageHandlers.forEach((h) =>
+            h({
+              channelId: raw.channel_id || raw.channelId,
+              messageId: raw.message_id || raw.messageId,
+              senderId: raw.sender_id || raw.senderId,
+              op: raw.op || 'pin',
               serverTime: raw.server_time || raw.serverTime || Date.now(),
             })
           )
@@ -533,6 +558,26 @@ export class GatewayClient {
       ciphertext_base64: ciphertextB64,
     }
     console.log('[Gateway] Dispatched edit_message:', messageId, 'in:', channelId)
+    this.ws.send(JSON.stringify(frame))
+  }
+
+  public onPinMessage(handler: PinMessageHandler): () => void {
+    this.pinMessageHandlers.add(handler)
+    return () => this.pinMessageHandlers.delete(handler)
+  }
+
+  public sendPinMessage(channelId: string, messageId: string, op: 'pin' | 'unpin' = 'pin'): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn('[Gateway] Cannot send pin_message, WebSocket not open')
+      return
+    }
+    const frame = {
+      action: 'pin_message',
+      channel_id: channelId,
+      message_id: messageId,
+      op,
+    }
+    console.log('[Gateway] Dispatched pin_message:', messageId, 'in:', channelId, 'op:', op)
     this.ws.send(JSON.stringify(frame))
   }
 

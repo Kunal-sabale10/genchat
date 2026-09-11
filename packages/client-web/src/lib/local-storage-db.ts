@@ -32,6 +32,9 @@ export interface StoredMessage {
   deleteScope?: 'everyone' | 'me'
   isEdited?: boolean
   editedAt?: number
+  isPinned?: boolean
+  pinnedAt?: number
+  pinnedBy?: string
 }
 
 export interface StoredConversation {
@@ -363,6 +366,87 @@ export class LocalStorageDb {
     } catch {
       // ignore
     }
+  }
+
+  /**
+   * Updates the pinned status of a message in IndexedDB and localStorage.
+   */
+  public async updateMessagePinned(
+    idOrClientMsgId: string,
+    channelId: string,
+    isPinned: boolean,
+    pinnedBy?: string,
+    pinnedAt?: number
+  ): Promise<void> {
+    const at = pinnedAt || Date.now()
+    const db = await this.dbPromise
+    if (db) {
+      await new Promise<void>((resolve) => {
+        try {
+          const tx = db.transaction(STORE_MESSAGES, 'readwrite')
+          const store = tx.objectStore(STORE_MESSAGES)
+          const req = store.get(idOrClientMsgId)
+          req.onsuccess = () => {
+            const msg: StoredMessage = req.result
+            if (msg) {
+              msg.isPinned = isPinned
+              msg.pinnedAt = isPinned ? at : undefined
+              msg.pinnedBy = isPinned ? pinnedBy : undefined
+              store.put(msg)
+            }
+            resolve()
+          }
+          req.onerror = () => resolve()
+        } catch {
+          resolve()
+        }
+      })
+    }
+
+    // Also update localStorage fallback
+    try {
+      const updateKey = (key: string) => {
+        const raw = localStorage.getItem(key)
+        if (raw) {
+          const msgs: StoredMessage[] = JSON.parse(raw)
+          let modified = false
+          for (const m of msgs) {
+            if (m.id === idOrClientMsgId || m.clientMsgId === idOrClientMsgId) {
+              m.isPinned = isPinned
+              m.pinnedAt = isPinned ? at : undefined
+              m.pinnedBy = isPinned ? pinnedBy : undefined
+              modified = true
+            }
+          }
+          if (modified) {
+            localStorage.setItem(key, JSON.stringify(msgs))
+          }
+        }
+      }
+
+      if (channelId) {
+        updateKey(`genchat_msgs_${channelId}`)
+      } else {
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i)
+          if (key && key.startsWith('genchat_msgs_')) {
+            updateKey(key)
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Retrieves all non-deleted pinned messages for a channel.
+   */
+  public async getPinnedMessages(channelId: string): Promise<StoredMessage[]> {
+    const msgs = await this.getMessagesByChannel(channelId)
+    return msgs
+      .filter((m) => m.isPinned && !m.isDeleted)
+      .sort((a, b) => (b.pinnedAt || 0) - (a.pinnedAt || 0))
   }
 
   /**

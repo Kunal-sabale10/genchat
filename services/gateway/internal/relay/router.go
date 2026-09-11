@@ -125,6 +125,34 @@ type AckEditFrame struct {
 	ServerTime int64  `json:"server_time"`
 }
 
+// PinMessageInboundFrame is sent by a client to pin or unpin a message.
+type PinMessageInboundFrame struct {
+	Action      string `json:"action"`                  // "pin_message"
+	ChannelID   string `json:"channel_id"`              // channel ID or recipient user ID
+	MessageID   string `json:"message_id"`              // target message ID
+	ClientMsgID string `json:"client_msg_id,omitempty"` // alias for target message ID
+	Op          string `json:"op,omitempty"`            // "pin" or "unpin" (defaults to "pin")
+}
+
+// PinMessagePushFrame is relayed to conversation participants when a message is pinned/unpinned.
+type PinMessagePushFrame struct {
+	Type       string `json:"type"`       // "message_pinned"
+	ChannelID  string `json:"channel_id"`
+	MessageID  string `json:"message_id"`
+	SenderID   string `json:"sender_id"`
+	Op         string `json:"op"`         // "pin" or "unpin"
+	ServerTime int64  `json:"server_time"`
+}
+
+// AckPinFrame is sent back to the requester confirming pin relay.
+type AckPinFrame struct {
+	Type       string `json:"type"`       // "ack_pin"
+	MessageID  string `json:"message_id"`
+	ChannelID  string `json:"channel_id"`
+	Op         string `json:"op"`
+	ServerTime int64  `json:"server_time"`
+}
+
 // ErrorFrame is sent when a frame cannot be processed.
 type ErrorFrame struct {
 	Type    string `json:"type"`
@@ -286,6 +314,8 @@ func (r *Router) Handle(ctx context.Context, conn *ws.Conn, data []byte) error {
 		return r.handleDeleteMessage(ctx, conn, data)
 	case "edit_message":
 		return r.handleEditMessage(ctx, conn, data)
+	case "pin_message":
+		return r.handlePinMessage(ctx, conn, data)
 	case "group_commit", "mls_commit":
 		return r.handleGroupCommit(ctx, conn, data)
 	case "fetch_history":
@@ -1116,6 +1146,90 @@ func (r *Router) handleEditMessage(ctx context.Context, conn *ws.Conn, data []by
 	slog.Info("message edit processed",
 		"channel", frame.ChannelID,
 		"message_id", messageID,
+		"sender", conn.UserID,
+	)
+	return nil
+}
+
+func (r *Router) handlePinMessage(ctx context.Context, conn *ws.Conn, data []byte) error {
+	var frame PinMessageInboundFrame
+	if err := json.Unmarshal(data, &frame); err != nil {
+		return r.sendError(conn, "INVALID_FRAME", "could not parse pin_message frame")
+	}
+	messageID := frame.MessageID
+	if messageID == "" {
+		messageID = frame.ClientMsgID
+	}
+	if frame.ChannelID == "" || messageID == "" {
+		return r.sendError(conn, "MISSING_FIELDS", "channel_id and message_id are required")
+	}
+
+	op := frame.Op
+	if op == "" {
+		op = "pin"
+	}
+	if op != "pin" && op != "unpin" {
+		op = "pin"
+	}
+
+	serverTime := time.Now().Unix()
+
+	// 1. Broadcast push frame to conversation participants
+	pushPayload, err := json.Marshal(PinMessagePushFrame{
+		Type:       "message_pinned",
+		ChannelID:  frame.ChannelID,
+		MessageID:  messageID,
+		SenderID:   conn.UserID,
+		Op:         op,
+		ServerTime: serverTime,
+	})
+	if err != nil {
+		return err
+	}
+
+	if strings.HasPrefix(frame.ChannelID, "chan_") {
+		cleanID := strings.TrimPrefix(frame.ChannelID, "chan_")
+		var memberIDs []string
+		if r.channelClient != nil {
+			resp, err := r.channelClient.GetChannelMembers(ctx, &chatv1.GetChannelMembersRequest{
+				ChannelId: cleanID,
+			})
+			if err == nil {
+				for _, m := range resp.GetMembers() {
+					memberIDs = append(memberIDs, m.GetUserId())
+				}
+			}
+		}
+
+		if len(memberIDs) > 0 {
+			for _, uid := range memberIDs {
+				r.hub.SendToUser(uid, pushPayload)
+			}
+		} else if frame.ChannelID == "chan_public" {
+			r.hub.BroadcastAll("", pushPayload)
+		}
+	} else {
+		// 1:1 direct message: send to peer and echo back to sender
+		r.hub.SendToUser(frame.ChannelID, pushPayload)
+		if frame.ChannelID != conn.UserID {
+			r.hub.SendToUser(conn.UserID, pushPayload)
+		}
+	}
+
+	// 2. ACK the requester
+	ackPayload, _ := json.Marshal(AckPinFrame{
+		Type:       "ack_pin",
+		MessageID:  messageID,
+		ChannelID:  frame.ChannelID,
+		Op:         op,
+		ServerTime: serverTime,
+	})
+	r.hub.SendToUser(conn.UserID, ackPayload)
+
+	slog.Info("message pin processed",
+		"channel", frame.ChannelID,
+		"message_id", messageID,
+		"op", op,
 		"sender", conn.UserID,
 	)
 	return nil

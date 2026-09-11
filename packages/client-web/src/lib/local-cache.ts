@@ -248,4 +248,24 @@ export class LocalEncryptedCache {
   ): Promise<void> {
     return localDb.updateMessageText(idOrClientMsgId, channelId, newText, editedAt)
   }
+
+  /**
+   * Updates the pinned status of a message in offline storage.
+   */
+  public static async updateMessagePinned(
+    idOrClientMsgId: string,
+    channelId: string,
+    isPinned: boolean,
+    pinnedBy?: string,
+    pinnedAt?: number
+  ): Promise<void> {
+    return localDb.updateMessagePinned(idOrClientMsgId, channelId, isPinned, pinnedBy, pinnedAt)
+  }
+
+  /**
+   * Retrieves all non-deleted pinned messages for a channel.
+   */
+  public static async getPinnedMessages(channelId: string): Promise<StoredMessage[]> {
+    return localDb.getPinnedMessages(channelId)
+  }
 }

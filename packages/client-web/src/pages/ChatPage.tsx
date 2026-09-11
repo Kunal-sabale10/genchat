@@ -21,6 +21,7 @@ import { VoiceRecorderBar } from '@/components/VoiceRecorderBar'
 import { ReactionPicker } from '@/components/ReactionPicker'
 import { QuotedReplyBanner } from '@/components/QuotedReplyBanner'
 import { EditingBanner } from '@/components/EditingBanner'
+import { PinnedMessagesBar } from '@/components/PinnedMessagesBar'
 import { QuotedReply } from '@/lib/local-storage-db'
 import { VoiceRecordingResult } from '@/lib/voice-recorder'
 import { SafetyNumberManager, TrustRecord } from '@/lib/safety-numbers'
@@ -70,7 +71,9 @@ import {
   CornerUpLeft,
   Trash2,
   Ban,
-  Pencil
+  Pencil,
+  Pin,
+  PinOff
 } from 'lucide-react'
 
 interface MessageItem {
@@ -94,6 +97,9 @@ interface MessageItem {
   deleteScope?: 'everyone' | 'me'
   isEdited?: boolean
   editedAt?: number
+  isPinned?: boolean
+  pinnedAt?: number
+  pinnedBy?: string
 }
 
 interface ConversationItem {
@@ -121,6 +127,12 @@ export default function ChatPage() {
   const [conversations, setConversations] = useState<ConversationItem[]>([])
   const [activeChannelId, setActiveChannelId] = useState<string>('')
   const [messages, setMessages] = useState<MessageItem[]>([])
+
+  const pinnedMessages = useMemo(() => {
+    return messages
+      .filter((m) => m.isPinned && !m.isDeleted)
+      .sort((a, b) => (b.pinnedAt || 0) - (a.pinnedAt || 0))
+  }, [messages])
 
   const [inputText, setInputText] = useState('')
   const [isUploading, setIsUploading] = useState(false)
@@ -695,6 +707,30 @@ export default function ChatPage() {
       localDb.updateMessageText(ev.messageId, ev.channelId, plaintext, editedAtMs)
     })
 
+    // Handle incoming message pinning / unpinning
+    const unsubPinMessage = gateway.onPinMessage((ev) => {
+      console.log('[ChatPage] PinMessage received:', ev)
+      const isPinned = ev.op === 'pin'
+      const pinnedAt = ev.serverTime ? ev.serverTime * 1000 : Date.now()
+      const pinnedBy = ev.senderId
+
+      setMessages((prev) =>
+        prev.map((m) => {
+          const mKey = m.clientMsgId || m.id
+          if (mKey === ev.messageId || m.id === ev.messageId) {
+            return {
+              ...m,
+              isPinned,
+              pinnedAt: isPinned ? pinnedAt : undefined,
+              pinnedBy: isPinned ? pinnedBy : undefined,
+            }
+          }
+          return m
+        })
+      )
+      localDb.updateMessagePinned(ev.messageId, ev.channelId, isPinned, pinnedBy, pinnedAt)
+    })
+
     gateway.connect()
 
     // Handle incoming messages (push & history) and MLS group commits
@@ -893,6 +929,7 @@ export default function ChatPage() {
       unsubReaction()
       unsubDeleteMessage()
       unsubEditMessage()
+      unsubPinMessage()
       unsubMessages()
       gateway.disconnect()
     }
@@ -1071,6 +1108,33 @@ export default function ChatPage() {
     )
 
     gatewayRef.current?.sendReaction(activeChannelId, targetId, emoji, op)
+  }
+
+  const handleTogglePin = async (m: MessageItem) => {
+    if (!user || !activeChannelId) return
+    const msgKey = m.clientMsgId || m.id
+    const newPinned = !m.isPinned
+    const op = newPinned ? 'pin' : 'unpin'
+    const pinnedAt = newPinned ? Date.now() : undefined
+    const pinnedBy = newPinned ? user.userId : undefined
+
+    setMessages((prev) =>
+      prev.map((msg) => {
+        const k = msg.clientMsgId || msg.id
+        if (k === msgKey) {
+          return {
+            ...msg,
+            isPinned: newPinned,
+            pinnedAt,
+            pinnedBy,
+          }
+        }
+        return msg
+      })
+    )
+
+    await localDb.updateMessagePinned(msgKey, activeChannelId, newPinned, pinnedBy, pinnedAt)
+    gatewayRef.current?.sendPinMessage(activeChannelId, msgKey, op)
   }
 
   const handleJumpToMessage = (messageId: string) => {
@@ -2356,6 +2420,20 @@ export default function ChatPage() {
             />
           )}
 
+        {/* Pinned Messages Bar */}
+        {pinnedMessages.length > 0 && (
+          <PinnedMessagesBar
+            pinnedMessages={pinnedMessages}
+            onJumpToMessage={handleJumpToMessage}
+            onUnpinMessage={(m) => {
+              const fullMsg = messages.find(
+                (msg) => (msg.clientMsgId || msg.id) === (m.clientMsgId || m.id)
+              )
+              if (fullMsg) handleTogglePin(fullMsg)
+            }}
+          />
+        )}
+
         {/* Message Stream */}
         <div
           onDragOver={handleDragOver}
@@ -2502,6 +2580,22 @@ export default function ChatPage() {
                             <Pencil className="h-3.5 w-3.5" />
                           </button>
                         )}
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleTogglePin(m)
+                          }}
+                          className={`p-1 rounded-full transition ${
+                            m.isPinned
+                              ? 'text-emerald-400 hover:text-emerald-300 hover:bg-slate-800'
+                              : 'text-slate-400 hover:text-emerald-400 hover:bg-slate-800'
+                          }`}
+                          title={m.isPinned ? 'Unpin message' : 'Pin message'}
+                        >
+                          {m.isPinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+                        </button>
                       </>
                     )}
 
@@ -2686,6 +2780,11 @@ export default function ChatPage() {
                         title={m.editedAt ? `Edited at ${new Date(m.editedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Edited'}
                       >
                         (edited)
+                      </span>
+                    )}
+                    {m.isPinned && (
+                      <span title="Pinned message">
+                        <Pin className="h-2.5 w-2.5 text-emerald-400 fill-emerald-400/30" />
                       </span>
                     )}
                     {m.isEncrypted && (
