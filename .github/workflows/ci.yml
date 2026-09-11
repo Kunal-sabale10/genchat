@@ -174,6 +174,9 @@ jobs:
       - name: Run Disappearing / Ephemeral Messages & Native ScyllaDB TTL Verification
         run: node tests/integration/test_ephemeral_messages.mjs
 
+      - name: Run Cryptographic Safety Numbers & Trust Verification
+        run: node tests/integration/test_safety_numbers.mjs
+
       - name: Run Phase 2 Full Features & Anti-Spoofing Interceptor Verification
         run: node tests/integration/test_phase2_full_features.mjs
 

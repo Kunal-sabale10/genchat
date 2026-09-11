@@ -15,6 +15,8 @@ import { SummaryModal } from '@/components/SummaryModal'
 import { GroupMembersModal } from '@/components/GroupMembersModal'
 import { DisappearingTimerBadge } from '@/components/DisappearingTimerBadge'
 import { EphemeralSettingsModal } from '@/components/EphemeralSettingsModal'
+import { SafetyNumberModal } from '@/components/SafetyNumberModal'
+import { SafetyNumberManager, TrustRecord } from '@/lib/safety-numbers'
 import { WebRtcManager, fetchDynamicIceServers } from '@/lib/webrtc-manager'
 import { AuthService } from '@/lib/grpc-client'
 import { PushClient } from '@/lib/push-client'
@@ -50,7 +52,8 @@ import {
   FolderOpen,
   Maximize2,
   Sparkles,
-  Timer
+  Timer,
+  AlertTriangle
 } from 'lucide-react'
 
 interface MessageItem {
@@ -111,6 +114,9 @@ export default function ChatPage() {
   const [safetyNumber, setSafetyNumber] = useState('')
   const [safetyPeerId, setSafetyPeerId] = useState('')
   const [isSafetyVerified, setIsSafetyVerified] = useState(false)
+  const [verifiedPeerIds, setVerifiedPeerIds] = useState<Set<string>>(() =>
+    SafetyNumberManager.getVerifiedPeerIds()
+  )
   const [showSearchModal, setShowSearchModal] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<SearchSnippetResult[]>([])
@@ -730,6 +736,27 @@ export default function ChatPage() {
   }
 
   const activeConversation = conversations.find((c) => c.id === activeChannelId)
+
+  // Auto-compute safety number & trust status for active 1:1 direct chat
+  useEffect(() => {
+    if (!user || !activeConversation?.isDirect) {
+      setSafetyNumber('')
+      setSafetyPeerId('')
+      return
+    }
+    const peerId = activeConversation.id
+    setSafetyPeerId(peerId)
+    E2eeService.generateSafetyNumber(user.userId, peerId).then((num) => {
+      setSafetyNumber(num)
+      const record = SafetyNumberManager.getTrustRecord(peerId, num)
+      setIsSafetyVerified(record.isVerified)
+    })
+  }, [activeConversation, user])
+
+  const currentPeerTrust = useMemo<TrustRecord | null>(() => {
+    if (!activeConversation?.isDirect || !activeConversation.id || !safetyNumber) return null
+    return SafetyNumberManager.getTrustRecord(activeConversation.id, safetyNumber)
+  }, [activeConversation, safetyNumber, isSafetyVerified])
   
   // Robust message filter: matches exact channelId OR peer user in 1:1 DMs (case-insensitive)
   const currentMessages = messages.filter((m) => {
@@ -1410,6 +1437,11 @@ export default function ChatPage() {
                   <div className="flex items-center space-x-2 truncate">
                     <User className="h-4 w-4 shrink-0 text-slate-500" />
                     <span className="truncate">{dm.name}</span>
+                    {verifiedPeerIds.has(dm.id) && (
+                      <span title="Cryptographically Verified Contact">
+                        <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                      </span>
+                    )}
                   </div>
                   {unreadCounts[dm.id] > 0 && (
                     <span className="rounded-full bg-indigo-600 px-1.5 py-0.5 text-[10px] font-bold text-white shrink-0 animate-pulse">
@@ -1491,11 +1523,29 @@ export default function ChatPage() {
                 {activeConversation?.isDirect && (
                   <button
                     onClick={handleOpenSafetyModal}
-                    className="flex items-center space-x-1 rounded bg-indigo-500/10 px-2 py-0.5 text-[10px] font-medium text-indigo-400 border border-indigo-500/20 hover:bg-indigo-500/20 transition"
+                    className={`flex items-center space-x-1 rounded px-2 py-0.5 text-[10px] font-medium border transition ${
+                      currentPeerTrust?.hasChanged
+                        ? 'bg-amber-500/15 text-amber-300 border-amber-500/40 hover:bg-amber-500/25 animate-pulse'
+                        : currentPeerTrust?.isVerified
+                        ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25'
+                        : 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20 hover:bg-indigo-500/20'
+                    }`}
                     title="Inspect Safety Number & Ratchet Keys"
                   >
-                    <Key className="h-2.5 w-2.5" />
-                    <span>Verify Security</span>
+                    {currentPeerTrust?.hasChanged ? (
+                      <AlertTriangle className="h-3 w-3 text-amber-400" />
+                    ) : currentPeerTrust?.isVerified ? (
+                      <ShieldCheck className="h-3 w-3 text-emerald-400" />
+                    ) : (
+                      <Key className="h-2.5 w-2.5" />
+                    )}
+                    <span>
+                      {currentPeerTrust?.hasChanged
+                        ? 'Key Changed!'
+                        : currentPeerTrust?.isVerified
+                        ? 'Verified'
+                        : 'Verify Security'}
+                    </span>
                   </button>
                 )}
               </div>
@@ -1649,6 +1699,22 @@ export default function ChatPage() {
                 <Timer className="h-3.5 w-3.5 text-amber-400 animate-pulse" />
                 <span>Disappearing messages on: {formatTtlLabel(currentChannelTtl)} self-destruct</span>
               </div>
+            </div>
+          )}
+
+          {/* Key Change Security Alert Banner */}
+          {activeConversation?.isDirect && currentPeerTrust?.hasChanged && (
+            <div className="flex justify-center mb-3">
+              <button
+                onClick={handleOpenSafetyModal}
+                className="flex items-center space-x-2.5 rounded-xl bg-amber-500/15 border border-amber-500/40 px-4 py-2 text-xs text-amber-300 shadow-md hover:bg-amber-500/25 transition text-left cursor-pointer"
+              >
+                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400 animate-bounce" />
+                <div>
+                  <span className="font-semibold">Security Number Changed:</span>{' '}
+                  <span>The encryption keys for @{activeConversation.name} have changed since your last verification. Tap here to inspect and verify.</span>
+                </div>
+              </button>
             </div>
           )}
 
@@ -1991,50 +2057,18 @@ export default function ChatPage() {
       )}
 
       {/* --- Safety Number / Key Verification Modal --- */}
-      {showSafetyModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4">
-          <div className="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl space-y-5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                <ShieldCheck className="h-6 w-6 text-emerald-400" />
-                <h3 className="font-semibold text-slate-100">Verify End-to-End Encryption</h3>
-              </div>
-              <button onClick={() => setShowSafetyModal(false)} className="text-slate-500 hover:text-slate-300">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <p className="text-xs text-slate-400 leading-relaxed">
-              Compare this Safety Number with <span className="text-indigo-300 font-mono">@{safetyPeerId}</span> to verify that your session is protected against man-in-the-middle attacks using post-quantum ML-KEM-768.
-            </p>
-
-            {/* 60-digit number card */}
-            <div className="rounded-xl bg-slate-950 border border-slate-800 p-4 font-mono text-center text-sm font-semibold tracking-widest text-emerald-400 select-all leading-loose">
-              {safetyNumber}
-            </div>
-
-            <div className="flex items-center justify-between pt-2">
-              <button
-                onClick={handleCopySafetyNumber}
-                className="flex items-center space-x-2 text-xs font-medium text-slate-400 hover:text-indigo-300 transition"
-              >
-                <Copy className="h-4 w-4" />
-                <span>{copiedSafetyNumber ? 'Copied Safety Number' : 'Copy Number'}</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  setIsSafetyVerified(true)
-                  setShowSafetyModal(false)
-                }}
-                className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-medium text-white hover:bg-emerald-500 transition shadow-lg shadow-emerald-600/20"
-              >
-                Mark as Verified
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <SafetyNumberModal
+        isOpen={showSafetyModal}
+        onClose={() => setShowSafetyModal(false)}
+        currentUserId={user?.userId || ''}
+        peerId={safetyPeerId}
+        peerName={activeConversation?.name}
+        safetyNumber={safetyNumber}
+        onVerificationChange={(verified) => {
+          setIsSafetyVerified(verified)
+          setVerifiedPeerIds(SafetyNumberManager.getVerifiedPeerIds())
+        }}
+      />
 
       {/* --- Create Encrypted Group Chat Modal --- */}
       {showNewChanModal && (
