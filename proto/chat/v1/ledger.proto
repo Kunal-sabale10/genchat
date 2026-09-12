@@ -11,6 +11,10 @@ service LedgerService {
   rpc FetchMessages(FetchMessagesRequest) returns (FetchMessagesResponse);
   rpc UpdateReceipt(UpdateReceiptRequest) returns (UpdateReceiptResponse);
   rpc GetReceipts(GetReceiptsRequest) returns (GetReceiptsResponse);
+  rpc RecordMessageAuthor(RecordMessageAuthorRequest) returns (RecordMessageAuthorResponse);
+  rpc GetMessageAuthor(GetMessageAuthorRequest) returns (GetMessageAuthorResponse);
+  rpc RecordMessageEvent(RecordMessageEventRequest) returns (RecordMessageEventResponse);
+  rpc FetchMessageEvents(FetchMessageEventsRequest) returns (FetchMessageEventsResponse);
 }
 
 message StoreMessageRequest {
@@ -79,4 +83,56 @@ message GetReceiptsRequest {
 
 message GetReceiptsResponse {
   repeated ReceiptItem receipts = 1;
+}
+
+message RecordMessageAuthorRequest {
+  string conversation_id = 1;
+  string message_id = 2;
+  string sender_id = 3;
+}
+
+message RecordMessageAuthorResponse {
+  bool success = 1;
+}
+
+message GetMessageAuthorRequest {
+  string conversation_id = 1;
+  string message_id = 2;
+}
+
+message GetMessageAuthorResponse {
+  string conversation_id = 1;
+  string message_id = 2;
+  string sender_id = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+message RecordMessageEventRequest {
+  string conversation_id = 1;
+  string message_id = 2;
+  string event_type = 3; // "deleted", "edited", "pinned", "unpinned"
+  string actor_id = 4;
+  bytes new_ciphertext = 5;
+}
+
+message RecordMessageEventResponse {
+  bool success = 1;
+}
+
+message MessageEventItem {
+  string conversation_id = 1;
+  string message_id = 2;
+  string event_type = 3;
+  string actor_id = 4;
+  bytes new_ciphertext = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+
+message FetchMessageEventsRequest {
+  string conversation_id = 1;
+  string message_id = 2;
+}
+
+message FetchMessageEventsResponse {
+  repeated MessageEventItem events = 1;
 }

@@ -62,6 +62,11 @@ func (s *ScyllaStore) InsertMessage(ctx context.Context, msg *StoredMessage) err
 	if err != nil {
 		return err
 	}
+	if msg.ClientMsgID != "" {
+		_ = s.RecordAuthor(ctx, msg.ConversationID, msg.ClientMsgID, msg.SenderID)
+	}
+	_ = s.RecordAuthor(ctx, msg.ConversationID, msg.MessageID.String(), msg.SenderID)
+
 	if msg.EphemeralTTLSec > 0 {
 		return s.session.Query(
 			`INSERT INTO genchat.messages 
@@ -247,4 +252,82 @@ func (s *ScyllaStore) GetReceipts(ctx context.Context, conversationID string) ([
 		})
 	}
 	return receipts, iter.Close()
+}
+
+type MessageAuthor struct {
+	ConversationID string
+	MessageID      string
+	SenderID       string
+	CreatedAt      time.Time
+}
+
+type MessageEvent struct {
+	ConversationID string
+	MessageID      string
+	EventType      string
+	ActorID        string
+	NewCiphertext  []byte
+	CreatedAt      time.Time
+}
+
+func (s *ScyllaStore) RecordAuthor(ctx context.Context, conversationID, messageID, senderID string) error {
+	return s.session.Query(
+		`INSERT INTO genchat.message_authors (conversation_id, message_id, sender_id, created_at) VALUES (?, ?, ?, ?)`,
+		conversationID, messageID, senderID, time.Now(),
+	).WithContext(ctx).Exec()
+}
+
+func (s *ScyllaStore) GetAuthor(ctx context.Context, conversationID, messageID string) (string, time.Time, error) {
+	var senderID string
+	var createdAt time.Time
+	err := s.session.Query(
+		`SELECT sender_id, created_at FROM genchat.message_authors WHERE conversation_id = ? AND message_id = ? LIMIT 1`,
+		conversationID, messageID,
+	).WithContext(ctx).Scan(&senderID, &createdAt)
+	if err != nil {
+		if err == gocql.ErrNotFound {
+			return "", time.Time{}, nil
+		}
+		return "", time.Time{}, err
+	}
+	return senderID, createdAt, nil
+}
+
+func (s *ScyllaStore) RecordEvent(ctx context.Context, conversationID, messageID, eventType, actorID string, newCiphertext []byte) error {
+	return s.session.Query(
+		`INSERT INTO genchat.message_events (conversation_id, message_id, event_type, actor_id, new_ciphertext, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		conversationID, messageID, eventType, actorID, newCiphertext, time.Now(),
+	).WithContext(ctx).Exec()
+}
+
+func (s *ScyllaStore) FetchEvents(ctx context.Context, conversationID, messageID string) ([]*MessageEvent, error) {
+	var iter *gocql.Iter
+	if messageID != "" {
+		iter = s.session.Query(
+			`SELECT message_id, event_type, actor_id, new_ciphertext, created_at FROM genchat.message_events WHERE conversation_id = ? AND message_id = ?`,
+			conversationID, messageID,
+		).WithContext(ctx).Iter()
+	} else {
+		iter = s.session.Query(
+			`SELECT message_id, event_type, actor_id, new_ciphertext, created_at FROM genchat.message_events WHERE conversation_id = ?`,
+			conversationID,
+		).WithContext(ctx).Iter()
+	}
+
+	var events []*MessageEvent
+	var mID, eType, actor string
+	var newCT []byte
+	var createdAt time.Time
+
+	for iter.Scan(&mID, &eType, &actor, &newCT, &createdAt) {
+		events = append(events, &MessageEvent{
+			ConversationID: conversationID,
+			MessageID:      mID,
+			EventType:      eType,
+			ActorID:        actor,
+			NewCiphertext:  newCT,
+			CreatedAt:      createdAt,
+		})
+	}
+	return events, iter.Close()
 }

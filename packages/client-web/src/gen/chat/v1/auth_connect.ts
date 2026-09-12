@@ -19,6 +19,7 @@ export interface UserSummary {
   userId: string
   displayName: string
   avatarUrl?: string
+  identityKey?: string
   createdAt: string
   isSelf: boolean
 }
@@ -31,6 +32,7 @@ export interface UserProfileResponse {
   userId: string
   displayName: string
   avatarUrl: string
+  identityKey?: string
   createdAt: string
 }
 

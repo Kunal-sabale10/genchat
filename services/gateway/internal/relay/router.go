@@ -183,6 +183,9 @@ type HistoryMessageDTO struct {
 	CiphertextB64   string `json:"ciphertext_base64"`
 	CreatedAtUnix   int64  `json:"created_at_unix"`
 	EphemeralTTLSec int64  `json:"ephemeral_ttl_sec,omitempty"`
+	IsDeleted       bool   `json:"is_deleted,omitempty"`
+	IsEdited        bool   `json:"is_edited,omitempty"`
+	IsPinned        bool   `json:"is_pinned,omitempty"`
 }
 
 // TypingFrame is sent by client when typing state changes.
@@ -622,9 +625,19 @@ func (r *Router) handleFetchHistory(ctx context.Context, conn *ws.Conn, data []b
 		return r.sendError(conn, "FETCH_FAILED", "could not fetch message history")
 	}
 
+	// Fetch persistent message events (deletions, edits, pins) from ledger
+	events, _ := r.ledger.FetchMessageEvents(ctx, conversationID, "")
+	eventMap := make(map[string]map[string]*chatv1.MessageEventItem)
+	for _, e := range events {
+		if eventMap[e.GetMessageId()] == nil {
+			eventMap[e.GetMessageId()] = make(map[string]*chatv1.MessageEventItem)
+		}
+		eventMap[e.GetMessageId()][e.GetEventType()] = e
+	}
+
 	var dtos []HistoryMessageDTO
 	for _, m := range msgs {
-		dtos = append(dtos, HistoryMessageDTO{
+		dto := HistoryMessageDTO{
 			ServerID:        m.MessageID,
 			SequenceNum:     m.SequenceNum,
 			SenderID:        m.SenderID,
@@ -632,7 +645,35 @@ func (r *Router) handleFetchHistory(ctx context.Context, conn *ws.Conn, data []b
 			CiphertextB64:   base64.StdEncoding.EncodeToString(m.EncryptedPayload),
 			CreatedAtUnix:   m.CreatedAt.Unix(),
 			EphemeralTTLSec: m.EphemeralTTLSec,
-		})
+		}
+
+		// Apply deletion (tombstone & zeroize sensitive ciphertext)
+		if (eventMap[m.MessageID] != nil && eventMap[m.MessageID]["deleted"] != nil) ||
+			(eventMap[m.ClientMsgID] != nil && eventMap[m.ClientMsgID]["deleted"] != nil) {
+			dto.IsDeleted = true
+			dto.CiphertextB64 = ""
+		}
+
+		// Apply edit
+		if editEv := eventMap[m.MessageID]["edited"]; editEv != nil && len(editEv.GetNewCiphertext()) > 0 {
+			dto.IsEdited = true
+			dto.CiphertextB64 = base64.StdEncoding.EncodeToString(editEv.GetNewCiphertext())
+		} else if editEv := eventMap[m.ClientMsgID]["edited"]; editEv != nil && len(editEv.GetNewCiphertext()) > 0 {
+			dto.IsEdited = true
+			dto.CiphertextB64 = base64.StdEncoding.EncodeToString(editEv.GetNewCiphertext())
+		}
+
+		// Apply pin
+		if (eventMap[m.MessageID] != nil && eventMap[m.MessageID]["pin"] != nil) ||
+			(eventMap[m.ClientMsgID] != nil && eventMap[m.ClientMsgID]["pin"] != nil) {
+			dto.IsPinned = true
+		}
+		if (eventMap[m.MessageID] != nil && eventMap[m.MessageID]["unpin"] != nil) ||
+			(eventMap[m.ClientMsgID] != nil && eventMap[m.ClientMsgID]["unpin"] != nil) {
+			dto.IsPinned = false
+		}
+
+		dtos = append(dtos, dto)
 	}
 
 	resp, _ := json.Marshal(HistoryResponseFrame{
@@ -1015,8 +1056,22 @@ func (r *Router) handleDeleteMessage(ctx context.Context, conn *ws.Conn, data []
 		scope = "everyone"
 	}
 
-	// 1. If delete_scope == "everyone", broadcast push frame to conversation participants
+	conversationID := getConversationID(conn.UserID, frame.ChannelID)
+
+	// 1. If delete_scope == "everyone", verify ownership and broadcast push frame to conversation participants
 	if scope == "everyone" {
+		// CRITICAL SECURITY: Verify message author before broadcasting revocation
+		if r.ledger != nil {
+			authorID, err := r.ledger.GetMessageAuthor(ctx, conversationID, messageID)
+			if err == nil && authorID != "" {
+				if authorID != conn.UserID {
+					return r.sendError(conn, "PERMISSION_DENIED", "only the original message author can delete for everyone")
+				}
+			}
+			// Persist deletion event in ScyllaDB msgledger
+			_ = r.ledger.RecordMessageEvent(ctx, conversationID, messageID, "deleted", conn.UserID, nil)
+		}
+
 		pushPayload, err := json.Marshal(DeleteMessagePushFrame{
 			Type:        "message_deleted",
 			ChannelID:   frame.ChannelID,
@@ -1088,6 +1143,21 @@ func (r *Router) handleEditMessage(ctx context.Context, conn *ws.Conn, data []by
 	}
 	if frame.ChannelID == "" || messageID == "" || frame.CiphertextB64 == "" {
 		return r.sendError(conn, "MISSING_FIELDS", "channel_id, message_id, and ciphertext_base64 are required")
+	}
+
+	conversationID := getConversationID(conn.UserID, frame.ChannelID)
+
+	// CRITICAL SECURITY: Verify message author before broadcasting edit
+	if r.ledger != nil {
+		authorID, err := r.ledger.GetMessageAuthor(ctx, conversationID, messageID)
+		if err == nil && authorID != "" {
+			if authorID != conn.UserID {
+				return r.sendError(conn, "PERMISSION_DENIED", "only the original message author can edit this message")
+			}
+		}
+		// Persist edit event in ScyllaDB msgledger
+		ctBytes, _ := base64.StdEncoding.DecodeString(frame.CiphertextB64)
+		_ = r.ledger.RecordMessageEvent(ctx, conversationID, messageID, "edited", conn.UserID, ctBytes)
 	}
 
 	serverTime := time.Now().Unix()
@@ -1170,6 +1240,35 @@ func (r *Router) handlePinMessage(ctx context.Context, conn *ws.Conn, data []byt
 	}
 	if op != "pin" && op != "unpin" {
 		op = "pin"
+	}
+
+	conversationID := getConversationID(conn.UserID, frame.ChannelID)
+
+	// Verify membership for group channel
+	if strings.HasPrefix(frame.ChannelID, "chan_") && frame.ChannelID != "chan_public" {
+		cleanID := strings.TrimPrefix(frame.ChannelID, "chan_")
+		if r.channelClient != nil {
+			resp, err := r.channelClient.GetChannelMembers(ctx, &chatv1.GetChannelMembersRequest{
+				ChannelId: cleanID,
+			})
+			if err == nil && len(resp.GetMembers()) > 0 {
+				isMember := false
+				for _, m := range resp.GetMembers() {
+					if m.GetUserId() == conn.UserID {
+						isMember = true
+						break
+					}
+				}
+				if !isMember {
+					return r.sendError(conn, "PERMISSION_DENIED", "only channel members can pin or unpin messages")
+				}
+			}
+		}
+	}
+
+	// Persist pin event in ScyllaDB msgledger
+	if r.ledger != nil {
+		_ = r.ledger.RecordMessageEvent(ctx, conversationID, messageID, op, conn.UserID, nil)
 	}
 
 	serverTime := time.Now().Unix()

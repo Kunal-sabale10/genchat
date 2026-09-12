@@ -162,3 +162,68 @@ func (c *Client) UpdateReceipt(ctx context.Context, conversationID, userID, rece
 	return nil
 }
 
+// RecordMessageAuthor registers the original author of a message in msgledger.
+func (c *Client) RecordMessageAuthor(ctx context.Context, conversationID, messageID, senderID string) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	_, err := c.rpc.RecordMessageAuthor(ctx, &chatv1.RecordMessageAuthorRequest{
+		ConversationId: conversationID,
+		MessageId:      messageID,
+		SenderId:       senderID,
+	})
+	if err != nil {
+		return fmt.Errorf("ledgerclient: RecordMessageAuthor: %w", err)
+	}
+	return nil
+}
+
+// GetMessageAuthor queries the original author of a message from msgledger.
+func (c *Client) GetMessageAuthor(ctx context.Context, conversationID, messageID string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	resp, err := c.rpc.GetMessageAuthor(ctx, &chatv1.GetMessageAuthorRequest{
+		ConversationId: conversationID,
+		MessageId:      messageID,
+	})
+	if err != nil {
+		return "", err
+	}
+	return resp.GetSenderId(), nil
+}
+
+// RecordMessageEvent records a deletion, edit, or pin event in msgledger.
+func (c *Client) RecordMessageEvent(ctx context.Context, conversationID, messageID, eventType, actorID string, newCiphertext []byte) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	_, err := c.rpc.RecordMessageEvent(ctx, &chatv1.RecordMessageEventRequest{
+		ConversationId: conversationID,
+		MessageId:      messageID,
+		EventType:      eventType,
+		ActorId:        actorID,
+		NewCiphertext:  newCiphertext,
+	})
+	if err != nil {
+		return fmt.Errorf("ledgerclient: RecordMessageEvent: %w", err)
+	}
+	return nil
+}
+
+// FetchMessageEvents fetches recent message events (deletions, edits, pins) for a conversation.
+func (c *Client) FetchMessageEvents(ctx context.Context, conversationID, messageID string) ([]*chatv1.MessageEventItem, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	resp, err := c.rpc.FetchMessageEvents(ctx, &chatv1.FetchMessageEventsRequest{
+		ConversationId: conversationID,
+		MessageId:      messageID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ledgerclient: FetchMessageEvents: %w", err)
+	}
+	return resp.GetEvents(), nil
+}
+
+

@@ -145,7 +145,7 @@ export default function ChatPage() {
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false)
   const [showNewDmModal, setShowNewDmModal] = useState(false)
   const [newDmUserId, setNewDmUserId] = useState('')
-  const [availableUsers, setAvailableUsers] = useState<Array<{ userId: string; displayName: string; avatarUrl?: string; isSelf: boolean }>>([])
+  const [availableUsers, setAvailableUsers] = useState<Array<{ userId: string; displayName: string; avatarUrl?: string; identityKey?: string; isSelf: boolean }>>([])
   const [isLoadingUsers, setIsLoadingUsers] = useState(false)
   const [userSearchQuery, setUserSearchQuery] = useState('')
 
@@ -1025,12 +1025,15 @@ export default function ChatPage() {
     }
     const peerId = activeConversation.id
     setSafetyPeerId(peerId)
-    E2eeService.generateSafetyNumber(user.userId, peerId).then((num) => {
+    const peerUser = availableUsers.find((u) => u.userId === peerId)
+    const myKey = user.identityKey || ''
+    const peerKey = peerUser?.identityKey || ''
+    SafetyNumberManager.computeSafetyNumber(user.userId, myKey, peerId, peerKey).then((num) => {
       setSafetyNumber(num)
       const record = SafetyNumberManager.getTrustRecord(peerId, num)
       setIsSafetyVerified(record.isVerified)
     })
-  }, [activeConversation, user])
+  }, [activeConversation, user, availableUsers])
 
   const currentPeerTrust = useMemo<TrustRecord | null>(() => {
     if (!activeConversation?.isDirect || !activeConversation.id || !safetyNumber) return null
@@ -2011,7 +2014,10 @@ export default function ChatPage() {
     if (!activeConversation?.isDirect || !user) return
     const peerId = activeConversation.id
     setSafetyPeerId(peerId)
-    const num = await E2eeService.generateSafetyNumber(user.userId, peerId)
+    const peerUser = availableUsers.find((u) => u.userId === peerId)
+    const myKey = user.identityKey || ''
+    const peerKey = peerUser?.identityKey || ''
+    const num = await SafetyNumberManager.computeSafetyNumber(user.userId, myKey, peerId, peerKey)
     setSafetyNumber(num)
     setShowSafetyModal(true)
   }

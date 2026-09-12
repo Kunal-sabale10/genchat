@@ -90,3 +90,24 @@ CREATE TABLE IF NOT EXISTS genchat.mls_commit_log (
     created_at      TIMESTAMP,
     PRIMARY KEY ((channel_id), epoch)
 ) WITH CLUSTERING ORDER BY (epoch DESC);
+
+-- Message authors registry for ownership and deletion/edit authorization
+CREATE TABLE IF NOT EXISTS genchat.message_authors (
+    conversation_id TEXT,
+    message_id      TEXT,
+    sender_id       TEXT,
+    created_at      TIMESTAMP,
+    PRIMARY KEY ((conversation_id), message_id)
+);
+
+-- Message events log for persistent message revocation, edits, and pins
+CREATE TABLE IF NOT EXISTS genchat.message_events (
+    conversation_id TEXT,
+    message_id      TEXT,
+    event_type      TEXT, -- 'deleted', 'edited', 'pinned', 'unpinned'
+    actor_id        TEXT,
+    new_ciphertext  BLOB,
+    created_at      TIMESTAMP,
+    PRIMARY KEY ((conversation_id), message_id, event_type)
+);
+

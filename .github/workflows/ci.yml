@@ -198,6 +198,9 @@ jobs:
       - name: Run User Profile Pictures & Custom Avatars Verification
         run: node tests/integration/test_user_avatars.mjs
 
+      - name: Run Relay Authorization & Ownership Enforcement Verification
+        run: node tests/integration/test_relay_authorization.mjs
+
       - name: Run Phase 2 Full Features & Anti-Spoofing Interceptor Verification
         run: node tests/integration/test_phase2_full_features.mjs
 

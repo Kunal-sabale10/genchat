@@ -226,3 +226,64 @@ func (h *LedgerHandler) GetReceiptsDirect(ctx context.Context, conversationID st
 	}
 	return receipts, nil
 }
+
+func (h *LedgerHandler) RecordMessageAuthor(ctx context.Context, req *chatv1.RecordMessageAuthorRequest) (*chatv1.RecordMessageAuthorResponse, error) {
+	if req.ConversationId == "" || req.MessageId == "" || req.SenderId == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "conversation_id, message_id, and sender_id are required")
+	}
+	if err := h.store.RecordAuthor(ctx, req.ConversationId, req.MessageId, req.SenderId); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to record message author: %v", err)
+	}
+	return &chatv1.RecordMessageAuthorResponse{Success: true}, nil
+}
+
+func (h *LedgerHandler) GetMessageAuthor(ctx context.Context, req *chatv1.GetMessageAuthorRequest) (*chatv1.GetMessageAuthorResponse, error) {
+	if req.ConversationId == "" || req.MessageId == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "conversation_id and message_id are required")
+	}
+	senderID, createdAt, err := h.store.GetAuthor(ctx, req.ConversationId, req.MessageId)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to get message author: %v", err)
+	}
+	if senderID == "" {
+		return nil, status.Errorf(codes.NotFound, "author not found for message")
+	}
+	return &chatv1.GetMessageAuthorResponse{
+		ConversationId: req.ConversationId,
+		MessageId:      req.MessageId,
+		SenderId:       senderID,
+		CreatedAt:      timestamppb.New(createdAt),
+	}, nil
+}
+
+func (h *LedgerHandler) RecordMessageEvent(ctx context.Context, req *chatv1.RecordMessageEventRequest) (*chatv1.RecordMessageEventResponse, error) {
+	if req.ConversationId == "" || req.MessageId == "" || req.EventType == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "conversation_id, message_id, and event_type are required")
+	}
+	if err := h.store.RecordEvent(ctx, req.ConversationId, req.MessageId, req.EventType, req.ActorId, req.NewCiphertext); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to record message event: %v", err)
+	}
+	return &chatv1.RecordMessageEventResponse{Success: true}, nil
+}
+
+func (h *LedgerHandler) FetchMessageEvents(ctx context.Context, req *chatv1.FetchMessageEventsRequest) (*chatv1.FetchMessageEventsResponse, error) {
+	if req.ConversationId == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "conversation_id is required")
+	}
+	events, err := h.store.FetchEvents(ctx, req.ConversationId, req.MessageId)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to fetch message events: %v", err)
+	}
+	var pbEvents []*chatv1.MessageEventItem
+	for _, e := range events {
+		pbEvents = append(pbEvents, &chatv1.MessageEventItem{
+			ConversationId: e.ConversationID,
+			MessageId:      e.MessageID,
+			EventType:      e.EventType,
+			ActorId:        e.ActorID,
+			NewCiphertext:  e.NewCiphertext,
+			CreatedAt:      timestamppb.New(e.CreatedAt),
+		})
+	}
+	return &chatv1.FetchMessageEventsResponse{Events: pbEvents}, nil
+}

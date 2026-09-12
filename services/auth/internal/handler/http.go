@@ -407,6 +407,7 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			UserID      string `json:"userId"`
 			DisplayName string `json:"displayName"`
 			AvatarURL   string `json:"avatarUrl"`
+			IdentityKey string `json:"identityKey"`
 			CreatedAt   int64  `json:"createdAt"`
 			IsSelf      bool   `json:"isSelf"`
 		}
@@ -417,6 +418,7 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 				UserID:      u.ID.String(),
 				DisplayName: u.DisplayName,
 				AvatarURL:   u.AvatarURL,
+				IdentityKey: hex.EncodeToString(u.IdentityKey),
 				CreatedAt:   u.CreatedAt.Unix(),
 				IsSelf:      u.ID.String() == claims.Sub,
 			})
@@ -464,6 +466,7 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			"userId":      u.ID.String(),
 			"displayName": u.DisplayName,
 			"avatarUrl":   u.AvatarURL,
+			"identityKey": hex.EncodeToString(u.IdentityKey),
 			"createdAt":   u.CreatedAt.Unix(),
 		})
 	}))

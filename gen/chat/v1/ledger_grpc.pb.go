@@ -19,10 +19,14 @@ import (
 const _ = grpc.SupportPackageIsVersion7
 
 const (
-	LedgerService_StoreMessage_FullMethodName  = "/chat.v1.LedgerService/StoreMessage"
-	LedgerService_FetchMessages_FullMethodName = "/chat.v1.LedgerService/FetchMessages"
-	LedgerService_UpdateReceipt_FullMethodName = "/chat.v1.LedgerService/UpdateReceipt"
-	LedgerService_GetReceipts_FullMethodName   = "/chat.v1.LedgerService/GetReceipts"
+	LedgerService_StoreMessage_FullMethodName        = "/chat.v1.LedgerService/StoreMessage"
+	LedgerService_FetchMessages_FullMethodName       = "/chat.v1.LedgerService/FetchMessages"
+	LedgerService_UpdateReceipt_FullMethodName       = "/chat.v1.LedgerService/UpdateReceipt"
+	LedgerService_GetReceipts_FullMethodName         = "/chat.v1.LedgerService/GetReceipts"
+	LedgerService_RecordMessageAuthor_FullMethodName = "/chat.v1.LedgerService/RecordMessageAuthor"
+	LedgerService_GetMessageAuthor_FullMethodName    = "/chat.v1.LedgerService/GetMessageAuthor"
+	LedgerService_RecordMessageEvent_FullMethodName  = "/chat.v1.LedgerService/RecordMessageEvent"
+	LedgerService_FetchMessageEvents_FullMethodName  = "/chat.v1.LedgerService/FetchMessageEvents"
 )
 
 // LedgerServiceClient is the client API for LedgerService service.
@@ -33,6 +37,10 @@ type LedgerServiceClient interface {
 	FetchMessages(ctx context.Context, in *FetchMessagesRequest, opts ...grpc.CallOption) (*FetchMessagesResponse, error)
 	UpdateReceipt(ctx context.Context, in *UpdateReceiptRequest, opts ...grpc.CallOption) (*UpdateReceiptResponse, error)
 	GetReceipts(ctx context.Context, in *GetReceiptsRequest, opts ...grpc.CallOption) (*GetReceiptsResponse, error)
+	RecordMessageAuthor(ctx context.Context, in *RecordMessageAuthorRequest, opts ...grpc.CallOption) (*RecordMessageAuthorResponse, error)
+	GetMessageAuthor(ctx context.Context, in *GetMessageAuthorRequest, opts ...grpc.CallOption) (*GetMessageAuthorResponse, error)
+	RecordMessageEvent(ctx context.Context, in *RecordMessageEventRequest, opts ...grpc.CallOption) (*RecordMessageEventResponse, error)
+	FetchMessageEvents(ctx context.Context, in *FetchMessageEventsRequest, opts ...grpc.CallOption) (*FetchMessageEventsResponse, error)
 }
 
 type ledgerServiceClient struct {
@@ -79,6 +87,42 @@ func (c *ledgerServiceClient) GetReceipts(ctx context.Context, in *GetReceiptsRe
 	return out, nil
 }
 
+func (c *ledgerServiceClient) RecordMessageAuthor(ctx context.Context, in *RecordMessageAuthorRequest, opts ...grpc.CallOption) (*RecordMessageAuthorResponse, error) {
+	out := new(RecordMessageAuthorResponse)
+	err := c.cc.Invoke(ctx, LedgerService_RecordMessageAuthor_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *ledgerServiceClient) GetMessageAuthor(ctx context.Context, in *GetMessageAuthorRequest, opts ...grpc.CallOption) (*GetMessageAuthorResponse, error) {
+	out := new(GetMessageAuthorResponse)
+	err := c.cc.Invoke(ctx, LedgerService_GetMessageAuthor_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *ledgerServiceClient) RecordMessageEvent(ctx context.Context, in *RecordMessageEventRequest, opts ...grpc.CallOption) (*RecordMessageEventResponse, error) {
+	out := new(RecordMessageEventResponse)
+	err := c.cc.Invoke(ctx, LedgerService_RecordMessageEvent_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *ledgerServiceClient) FetchMessageEvents(ctx context.Context, in *FetchMessageEventsRequest, opts ...grpc.CallOption) (*FetchMessageEventsResponse, error) {
+	out := new(FetchMessageEventsResponse)
+	err := c.cc.Invoke(ctx, LedgerService_FetchMessageEvents_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LedgerServiceServer is the server API for LedgerService service.
 // All implementations must embed UnimplementedLedgerServiceServer
 // for forward compatibility
@@ -87,6 +131,10 @@ type LedgerServiceServer interface {
 	FetchMessages(context.Context, *FetchMessagesRequest) (*FetchMessagesResponse, error)
 	UpdateReceipt(context.Context, *UpdateReceiptRequest) (*UpdateReceiptResponse, error)
 	GetReceipts(context.Context, *GetReceiptsRequest) (*GetReceiptsResponse, error)
+	RecordMessageAuthor(context.Context, *RecordMessageAuthorRequest) (*RecordMessageAuthorResponse, error)
+	GetMessageAuthor(context.Context, *GetMessageAuthorRequest) (*GetMessageAuthorResponse, error)
+	RecordMessageEvent(context.Context, *RecordMessageEventRequest) (*RecordMessageEventResponse, error)
+	FetchMessageEvents(context.Context, *FetchMessageEventsRequest) (*FetchMessageEventsResponse, error)
 	mustEmbedUnimplementedLedgerServiceServer()
 }
 
@@ -105,6 +153,18 @@ func (UnimplementedLedgerServiceServer) UpdateReceipt(context.Context, *UpdateRe
 }
 func (UnimplementedLedgerServiceServer) GetReceipts(context.Context, *GetReceiptsRequest) (*GetReceiptsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetReceipts not implemented")
+}
+func (UnimplementedLedgerServiceServer) RecordMessageAuthor(context.Context, *RecordMessageAuthorRequest) (*RecordMessageAuthorResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RecordMessageAuthor not implemented")
+}
+func (UnimplementedLedgerServiceServer) GetMessageAuthor(context.Context, *GetMessageAuthorRequest) (*GetMessageAuthorResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetMessageAuthor not implemented")
+}
+func (UnimplementedLedgerServiceServer) RecordMessageEvent(context.Context, *RecordMessageEventRequest) (*RecordMessageEventResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RecordMessageEvent not implemented")
+}
+func (UnimplementedLedgerServiceServer) FetchMessageEvents(context.Context, *FetchMessageEventsRequest) (*FetchMessageEventsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FetchMessageEvents not implemented")
 }
 func (UnimplementedLedgerServiceServer) mustEmbedUnimplementedLedgerServiceServer() {}
 
@@ -191,6 +251,78 @@ func _LedgerService_GetReceipts_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LedgerService_RecordMessageAuthor_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RecordMessageAuthorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LedgerServiceServer).RecordMessageAuthor(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LedgerService_RecordMessageAuthor_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LedgerServiceServer).RecordMessageAuthor(ctx, req.(*RecordMessageAuthorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LedgerService_GetMessageAuthor_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetMessageAuthorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LedgerServiceServer).GetMessageAuthor(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LedgerService_GetMessageAuthor_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LedgerServiceServer).GetMessageAuthor(ctx, req.(*GetMessageAuthorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LedgerService_RecordMessageEvent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RecordMessageEventRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LedgerServiceServer).RecordMessageEvent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LedgerService_RecordMessageEvent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LedgerServiceServer).RecordMessageEvent(ctx, req.(*RecordMessageEventRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LedgerService_FetchMessageEvents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FetchMessageEventsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LedgerServiceServer).FetchMessageEvents(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LedgerService_FetchMessageEvents_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LedgerServiceServer).FetchMessageEvents(ctx, req.(*FetchMessageEventsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LedgerService_ServiceDesc is the grpc.ServiceDesc for LedgerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -213,6 +345,22 @@ var LedgerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetReceipts",
 			Handler:    _LedgerService_GetReceipts_Handler,
+		},
+		{
+			MethodName: "RecordMessageAuthor",
+			Handler:    _LedgerService_RecordMessageAuthor_Handler,
+		},
+		{
+			MethodName: "GetMessageAuthor",
+			Handler:    _LedgerService_GetMessageAuthor_Handler,
+		},
+		{
+			MethodName: "RecordMessageEvent",
+			Handler:    _LedgerService_RecordMessageEvent_Handler,
+		},
+		{
+			MethodName: "FetchMessageEvents",
+			Handler:    _LedgerService_FetchMessageEvents_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

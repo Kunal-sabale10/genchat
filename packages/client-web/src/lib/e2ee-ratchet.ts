@@ -8,6 +8,8 @@
  * 4. Automatic envelope encryption & transparent decryption with legacy fallback.
  */
 
+import { SafetyNumberManager } from './safety-numbers'
+
 export interface EncryptedEnvelope {
   protocol: 'genchat-pq-v1'
   conversationId: string
@@ -156,24 +158,15 @@ export class E2eeService {
 
   /**
    * Generates a formatted 60-digit numeric Safety Number for peer verification
-   * (e.g. "12345 67890 12345 67890 ...") based on SHA-256 of the two user IDs.
+   * Delegated to SafetyNumberManager as single source of truth.
    */
-  public static async generateSafetyNumber(userIdA: string, userIdB: string): Promise<string> {
-    const sorted = [userIdA, userIdB].sort().join(':')
-    const enc = new TextEncoder()
-    const hash = await crypto.subtle.digest('SHA-256', enc.encode(`genchat_safety_number:${sorted}`))
-    const hashBytes = new Uint8Array(hash)
-
-    // Convert hash into a 60-digit display number (12 blocks of 5 digits)
-    const blocks: string[] = []
-    for (let i = 0; i < 12; i++) {
-      const b1 = hashBytes[i * 2] || 0
-      const b2 = hashBytes[i * 2 + 1] || 0
-      const val = ((b1 << 8) | b2) % 100000
-      blocks.push(val.toString().padStart(5, '0'))
-    }
-
-    return blocks.join(' ')
+  public static async generateSafetyNumber(
+    userAOrIdA: string,
+    keyAOrIdB: Uint8Array | string,
+    userIdB?: string,
+    identityKeyB?: Uint8Array | string
+  ): Promise<string> {
+    return SafetyNumberManager.computeSafetyNumber(userAOrIdA, keyAOrIdB, userIdB, identityKeyB)
   }
 
   /**

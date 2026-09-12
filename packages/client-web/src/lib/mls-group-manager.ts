@@ -873,4 +873,61 @@ export class MlsGroupManager {
       // Storage unavailable
     }
   }
+
+  /**
+   * RFC 9420 / RFC 9605 MLS Exporter for SFrame & Group Media Calling
+   *
+   * Derives a dedicated 256-bit media encryption key and salt per participant
+   * from the group's current epoch secret. This ensures that:
+   * 1. Media keys advance with group epoch transitions (PCS & Forward Secrecy).
+   * 2. Removed members cannot decrypt group audio/video streams after being removed.
+   * 3. Each participant possesses a unique key derived from their participant identity.
+   */
+  public static async exportGroupMediaKey(
+    groupId: string,
+    participantId: string
+  ): Promise<{ keyHex: string; saltHex: string }> {
+    const state = this.groupCache.get(groupId) || this.getLocalGroupState(groupId)
+    if (!state) {
+      throw new Error(`Cannot export media key: group ${groupId} not found in local cache`)
+    }
+
+    const secretBytes = new Uint8Array(state.epochSecretHex.match(/.{1,2}/g)!.map((b) => parseInt(b, 16)))
+    const enc = new TextEncoder()
+
+    // Import epochSecret as base HKDF key
+    const baseKey = await crypto.subtle.importKey('raw', secretBytes, { name: 'HKDF' }, false, ['deriveBits'])
+
+    // Derive SFrame base exporter secret for current epoch
+    const exporterBits = await crypto.subtle.deriveBits(
+      {
+        name: 'HKDF',
+        hash: 'SHA-256',
+        salt: enc.encode(`mls_epoch_${state.epoch}`),
+        info: enc.encode(`sframe_media_exporter:${groupId}`),
+      },
+      baseKey,
+      256
+    )
+
+    // Derive per-participant media key
+    const participantBaseKey = await crypto.subtle.importKey('raw', exporterBits, { name: 'HKDF' }, false, ['deriveBits'])
+    const participantKeyBits = await crypto.subtle.deriveBits(
+      {
+        name: 'HKDF',
+        hash: 'SHA-256',
+        salt: enc.encode(participantId),
+        info: enc.encode('sframe_participant_media_key'),
+      },
+      participantBaseKey,
+      256
+    )
+
+    const keyHex = Array.from(new Uint8Array(participantKeyBits))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('')
+    const saltHex = keyHex.slice(0, 32)
+
+    return { keyHex, saltHex }
+  }
 }

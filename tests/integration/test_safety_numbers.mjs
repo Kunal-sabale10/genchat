@@ -11,26 +11,57 @@ console.log('=== Starting Cryptographic Safety Numbers & Trust Verification Test
 // -------------------------------------------------------------
 console.log('--- Testing Deterministic Symmetry & 60-Digit Derivation ---');
 
-function computeSafetyNumberNode(userIdA, userIdB) {
-  const sorted = [userIdA, userIdB].sort().join(':');
-  const hash = createHash('sha256').update(`genchat_safety_number:${sorted}`).digest();
+function computeSafetyNumberNode(userAOrIdA, keyAOrIdB, userIdB, identityKeyB) {
+  let uA = userAOrIdA;
+  let kA = '';
+  let uB = '';
+  let kB = '';
+
+  if (userIdB !== undefined && identityKeyB !== undefined) {
+    uA = userAOrIdA;
+    kA = typeof keyAOrIdB === 'string' ? keyAOrIdB : Buffer.from(keyAOrIdB).toString('hex');
+    uB = userIdB;
+    kB = typeof identityKeyB === 'string' ? identityKeyB : Buffer.from(identityKeyB).toString('hex');
+  } else {
+    uA = userAOrIdA;
+    uB = typeof keyAOrIdB === 'string' ? keyAOrIdB : '';
+  }
+
+  const partyA = { userId: uA, key: kA };
+  const partyB = { userId: uB, key: kB };
+
+  const cmp = (partyA.userId + ':' + partyA.key).localeCompare(partyB.userId + ':' + partyB.key);
+  const [p1, p2] = cmp <= 0 ? [partyA, partyB] : [partyB, partyA];
+
+  const prefix = 'genchat-safety-v1:';
+  const payload = Buffer.from(`${prefix}${p1.userId}:${p1.key}:${p2.userId}:${p2.key}`);
+
+  let currentHash = createHash('sha512').update(payload).digest();
+  for (let i = 0; i < 5; i++) {
+    currentHash = createHash('sha512').update(currentHash).digest();
+  }
 
   const blocks = [];
   for (let i = 0; i < 12; i++) {
-    const b1 = hash[i * 2] || 0;
-    const b2 = hash[i * 2 + 1] || 0;
-    const val = ((b1 << 8) | b2) % 100000;
+    const b0 = currentHash[i * 4] || 0;
+    const b1 = currentHash[i * 4 + 1] || 0;
+    const b2 = currentHash[i * 4 + 2] || 0;
+    const b3 = currentHash[i * 4 + 3] || 0;
+    const val = (((b0 << 24) | (b1 << 16) | (b2 << 8) | b3) >>> 0) % 100000;
     blocks.push(val.toString().padStart(5, '0'));
   }
   return blocks.join(' ');
 }
 
 const aliceId = 'usr_alice_847192a01';
+const aliceKey = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
 const bobId = 'usr_bob_991823b02';
+const bobKey = 'f0e1d2c3b4a5968778695a4b3c2d1e0ff0e1d2c3b4a5968778695a4b3c2d1e0f';
 const charlieId = 'usr_charlie_551829c03';
+const charlieKey = '11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff';
 
-const aliceForBob = computeSafetyNumberNode(aliceId, bobId);
-const bobForAlice = computeSafetyNumberNode(bobId, aliceId);
+const aliceForBob = computeSafetyNumberNode(aliceId, aliceKey, bobId, bobKey);
+const bobForAlice = computeSafetyNumberNode(bobId, bobKey, aliceId, aliceKey);
 
 assert.strictEqual(aliceForBob, bobForAlice, 'Safety numbers must be deterministically symmetric');
 
@@ -47,7 +78,7 @@ const allDigits = aliceForBob.replace(/\s+/g, '');
 assert.strictEqual(allDigits.length, 60, 'Total safety number length must be exactly 60 digits');
 
 // Different contact pairs must produce different numbers
-const aliceForCharlie = computeSafetyNumberNode(aliceId, charlieId);
+const aliceForCharlie = computeSafetyNumberNode(aliceId, aliceKey, charlieId, charlieKey);
 assert.notStrictEqual(aliceForBob, aliceForCharlie, 'Safety numbers must be unique per contact pair');
 
 console.log(`✓ Alice & Bob Safety Number: ${aliceForBob}`);
@@ -181,9 +212,10 @@ assert(verifiedRec.verifiedAt > 0);
 assert.strictEqual(verifiedRec.hasChanged, false);
 console.log(`✓ Contact marked as verified (timestamp: ${verifiedRec.verifiedAt}).`);
 
-// 3. Key Change / MITM Event: Bob rotates identity key (or reinstalled app)
-const rotatedBobId = 'usr_bob_991823b02_v2';
-const newSafetyNumber = computeSafetyNumberNode(aliceId, rotatedBobId);
+// 3. Key Change / MITM Event: Bob rotates identity key (same user ID, different public key)
+const rotatedBobKey = '99887766554433221100aabbccddeeff99887766554433221100aabbccddeeff';
+const newSafetyNumber = computeSafetyNumberNode(aliceId, aliceKey, bobId, rotatedBobKey);
+assert.notStrictEqual(newSafetyNumber, aliceForBob, 'Rotating identity key must produce completely different safety number');
 
 // Query with new safety number -> triggers key change warning!
 const changedRec = trustStore.getTrustRecord(bobId, newSafetyNumber);

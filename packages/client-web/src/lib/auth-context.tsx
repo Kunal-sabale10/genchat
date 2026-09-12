@@ -6,16 +6,17 @@ export interface AuthUser {
   deviceId: string
   displayName?: string
   avatarUrl?: string
+  identityKey?: string
 }
 
 export interface AuthContextValue {
   user: AuthUser | null
   accessToken: string | null
   isLoading: boolean
-  login: (accessToken: string, refreshToken: string, userId: string, deviceId: string, displayName?: string, avatarUrl?: string) => void
+  login: (accessToken: string, refreshToken: string, userId: string, deviceId: string, displayName?: string, avatarUrl?: string, identityKey?: string) => void
   logout: () => void
   refreshAccessToken: () => Promise<void>
-  updateUser: (updates: { displayName?: string; avatarUrl?: string }) => void
+  updateUser: (updates: { displayName?: string; avatarUrl?: string; identityKey?: string }) => void
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -32,8 +33,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // WebSocket is now managed by ChatPage's GatewayClient — no dual connection
 
-  const login = useCallback((token: string, refreshToken: string, userId: string, deviceId: string, displayName?: string, avatarUrl?: string) => {
-    const authUser: AuthUser = { userId, deviceId, displayName, avatarUrl }
+  const login = useCallback((token: string, refreshToken: string, userId: string, deviceId: string, displayName?: string, avatarUrl?: string, identityKey?: string) => {
+    const authUser: AuthUser = { userId, deviceId, displayName, avatarUrl, identityKey }
     setUser(authUser)
     setAccessToken(token)
     sessionStorage.setItem('genchat_user', JSON.stringify(authUser))
@@ -41,7 +42,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sessionStorage.setItem('genchat_refresh_token', refreshToken)
   }, [])
 
-  const updateUser = useCallback((updates: { displayName?: string; avatarUrl?: string }) => {
+  const updateUser = useCallback((updates: { displayName?: string; avatarUrl?: string; identityKey?: string }) => {
     setUser(prev => {
       if (!prev) return null
       const next = { ...prev, ...updates }
@@ -77,14 +78,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [logout])
 
-  // Refresh profile if displayName or avatarUrl is not populated yet
+  // Refresh profile if displayName, avatarUrl, or identityKey is not populated yet
   useEffect(() => {
     if (!accessToken || !user) return
-    if (!user.displayName && !user.avatarUrl) {
+    if (!user.displayName && !user.avatarUrl || !user.identityKey) {
       AuthService.getProfile(accessToken)
         .then(profile => {
-          if (profile && (profile.displayName || profile.avatarUrl)) {
-            updateUser({ displayName: profile.displayName, avatarUrl: profile.avatarUrl })
+          if (profile) {
+            updateUser({ displayName: profile.displayName, avatarUrl: profile.avatarUrl, identityKey: profile.identityKey })
           }
         })
         .catch(() => {

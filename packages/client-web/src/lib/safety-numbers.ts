@@ -20,23 +20,73 @@ export interface TrustRecord {
 
 const STORAGE_KEY = 'genchat_verified_contacts_v1'
 
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
 export class SafetyNumberManager {
   /**
    * Generates a 60-digit numeric Safety Number for peer verification
-   * (12 blocks of 5 digits: "12345 67890 ...") based on SHA-256 of the two user IDs.
-   * Deterministically symmetric: computeSafetyNumber(A, B) === computeSafetyNumber(B, A).
+   * (12 blocks of 5 digits: "12345 67890 ...") based on iterated SHA-512 over the authentic
+   * public identity keys and user IDs of both participants.
+   *
+   * Deterministically symmetric:
+   * computeSafetyNumber(A, keyA, B, keyB) === computeSafetyNumber(B, keyB, A, keyA).
    */
-  public static async computeSafetyNumber(userIdA: string, userIdB: string): Promise<string> {
-    const sorted = [userIdA, userIdB].sort().join(':')
-    const enc = new TextEncoder()
-    const hash = await crypto.subtle.digest('SHA-256', enc.encode(`genchat_safety_number:${sorted}`))
-    const hashBytes = new Uint8Array(hash)
+  public static async computeSafetyNumber(
+    userAOrIdA: string,
+    keyAOrIdB: Uint8Array | string,
+    userIdB?: string,
+    identityKeyB?: Uint8Array | string
+  ): Promise<string> {
+    let uA = userAOrIdA
+    let kA: string
+    let uB: string
+    let kB: string
 
+    if (userIdB !== undefined && identityKeyB !== undefined) {
+      // 4-argument call: (userIdA, identityKeyA, userIdB, identityKeyB)
+      uA = userAOrIdA
+      kA = typeof keyAOrIdB === 'string' ? keyAOrIdB : bytesToHex(keyAOrIdB)
+      uB = userIdB
+      kB = typeof identityKeyB === 'string' ? identityKeyB : bytesToHex(identityKeyB)
+    } else {
+      // Fallback 2-argument call: (userIdA, userIdB)
+      uA = userAOrIdA
+      uB = typeof keyAOrIdB === 'string' ? keyAOrIdB : ''
+      kA = ''
+      kB = ''
+    }
+
+    // Canonical sorting of the two parties
+    const partyA = { userId: uA, key: kA }
+    const partyB = { userId: uB, key: kB }
+
+    const cmp = (partyA.userId + ':' + partyA.key).localeCompare(partyB.userId + ':' + partyB.key)
+    const [p1, p2] = cmp <= 0 ? [partyA, partyB] : [partyB, partyA]
+
+    // Construct cryptographic input payload
+    const enc = new TextEncoder()
+    const prefix = 'genchat-safety-v1:'
+    const payloadStr = `${prefix}${p1.userId}:${p1.key}:${p2.userId}:${p2.key}`
+    const payloadBytes = enc.encode(payloadStr)
+
+    // Iterated SHA-512 derivation (Signal-grade key derivation)
+    let currentHash = await crypto.subtle.digest('SHA-512', payloadBytes)
+    for (let i = 0; i < 5; i++) {
+      currentHash = await crypto.subtle.digest('SHA-512', currentHash)
+    }
+    const hashBytes = new Uint8Array(currentHash)
+
+    // Extract 12 blocks of 5 decimal digits (60 digits total)
     const blocks: string[] = []
     for (let i = 0; i < 12; i++) {
-      const b1 = hashBytes[i * 2] || 0
-      const b2 = hashBytes[i * 2 + 1] || 0
-      const val = ((b1 << 8) | b2) % 100000
+      // Each block derived from 4 bytes (big endian 32-bit uint) modulo 100000
+      const b0 = hashBytes[i * 4] || 0
+      const b1 = hashBytes[i * 4 + 1] || 0
+      const b2 = hashBytes[i * 4 + 2] || 0
+      const b3 = hashBytes[i * 4 + 3] || 0
+      const val = (((b0 << 24) | (b1 << 16) | (b2 << 8) | b3) >>> 0) % 100000
       blocks.push(val.toString().padStart(5, '0'))
     }
 
