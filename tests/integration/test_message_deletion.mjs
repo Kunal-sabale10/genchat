@@ -116,18 +116,28 @@ function connectWs(token) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`${GATEWAY_WS_URL}/ws?token=${encodeURIComponent(token)}`);
     const queue = [];
-    const listeners = [];
+    const pending = [];
+
+    const processQueue = () => {
+      for (let pIdx = 0; pIdx < pending.length; pIdx++) {
+        const p = pending[pIdx];
+        const qIdx = queue.findIndex(p.predicate);
+        if (qIdx !== -1) {
+          const [match] = queue.splice(qIdx, 1);
+          clearTimeout(p.timer);
+          pending.splice(pIdx, 1);
+          pIdx--;
+          p.resolve(match);
+        }
+      }
+    };
 
     ws.onmessage = async (event) => {
       try {
         const text = typeof event.data === 'string' ? event.data : await event.data.text();
         const parsed = JSON.parse(text);
-        if (listeners.length > 0) {
-          const fn = listeners.shift();
-          fn(parsed);
-        } else {
-          queue.push(parsed);
-        }
+        queue.push(parsed);
+        processQueue();
       } catch (err) {
         console.error('WS Parse Error:', err);
       }
@@ -144,29 +154,20 @@ function connectWs(token) {
         },
         nextFrame(predicate, timeoutMs = 4000) {
           return new Promise((res, rej) => {
-            const timer = setTimeout(() => {
-              rej(new Error(`Timeout waiting for frame matching predicate (received ${queue.length} in queue)`));
+            const entry = {
+              predicate: predicate || (() => true),
+              resolve: res,
+              reject: rej,
+              timer: null,
+            };
+            entry.timer = setTimeout(() => {
+              const idx = pending.indexOf(entry);
+              if (idx !== -1) pending.splice(idx, 1);
+              rej(new Error(`Timeout waiting for frame matching predicate (received ${queue.length} in queue: ${JSON.stringify(queue.map(f => f.type))})`));
             }, timeoutMs);
 
-            const checkQueue = () => {
-              for (let i = 0; i < queue.length; i++) {
-                if (!predicate || predicate(queue[i])) {
-                  clearTimeout(timer);
-                  const item = queue.splice(i, 1)[0];
-                  return res(item);
-                }
-              }
-              listeners.push((frame) => {
-                if (!predicate || predicate(frame)) {
-                  clearTimeout(timer);
-                  res(frame);
-                } else {
-                  queue.push(frame);
-                  checkQueue();
-                }
-              });
-            };
-            checkQueue();
+            pending.push(entry);
+            processQueue();
           });
         },
       });
