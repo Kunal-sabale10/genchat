@@ -153,7 +153,7 @@ services:
       start_period: 15s
 
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -174,7 +174,7 @@ services:
   # this, every upload/download fails with NoSuchBucket even with a
   # correctly-signed URL.
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:latest
     depends_on:
       minio:
         condition: service_healthy
