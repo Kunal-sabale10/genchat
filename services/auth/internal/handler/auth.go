@@ -34,6 +34,7 @@ type AuthStore interface {
 	GetDeviceByID(ctx context.Context, id uuid.UUID) (*store.Device, error)
 	GetDevicesByUser(ctx context.Context, userID uuid.UUID) ([]*store.Device, error)
 	UpdateDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error
+	UpdateDeviceIdentityKey(ctx context.Context, deviceID uuid.UUID, identityKey []byte) error
 
 	UploadPreKeyBundle(ctx context.Context, deviceID uuid.UUID, spk, spkSig []byte, spkID uint32, pqpk, pqpkSig []byte, pqpkID uint32) error
 	UploadOneTimeKeys(ctx context.Context, deviceID uuid.UUID, keys []store.OTK) error

@@ -99,6 +99,10 @@ func (m *mockAuthStore) UpdateDeviceLastSeen(ctx context.Context, deviceID uuid.
 	return nil
 }
 
+func (m *mockAuthStore) UpdateDeviceIdentityKey(ctx context.Context, deviceID uuid.UUID, identityKey []byte) error {
+	return nil
+}
+
 func (m *mockAuthStore) UploadPreKeyBundle(ctx context.Context, deviceID uuid.UUID, spk, spkSig []byte, spkID uint32, pqpk, pqpkSig []byte, pqpkID uint32) error {
 	m.prekeys[deviceID] = &store.PreKeyBundle{
 		DeviceID: deviceID,

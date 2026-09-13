@@ -1363,6 +1363,29 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			}
 		}
 
+		idKeyRaw, _ := raw["identityKey"].(string)
+		if idKeyRaw == "" {
+			idKeyRaw, _ = raw["identity_key"].(string)
+		}
+		idKeyX25519Raw, _ := raw["identityKeyX25519"].(string)
+		if idKeyX25519Raw == "" {
+			idKeyX25519Raw, _ = raw["identity_key_x25519"].(string)
+		}
+
+		if idKeyRaw != "" {
+			if idKeyBytes, err := base64.StdEncoding.DecodeString(idKeyRaw); err == nil && len(idKeyBytes) > 0 {
+				finalIdentKey := idKeyBytes
+				if idKeyX25519Raw != "" {
+					if xBytes, err := base64.StdEncoding.DecodeString(idKeyX25519Raw); err == nil && len(xBytes) == 32 {
+						finalIdentKey = append(finalIdentKey, xBytes...)
+					}
+				}
+				if dUUID, err := uuid.Parse(deviceID); err == nil && h.store != nil {
+					_ = h.store.UpdateDeviceIdentityKey(r.Context(), dUUID, finalIdentKey)
+				}
+			}
+		}
+
 		ctx := WithUserAndDevice(r.Context(), claims.Sub, claims.DeviceID)
 		resp, err := h.UploadPreKeyBundle(ctx, pbReq)
 		if err != nil {
@@ -1539,8 +1562,8 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			}
 		}
 
-		if targetDeviceID == "" {
-			writeErrorJSON(w, r, "deviceId is required", http.StatusBadRequest, nil)
+		if targetDeviceID == "" && targetUserID == "" {
+			writeErrorJSON(w, r, "deviceId or userId is required", http.StatusBadRequest, nil)
 			return
 		}
 
@@ -1565,9 +1588,17 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 		}
 
 		// Format bundle nicely for JSON clients with base64 strings
+		idKeyB64 := base64.StdEncoding.EncodeToString(resp.Bundle.IdentityKey)
+		idKeyX25519B64 := idKeyB64
+		if len(resp.Bundle.IdentityKey) >= 64 {
+			idKeyB64 = base64.StdEncoding.EncodeToString(resp.Bundle.IdentityKey[:32])
+			idKeyX25519B64 = base64.StdEncoding.EncodeToString(resp.Bundle.IdentityKey[32:64])
+		}
+
 		out := map[string]any{
 			"bundle": map[string]any{
-				"identityKey": base64.StdEncoding.EncodeToString(resp.Bundle.IdentityKey),
+				"identityKey":       idKeyB64,
+				"identityKeyX25519": idKeyX25519B64,
 				"signedPreKey": map[string]any{
 					"keyId":     resp.Bundle.SignedPreKey.KeyId,
 					"publicKey": base64.StdEncoding.EncodeToString(resp.Bundle.SignedPreKey.PublicKey),

@@ -1,0 +1,16 @@
+{
+  "name": "genchat-crypto-wasm",
+  "type": "module",
+  "description": "WebAssembly bindings for GenChat PQXDH and Double Ratchet cryptographic core",
+  "version": "0.1.0",
+  "files": [
+    "genchat_crypto_wasm_bg.wasm",
+    "genchat_crypto_wasm.js",
+    "genchat_crypto_wasm.d.ts"
+  ],
+  "main": "genchat_crypto_wasm.js",
+  "types": "genchat_crypto_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

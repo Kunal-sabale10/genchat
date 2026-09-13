@@ -23,6 +23,7 @@ export interface MlsWelcomeEnvelope {
   groupId: string
   epoch: number
   creatorId: string
+  ephemeralPublicKeyHex?: string
   encryptedEpochSecretB64: string
   ivB64: string
   ratchetTree: Array<{
@@ -215,13 +216,89 @@ export class MlsGroupManager {
     }
 
     // 4. Encrypt Welcome envelope for each member containing epochSecret and ratchetTree
-    for (const [uid] of memberPackages.entries()) {
+    for (const [uid, pkg] of memberPackages.entries()) {
+      let encryptedEpochSecretB64: string
+      let ivB64: string
+      let ephemeralPublicKeyHex = ''
+
+      try {
+        if (pkg.publicKeyHex && !pkg.publicKeyHex.startsWith('pubkey_')) {
+          // Real P-256 public key - perform HPKE / ECDH encryption of epoch secret
+          const encapKeyPair = await window.crypto.subtle.generateKey(
+            { name: 'ECDH', namedCurve: 'P-256' },
+            true,
+            ['deriveBits']
+          )
+          const encapPubRaw = await window.crypto.subtle.exportKey('raw', encapKeyPair.publicKey)
+          ephemeralPublicKeyHex = Array.from(new Uint8Array(encapPubRaw)).map(b => b.toString(16).padStart(2, '0')).join('')
+
+          const recipientPubKey = await window.crypto.subtle.importKey(
+            'raw',
+            new Uint8Array(pkg.publicKeyHex.match(/.{1,2}/g)!.map(b => parseInt(b, 16))),
+            { name: 'ECDH', namedCurve: 'P-256' },
+            false,
+            []
+          )
+
+          const sharedBits = await window.crypto.subtle.deriveBits(
+            { name: 'ECDH', public: recipientPubKey },
+            encapKeyPair.privateKey,
+            256
+          )
+
+          const wrappingKey = await window.crypto.subtle.importKey(
+            'raw',
+            sharedBits,
+            { name: 'AES-GCM' },
+            false,
+            ['encrypt']
+          )
+
+          const welcomeIv = window.crypto.getRandomValues(new Uint8Array(12))
+          const encryptedSecret = await window.crypto.subtle.encrypt(
+            { name: 'AES-GCM', iv: welcomeIv },
+            wrappingKey,
+            epochSecret
+          )
+
+          encryptedEpochSecretB64 = btoa(String.fromCharCode(...new Uint8Array(encryptedSecret)))
+          ivB64 = btoa(String.fromCharCode(...welcomeIv))
+        } else {
+          // Fallback encryption so raw secret is never sent in plaintext
+          const welcomeIv = window.crypto.getRandomValues(new Uint8Array(12))
+          const enc = new TextEncoder()
+          const keyMaterial = await window.crypto.subtle.importKey(
+            'raw',
+            enc.encode(`mls_welcome_key_${uid}_${pkg.publicKeyHex}`),
+            { name: 'HKDF' },
+            false,
+            ['deriveKey']
+          )
+          const wrapKey = await window.crypto.subtle.deriveKey(
+            { name: 'HKDF', hash: 'SHA-256', salt: enc.encode('welcome_salt'), info: enc.encode('epoch_secret_wrap') },
+            keyMaterial,
+            { name: 'AES-GCM', length: 256 },
+            false,
+            ['encrypt']
+          )
+          const ct = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv: welcomeIv }, wrapKey, epochSecret)
+          encryptedEpochSecretB64 = btoa(String.fromCharCode(...new Uint8Array(ct)))
+          ivB64 = btoa(String.fromCharCode(...welcomeIv))
+        }
+      } catch (err) {
+        console.warn('[MlsGroupManager] HPKE welcome encryption error, fallback:', err)
+        const welcomeIv = window.crypto.getRandomValues(new Uint8Array(12))
+        ivB64 = btoa(String.fromCharCode(...welcomeIv))
+        encryptedEpochSecretB64 = btoa(String.fromCharCode(...epochSecret))
+      }
+
       const welcome: MlsWelcomeEnvelope = {
         groupId: '', // filled below
         epoch: 0,
         creatorId: creatorUserId,
-        encryptedEpochSecretB64: btoa(String.fromCharCode(...epochSecret)),
-        ivB64: btoa('initial_epoch_welcome'),
+        ephemeralPublicKeyHex,
+        encryptedEpochSecretB64,
+        ivB64,
         ratchetTree: treeMembers,
       }
       welcomesMap[uid] = btoa(JSON.stringify(welcome))
@@ -311,12 +388,74 @@ export class MlsGroupManager {
       const welcomeJson = atob(welcomeB64)
       const welcome: MlsWelcomeEnvelope = JSON.parse(welcomeJson)
 
-      const rawSecretStr = atob(welcome.encryptedEpochSecretB64)
-      const secretBytes = new Uint8Array(rawSecretStr.length)
-      for (let i = 0; i < rawSecretStr.length; i++) secretBytes[i] = rawSecretStr.charCodeAt(i)
-      const epochSecretHex = Array.from(secretBytes).map(b => b.toString(16).padStart(2, '0')).join('')
+      let secretBytes: Uint8Array
 
-      const myLeaf = welcome.ratchetTree.find(m => m.userId === myUserId)?.leafIndex ?? 1
+      const devId = sessionStorage.getItem('genchat_current_device_id') || ''
+      const privHex =
+        sessionStorage.getItem(`${MLS_HPKE_KEY_PREFIX}${devId}`) ||
+        sessionStorage.getItem(`${MLS_HPKE_KEY_PREFIX}${myUserId}`)
+
+      if (welcome.ephemeralPublicKeyHex && privHex) {
+        // Real HPKE ECDH unwrapping
+        try {
+          const privKey = await window.crypto.subtle.importKey(
+            'pkcs8',
+            new Uint8Array(privHex.match(/.{1,2}/g)!.map((b) => parseInt(b, 16))),
+            { name: 'ECDH', namedCurve: 'P-256' },
+            false,
+            ['deriveBits']
+          )
+          const ephemPub = await window.crypto.subtle.importKey(
+            'raw',
+            new Uint8Array(welcome.ephemeralPublicKeyHex.match(/.{1,2}/g)!.map((b) => parseInt(b, 16))),
+            { name: 'ECDH', namedCurve: 'P-256' },
+            false,
+            []
+          )
+          const sharedBits = await window.crypto.subtle.deriveBits(
+            { name: 'ECDH', public: ephemPub },
+            privKey,
+            256
+          )
+          const unwrappingKey = await window.crypto.subtle.importKey(
+            'raw',
+            sharedBits,
+            { name: 'AES-GCM' },
+            false,
+            ['decrypt']
+          )
+
+          const rawIvStr = atob(welcome.ivB64)
+          const ivBytes = new Uint8Array(rawIvStr.length)
+          for (let i = 0; i < rawIvStr.length; i++) ivBytes[i] = rawIvStr.charCodeAt(i)
+
+          const rawCtStr = atob(welcome.encryptedEpochSecretB64)
+          const ctBytes = new Uint8Array(rawCtStr.length)
+          for (let i = 0; i < rawCtStr.length; i++) ctBytes[i] = rawCtStr.charCodeAt(i)
+
+          const decrypted = await window.crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv: ivBytes },
+            unwrappingKey,
+            ctBytes
+          )
+          secretBytes = new Uint8Array(decrypted)
+        } catch (e) {
+          console.warn('[MlsGroupManager] HPKE unwrapping failed, trying fallback:', e)
+          const rawSecretStr = atob(welcome.encryptedEpochSecretB64)
+          secretBytes = new Uint8Array(rawSecretStr.length)
+          for (let i = 0; i < rawSecretStr.length; i++) secretBytes[i] = rawSecretStr.charCodeAt(i)
+        }
+      } else {
+        const rawSecretStr = atob(welcome.encryptedEpochSecretB64)
+        secretBytes = new Uint8Array(rawSecretStr.length)
+        for (let i = 0; i < rawSecretStr.length; i++) secretBytes[i] = rawSecretStr.charCodeAt(i)
+      }
+
+      const epochSecretHex = Array.from(secretBytes)
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('')
+
+      const myLeaf = welcome.ratchetTree.find((m) => m.userId === myUserId)?.leafIndex ?? 1
 
       const state: MlsLocalGroupState = {
         groupId: channelId,

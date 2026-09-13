@@ -383,6 +383,7 @@ export default function ChatPage() {
     if (token && user?.deviceId && user?.userId) {
       PreKeyManager.checkAndReplenish(token, user.deviceId)
       MlsGroupManager.publishKeyPackage(user.userId, user.deviceId, token)
+      E2eeService.initUserKeys(user.userId, user.deviceId, token)
     }
   }, [accessToken, user?.deviceId, user?.userId])
 
@@ -1026,8 +1027,8 @@ export default function ChatPage() {
     const peerId = activeConversation.id
     setSafetyPeerId(peerId)
     const peerUser = availableUsers.find((u) => u.userId === peerId)
-    const myKey = user.identityKey || ''
-    const peerKey = peerUser?.identityKey || ''
+    const myKey = E2eeService.getPublicIdentityKey() || user.identityKey || ''
+    const peerKey = E2eeService.getPeerIdentityKey(peerId) || peerUser?.identityKey || ''
     SafetyNumberManager.computeSafetyNumber(user.userId, myKey, peerId, peerKey).then((num) => {
       setSafetyNumber(num)
       const record = SafetyNumberManager.getTrustRecord(peerId, num)
@@ -2015,8 +2016,8 @@ export default function ChatPage() {
     const peerId = activeConversation.id
     setSafetyPeerId(peerId)
     const peerUser = availableUsers.find((u) => u.userId === peerId)
-    const myKey = user.identityKey || ''
-    const peerKey = peerUser?.identityKey || ''
+    const myKey = E2eeService.getPublicIdentityKey() || user.identityKey || ''
+    const peerKey = E2eeService.getPeerIdentityKey(peerId) || peerUser?.identityKey || ''
     const num = await SafetyNumberManager.computeSafetyNumber(user.userId, myKey, peerId, peerKey)
     setSafetyNumber(num)
     setShowSafetyModal(true)

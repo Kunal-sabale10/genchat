@@ -97,6 +97,14 @@ func (h *AuthHandler) FetchPreKeyBundle(ctx context.Context, req *chatv1.FetchPr
 		return nil, status.Error(codes.Unauthenticated, "missing or invalid user authentication")
 	}
 
+	if req.DeviceId == "" && req.UserId != "" {
+		if uUUID, err := uuid.Parse(req.UserId); err == nil {
+			if devs, err := h.store.GetDevicesByUser(ctx, uUUID); err == nil && len(devs) > 0 {
+				req.DeviceId = devs[0].ID.String()
+			}
+		}
+	}
+
 	if req.DeviceId == "" {
 		return nil, status.Error(codes.InvalidArgument, "device_id is required")
 	}

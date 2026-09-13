@@ -159,6 +159,9 @@ jobs:
       - name: Run System Security Verification
         run: node tests/integration/test_security_hardening.mjs
 
+      - name: Run True Post-Quantum E2EE & MLS TreeKEM Verification
+        run: node tests/integration/test_true_e2ee.mjs
+
       - name: Run Push Notifications Verification
         run: node tests/integration/test_push_notifications.mjs
 

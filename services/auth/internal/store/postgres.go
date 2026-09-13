@@ -189,6 +189,11 @@ func (s *PostgresStore) UpdateDeviceLastSeen(ctx context.Context, deviceID uuid.
 	return err
 }
 
+func (s *PostgresStore) UpdateDeviceIdentityKey(ctx context.Context, deviceID uuid.UUID, identityKey []byte) error {
+	_, err := s.pool.Exec(ctx, `UPDATE user_devices SET identity_key = $1 WHERE id = $2`, identityKey, deviceID)
+	return err
+}
+
 func (s *PostgresStore) UploadPreKeyBundle(ctx context.Context, deviceID uuid.UUID, spk, spkSig []byte, spkID uint32, pqpk, pqpkSig []byte, pqpkID uint32) error {
 	_, err := s.pool.Exec(ctx, 
 		`INSERT INTO device_pre_keys (device_id, signed_pre_key, signed_pre_key_sig, signed_pre_key_id, pq_pre_key, pq_pre_key_sig, pq_pre_key_id, uploaded_at) 
