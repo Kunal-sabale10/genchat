@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/genchat/services/gateway/internal/blocklist"
 	"github.com/genchat/services/gateway/internal/ledgerclient"
 	"github.com/genchat/services/gateway/internal/metrics"
 	"github.com/genchat/services/gateway/internal/push"
@@ -88,7 +89,17 @@ func main() {
 	dispatcher := push.NewDispatcher(4, 1024)
 	dispatcher.Start(context.Background())
 
-	router := relay.NewRouter(hub, ledger, pushClient, channelClient, dispatcher)
+	authHTTPURL := getEnv("AUTH_HTTP_URL", "")
+	if authHTTPURL == "" {
+		if strings.Contains(authAddr, "localhost") || strings.Contains(authAddr, "127.0.0.1") {
+			authHTTPURL = "http://localhost:8080"
+		} else {
+			authHTTPURL = "http://auth:8080"
+		}
+	}
+	blockChecker := blocklist.NewHTTPBlockChecker(authHTTPURL)
+
+	router := relay.NewRouter(hub, ledger, pushClient, channelClient, dispatcher, blockChecker)
 	wsHandler := ws.NewHandler(hub, router.Handle, limiter, jwtSecret)
 
 	mux := http.NewServeMux()

@@ -181,3 +181,62 @@ CREATE TABLE IF NOT EXISTS channel_mls_commits (
 
 CREATE INDEX IF NOT EXISTS idx_channel_commits_epoch 
     ON channel_mls_commits(channel_id, epoch DESC);
+
+-- 007: Encrypted Key/Account Backup table
+CREATE TABLE IF NOT EXISTS user_key_backups (
+    user_id           UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    backup_ciphertext BYTEA NOT NULL,
+    kdf_salt          BYTEA NOT NULL,
+    kdf_algorithm     TEXT NOT NULL DEFAULT 'argon2id',
+    kdf_params        JSONB NOT NULL,
+    bundle_version    INTEGER NOT NULL DEFAULT 1,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_key_backups_user ON user_key_backups(user_id);
+
+-- 008: Multi-Device Linking Sessions
+CREATE TABLE IF NOT EXISTS device_linking_sessions (
+    session_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    primary_user_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    primary_device_id UUID NOT NULL REFERENCES user_devices(id) ON DELETE CASCADE,
+    ephemeral_pubkey  BYTEA NOT NULL,
+    auth_code_hash    BYTEA NOT NULL,
+    encrypted_bundle  BYTEA,
+    new_device_id     UUID,
+    status            VARCHAR(32) NOT NULL DEFAULT 'pending',
+    expires_at        TIMESTAMPTZ NOT NULL,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_linking_user ON device_linking_sessions(primary_user_id);
+CREATE INDEX IF NOT EXISTS idx_device_linking_expiry ON device_linking_sessions(expires_at);
+
+-- 009: User Blocking and E2EE Voluntary Abuse Reporting
+CREATE TABLE IF NOT EXISTS user_blocks (
+    blocker_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    blocked_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (blocker_id, blocked_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_blocks_blocker ON user_blocks(blocker_id);
+CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id);
+
+CREATE TABLE IF NOT EXISTS abuse_reports (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    reporter_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    reported_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    conversation_id   TEXT NOT NULL,
+    message_id        TEXT,
+    reason            TEXT NOT NULL,
+    decrypted_content TEXT,
+    raw_ciphertext    BYTEA,
+    status            VARCHAR(32) NOT NULL DEFAULT 'pending',
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_abuse_reports_status ON abuse_reports(status);
+CREATE INDEX IF NOT EXISTS idx_abuse_reports_reported ON abuse_reports(reported_id);
+

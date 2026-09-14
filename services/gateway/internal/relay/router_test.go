@@ -80,7 +80,7 @@ func setupTestRouter(ledgerRPC chatv1.LedgerServiceClient, channelRPC chatv1.Cha
 	if ledgerRPC != nil {
 		lc = ledgerclient.NewTestClient(ledgerRPC)
 	}
-	router := NewRouter(hub, lc, nil, channelRPC, nil)
+	router := NewRouter(hub, lc, nil, channelRPC, nil, nil)
 	return router, hub
 }
 

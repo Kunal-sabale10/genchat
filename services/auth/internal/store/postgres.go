@@ -679,5 +679,308 @@ func (s *PostgresStore) GetLatestMlsCommit(ctx context.Context, channelID uuid.U
 	return commit, uint64(epoch), nil
 }
 
+// ---------------------------------------------------------------------
+// Key Backup Storage Methods
+// ---------------------------------------------------------------------
+
+type UserKeyBackup struct {
+	UserID           uuid.UUID `json:"user_id"`
+	BackupCiphertext []byte    `json:"backup_ciphertext"`
+	KdfSalt          []byte    `json:"kdf_salt"`
+	KdfAlgorithm     string    `json:"kdf_algorithm"`
+	KdfParams        []byte    `json:"kdf_params"`
+	BundleVersion    int       `json:"bundle_version"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+func (s *PostgresStore) SaveKeyBackup(ctx context.Context, userID uuid.UUID, ciphertext, salt []byte, algorithm string, params []byte, version int) error {
+	now := time.Now()
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO user_key_backups (user_id, backup_ciphertext, kdf_salt, kdf_algorithm, kdf_params, bundle_version, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+		 ON CONFLICT (user_id) DO UPDATE SET
+		   backup_ciphertext = EXCLUDED.backup_ciphertext,
+		   kdf_salt = EXCLUDED.kdf_salt,
+		   kdf_algorithm = EXCLUDED.kdf_algorithm,
+		   kdf_params = EXCLUDED.kdf_params,
+		   bundle_version = EXCLUDED.bundle_version,
+		   updated_at = EXCLUDED.updated_at`,
+		userID, ciphertext, salt, algorithm, params, version, now,
+	)
+	if err != nil {
+		return fmt.Errorf("save key backup failed: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetKeyBackup(ctx context.Context, userID uuid.UUID) (*UserKeyBackup, error) {
+	b := &UserKeyBackup{UserID: userID}
+	err := s.pool.QueryRow(ctx,
+		`SELECT backup_ciphertext, kdf_salt, kdf_algorithm, kdf_params, bundle_version, updated_at
+		 FROM user_key_backups WHERE user_id = $1`,
+		userID,
+	).Scan(&b.BackupCiphertext, &b.KdfSalt, &b.KdfAlgorithm, &b.KdfParams, &b.BundleVersion, &b.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get key backup failed: %w", err)
+	}
+	return b, nil
+}
+
+func (s *PostgresStore) DeleteKeyBackup(ctx context.Context, userID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM user_key_backups WHERE user_id = $1`, userID)
+	if err != nil {
+		return fmt.Errorf("delete key backup failed: %w", err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------
+// Device Linking Methods
+// ---------------------------------------------------------------------
+
+type DeviceLinkingSession struct {
+	SessionID       uuid.UUID  `json:"session_id"`
+	PrimaryUserID   uuid.UUID  `json:"primary_user_id"`
+	PrimaryDeviceID uuid.UUID  `json:"primary_device_id"`
+	EphemeralPubkey []byte     `json:"ephemeral_pubkey"`
+	AuthCodeHash    []byte     `json:"auth_code_hash"`
+	EncryptedBundle []byte     `json:"encrypted_bundle,omitempty"`
+	NewDeviceID     *uuid.UUID `json:"new_device_id,omitempty"`
+	Status          string     `json:"status"`
+	ExpiresAt       time.Time  `json:"expires_at"`
+	CreatedAt       time.Time  `json:"created_at"`
+}
+
+func (s *PostgresStore) CreateDeviceLinkingSession(ctx context.Context, sessionID, primaryUserID, primaryDeviceID uuid.UUID, ephemeralPubkey, authCodeHash []byte, expiresAt time.Time) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO device_linking_sessions (session_id, primary_user_id, primary_device_id, ephemeral_pubkey, auth_code_hash, status, expires_at, created_at)
+		 VALUES ($1, $2, $3, $4, $5, 'pending', $6, now())`,
+		sessionID, primaryUserID, primaryDeviceID, ephemeralPubkey, authCodeHash, expiresAt,
+	)
+	if err != nil {
+		return fmt.Errorf("create device linking session failed: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetDeviceLinkingSession(ctx context.Context, sessionID uuid.UUID) (*DeviceLinkingSession, error) {
+	d := &DeviceLinkingSession{SessionID: sessionID}
+	err := s.pool.QueryRow(ctx,
+		`SELECT primary_user_id, primary_device_id, ephemeral_pubkey, auth_code_hash, encrypted_bundle, new_device_id, status, expires_at, created_at
+		 FROM device_linking_sessions WHERE session_id = $1`,
+		sessionID,
+	).Scan(&d.PrimaryUserID, &d.PrimaryDeviceID, &d.EphemeralPubkey, &d.AuthCodeHash, &d.EncryptedBundle, &d.NewDeviceID, &d.Status, &d.ExpiresAt, &d.CreatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get device linking session failed: %w", err)
+	}
+	return d, nil
+}
+
+func (s *PostgresStore) ApproveDeviceLinkingSession(ctx context.Context, sessionID uuid.UUID, encryptedBundle []byte, newDeviceID uuid.UUID) error {
+	res, err := s.pool.Exec(ctx,
+		`UPDATE device_linking_sessions
+		 SET encrypted_bundle = $2, new_device_id = $3, status = 'approved'
+		 WHERE session_id = $1 AND expires_at > now()`,
+		sessionID, encryptedBundle, newDeviceID,
+	)
+	if err != nil {
+		return fmt.Errorf("approve device linking session failed: %w", err)
+	}
+	if res.RowsAffected() == 0 {
+		return fmt.Errorf("device linking session not found or expired")
+	}
+	return nil
+}
+
+func (s *PostgresStore) CompleteDeviceLinkingSession(ctx context.Context, sessionID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE device_linking_sessions SET status = 'consumed' WHERE session_id = $1`,
+		sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("complete device linking session failed: %w", err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------
+// Blocking & Abuse Reporting Storage Methods
+// ---------------------------------------------------------------------
+
+func (s *PostgresStore) BlockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO user_blocks (blocker_id, blocked_id, created_at)
+		 VALUES ($1, $2, now())
+		 ON CONFLICT (blocker_id, blocked_id) DO NOTHING`,
+		blockerID, blockedID,
+	)
+	if err != nil {
+		return fmt.Errorf("block user failed: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) UnblockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx,
+		`DELETE FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2`,
+		blockerID, blockedID,
+	)
+	if err != nil {
+		return fmt.Errorf("unblock user failed: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetBlockedUsers(ctx context.Context, blockerID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx, `SELECT blocked_id FROM user_blocks WHERE blocker_id = $1`, blockerID)
+	if err != nil {
+		return nil, fmt.Errorf("get blocked users failed: %w", err)
+	}
+	defer rows.Close()
+
+	var blockedIDs []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err == nil {
+			blockedIDs = append(blockedIDs, id)
+		}
+	}
+	return blockedIDs, nil
+}
+
+func (s *PostgresStore) IsUserBlocked(ctx context.Context, blockerID, blockedID uuid.UUID) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2)`,
+		blockerID, blockedID,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check is user blocked failed: %w", err)
+	}
+	return exists, nil
+}
+
+func (s *PostgresStore) SubmitAbuseReport(ctx context.Context, reporterID, reportedID uuid.UUID, convID, msgID, reason, decryptedContent string, rawCiphertext []byte) (uuid.UUID, error) {
+	reportID := uuid.New()
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO abuse_reports (id, reporter_id, reported_id, conversation_id, message_id, reason, decrypted_content, raw_ciphertext, status, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', now())`,
+		reportID, reporterID, reportedID, convID, msgID, reason, decryptedContent, rawCiphertext,
+	)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("submit abuse report failed: %w", err)
+	}
+	return reportID, nil
+}
+
+// ---------------------------------------------------------------------
+// GDPR Data Export & Right to Erasure
+// ---------------------------------------------------------------------
+
+type UserExportData struct {
+	UserID       uuid.UUID        `json:"user_id"`
+	DisplayName  string           `json:"display_name"`
+	IdentityKey  string           `json:"identity_key_hex"`
+	AvatarURL    string           `json:"avatar_url,omitempty"`
+	CreatedAt    time.Time        `json:"created_at"`
+	Devices      []map[string]any `json:"devices"`
+	HasKeyBackup bool             `json:"has_key_backup"`
+	Channels     []string         `json:"channels"`
+	BlockedUsers []string         `json:"blocked_users"`
+	ExportedAt   time.Time        `json:"exported_at"`
+}
+
+func (s *PostgresStore) ExportUserData(ctx context.Context, userID uuid.UUID) (*UserExportData, error) {
+	user, err := s.GetUserByID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("export user data failed: %w", err)
+	}
+	if user == nil {
+		return nil, fmt.Errorf("user not found")
+	}
+
+	export := &UserExportData{
+		UserID:       user.ID,
+		DisplayName:  user.DisplayName,
+		IdentityKey:  fmt.Sprintf("%x", user.IdentityKey),
+		AvatarURL:    user.AvatarURL,
+		CreatedAt:    user.CreatedAt,
+		ExportedAt:   time.Now(),
+		Channels:     []string{},
+		BlockedUsers: []string{},
+		Devices:      []map[string]any{},
+	}
+
+	// Devices
+	devRows, err := s.pool.Query(ctx, `SELECT id, device_label, created_at, last_seen_at FROM user_devices WHERE user_id = $1`, userID)
+	if err == nil {
+		defer devRows.Close()
+		for devRows.Next() {
+			var did uuid.UUID
+			var label *string
+			var cAt, lsAt time.Time
+			if err := devRows.Scan(&did, &label, &cAt, &lsAt); err == nil {
+				lbl := ""
+				if label != nil {
+					lbl = *label
+				}
+				export.Devices = append(export.Devices, map[string]any{
+					"device_id":    did.String(),
+					"device_label": lbl,
+					"created_at":   cAt,
+					"last_seen_at": lsAt,
+				})
+			}
+		}
+	}
+
+	// Check backup
+	var hasBackup bool
+	_ = s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM user_key_backups WHERE user_id = $1)`, userID).Scan(&hasBackup)
+	export.HasKeyBackup = hasBackup
+
+	// Channels
+	chanRows, err := s.pool.Query(ctx, `SELECT channel_id FROM channel_members WHERE user_id = $1`, userID)
+	if err == nil {
+		defer chanRows.Close()
+		for chanRows.Next() {
+			var cid uuid.UUID
+			if err := chanRows.Scan(&cid); err == nil {
+				export.Channels = append(export.Channels, cid.String())
+			}
+		}
+	}
+
+	// Blocked users
+	blocked, err := s.GetBlockedUsers(ctx, userID)
+	if err == nil {
+		for _, b := range blocked {
+			export.BlockedUsers = append(export.BlockedUsers, b.String())
+		}
+	}
+
+	return export, nil
+}
+
+func (s *PostgresStore) EraseUser(ctx context.Context, userID uuid.UUID) error {
+	// Cascade deletes from users table deletes user_devices, device_pre_keys, device_one_time_keys,
+	// auth_sessions, device_push_tokens, user_mls_key_packages, user_key_backups, user_blocks, etc.
+	res, err := s.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, userID)
+	if err != nil {
+		return fmt.Errorf("erase user failed: %w", err)
+	}
+	if res.RowsAffected() == 0 {
+		return fmt.Errorf("user not found for erasure")
+	}
+	return nil
+}
+
+
 
 

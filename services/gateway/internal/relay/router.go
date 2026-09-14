@@ -10,8 +10,11 @@ import (
 	"time"
 
 	chatv1 "github.com/genchat/proto/gen/chat/v1"
+	"github.com/genchat/services/gateway/internal/blocklist"
 	"github.com/genchat/services/gateway/internal/ledgerclient"
+	"github.com/genchat/services/gateway/internal/metrics"
 	"github.com/genchat/services/gateway/internal/push"
+	"github.com/genchat/services/gateway/internal/tracing"
 	"github.com/genchat/services/gateway/internal/ws"
 )
 
@@ -26,6 +29,7 @@ type InboundFrame struct {
 	MessageType      int    `json:"message_type"`
 	EphemeralTTLSec  int64  `json:"ephemeral_ttl_sec,omitempty"`
 	ReplyToMessageID string `json:"reply_to_message_id,omitempty"`
+	Traceparent      string `json:"traceparent,omitempty"`
 }
 
 // AckFrame is sent back to the sender upon successful delivery.
@@ -285,16 +289,18 @@ type Router struct {
 	pushClient    chatv1.PushServiceClient
 	channelClient chatv1.ChannelServiceClient
 	dispatcher    *push.Dispatcher
+	blockChecker  blocklist.Checker
 }
 
-// NewRouter builds a Router. ledger, pushClient, channelClient, or dispatcher may be nil in tests.
-func NewRouter(hub *ws.Hub, ledger *ledgerclient.Client, pushClient chatv1.PushServiceClient, channelClient chatv1.ChannelServiceClient, dispatcher *push.Dispatcher) *Router {
+// NewRouter builds a Router. ledger, pushClient, channelClient, dispatcher, or blockChecker may be nil in tests.
+func NewRouter(hub *ws.Hub, ledger *ledgerclient.Client, pushClient chatv1.PushServiceClient, channelClient chatv1.ChannelServiceClient, dispatcher *push.Dispatcher, blockChecker blocklist.Checker) *Router {
 	return &Router{
 		hub:           hub,
 		ledger:        ledger,
 		pushClient:    pushClient,
 		channelClient: channelClient,
 		dispatcher:    dispatcher,
+		blockChecker:  blockChecker,
 	}
 }
 
@@ -348,6 +354,9 @@ func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []by
 		return r.sendError(conn, "MISSING_FIELDS", "channel_id, client_msg_id, ciphertext_base64 are required")
 	}
 
+	spanCtx, endSpan := tracing.StartSpan(ctx, "gateway.SendMessage", frame.Traceparent)
+	defer endSpan()
+
 	ciphertext, err := base64.StdEncoding.DecodeString(frame.CiphertextB64)
 	if err != nil {
 		return r.sendError(conn, "INVALID_CIPHERTEXT", "ciphertext_base64 could not be decoded")
@@ -365,7 +374,7 @@ func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []by
 	// unreachable, etc.) the sender gets an error instead of a false ACK —
 	// no message should ever be acknowledged unless it's durably stored.
 	conversationID := getConversationID(conn.UserID, frame.ChannelID)
-	stored, err := r.ledger.StoreMessage(ctx, conversationID, conn.UserID, frame.ClientMsgID, ciphertext, nil, uint32(frame.MessageType), frame.EphemeralTTLSec)
+	stored, err := r.ledger.StoreMessage(spanCtx, conversationID, conn.UserID, frame.ClientMsgID, ciphertext, nil, uint32(frame.MessageType), frame.EphemeralTTLSec)
 	if err != nil {
 		slog.Error("failed to persist message", "error", err, "sender", conn.UserID, "channel", frame.ChannelID)
 		return r.sendError(conn, "PERSISTENCE_FAILED", "message could not be stored")
@@ -451,6 +460,12 @@ func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []by
 		if recipientUserID == conn.UserID {
 			// Self-send loopback
 			slog.Debug("self-send loopback", "user_id", conn.UserID)
+		} else if r.blockChecker != nil && r.blockChecker.IsBlocked(spanCtx, recipientUserID, conn.UserID) {
+			// Recipient blocked sender: drop delivery to recipient, standard ACK already returned to sender
+			metrics.DefaultMetrics.IncSecurityAnomalyBlocklistDrop()
+			metrics.LogSecurityAudit(conn.UserID, recipientUserID, "send_message", "blocked_by_recipient", "blocked_message_drop")
+			slog.Info("message dropped by blocklist policy", "sender", conn.UserID, "blocked_by", recipientUserID)
+			return nil
 		}
 		r.hub.SendToUser(recipientUserID, push)
 
@@ -725,6 +740,9 @@ func (r *Router) handleTyping(conn *ws.Conn, data []byte) error {
 			r.hub.BroadcastAll(conn.UserID, push)
 		}
 	} else {
+		if frame.ChannelID != conn.UserID && r.blockChecker != nil && r.blockChecker.IsBlocked(context.Background(), frame.ChannelID, conn.UserID) {
+			return nil
+		}
 		r.hub.SendToUser(frame.ChannelID, push)
 	}
 	return nil
@@ -883,6 +901,14 @@ func (r *Router) handleCallSignal(ctx context.Context, conn *ws.Conn, data []byt
 		return r.sendError(conn, "MISSING_FIELDS", "target_user_id is required for direct call signals")
 	}
 
+	// Check if target has blocked caller
+	if frame.TargetUserID != conn.UserID && r.blockChecker != nil && r.blockChecker.IsBlocked(ctx, frame.TargetUserID, conn.UserID) {
+		metrics.DefaultMetrics.IncSecurityAnomalyBlocklistDrop()
+		metrics.LogSecurityAudit(conn.UserID, frame.TargetUserID, "call_signal", "blocked_by_target", "blocked_message_drop")
+		slog.Info("call signal dropped by blocklist policy", "caller", conn.UserID, "target", frame.TargetUserID)
+		return nil
+	}
+
 	// If recipient is offline and this is an offer, inform caller immediately
 	if frame.SignalType == "offer" && !r.hub.IsOnline(frame.TargetUserID) {
 		slog.Info("call target is offline", "caller", conn.UserID, "target", frame.TargetUserID, "call_id", frame.CallID)
@@ -1023,6 +1049,10 @@ func (r *Router) handleReaction(ctx context.Context, conn *ws.Conn, data []byte)
 		}
 	} else {
 		// 1:1 direct message: send to peer and echo back to sender
+		if frame.ChannelID != conn.UserID && r.blockChecker != nil && r.blockChecker.IsBlocked(ctx, frame.ChannelID, conn.UserID) {
+			metrics.DefaultMetrics.IncSecurityAnomalyBlocklistDrop()
+			return nil
+		}
 		r.hub.SendToUser(frame.ChannelID, pushPayload)
 		if frame.ChannelID != conn.UserID {
 			r.hub.SendToUser(conn.UserID, pushPayload)
@@ -1074,6 +1104,8 @@ func (r *Router) handleDeleteMessage(ctx context.Context, conn *ws.Conn, data []
 				return r.sendError(conn, "PERMISSION_DENIED", "cannot verify message authorship")
 			}
 			if authorID != conn.UserID {
+				metrics.DefaultMetrics.IncSecurityAnomalyUnauthorizedDelete()
+				metrics.LogSecurityAudit(conn.UserID, authorID, "delete_message", "unauthorized_delete_attempt", "unauthorized_delete")
 				return r.sendError(conn, "PERMISSION_DENIED", "only the original message author can delete for everyone")
 			}
 			// Persist deletion event in ScyllaDB msgledger
@@ -1170,6 +1202,8 @@ func (r *Router) handleEditMessage(ctx context.Context, conn *ws.Conn, data []by
 			return r.sendError(conn, "PERMISSION_DENIED", "cannot verify message authorship")
 		}
 		if authorID != conn.UserID {
+			metrics.DefaultMetrics.IncSecurityAnomalyUnauthorizedEdit()
+			metrics.LogSecurityAudit(conn.UserID, authorID, "edit_message", "unauthorized_edit_attempt", "unauthorized_edit")
 			return r.sendError(conn, "PERMISSION_DENIED", "only the original message author can edit this message")
 		}
 		// Persist edit event in ScyllaDB msgledger
@@ -1281,6 +1315,8 @@ func (r *Router) handlePinMessage(ctx context.Context, conn *ws.Conn, data []byt
 				}
 			}
 			if !isMember {
+				metrics.DefaultMetrics.IncSecurityAnomalyUnauthorizedPin()
+				metrics.LogSecurityAudit(conn.UserID, frame.ChannelID, "pin_message", "not_a_channel_member", "unauthorized_pin")
 				return r.sendError(conn, "PERMISSION_DENIED", "only channel members can pin or unpin messages")
 			}
 		}

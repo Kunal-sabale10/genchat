@@ -40,7 +40,9 @@ services:
   redis:
     image: redis:7-alpine
     ports: ["6379:6379"]
-    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --appendfsync everysec --maxmemory 256mb
+    volumes:
+      - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -249,3 +251,4 @@ volumes:
   pgdata:
   scylladata:
   miniodata:
+  redisdata:

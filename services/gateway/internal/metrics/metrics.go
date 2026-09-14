@@ -1,12 +1,15 @@
 package metrics
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync/atomic"
+	"time"
 )
 
-// GatewayMetrics tracks real-time gateway health and connection metrics
+// GatewayMetrics tracks real-time gateway health, connection, and security metrics
 type GatewayMetrics struct {
 	ActiveConnections atomic.Int64
 	TotalConnections  atomic.Int64
@@ -14,6 +17,14 @@ type GatewayMetrics struct {
 	MessagesRouted    atomic.Int64
 	RateLimitDrops    atomic.Int64
 	DisconnectErrors  atomic.Int64
+
+	// Security Anomaly Counters
+	SecurityAnomaliesFallback          atomic.Int64
+	SecurityAnomaliesUnauthorizedDelete atomic.Int64
+	SecurityAnomaliesUnauthorizedEdit   atomic.Int64
+	SecurityAnomaliesUnauthorizedPin    atomic.Int64
+	SecurityAnomaliesBlocklistDrop     atomic.Int64
+	SecurityAnomaliesRateLimit         atomic.Int64
 }
 
 var DefaultMetrics = &GatewayMetrics{}
@@ -43,6 +54,56 @@ func (m *GatewayMetrics) IncDisconnectErrors() {
 	m.DisconnectErrors.Add(1)
 }
 
+// Security Anomaly increments
+func (m *GatewayMetrics) IncSecurityAnomalyFallback() {
+	m.SecurityAnomaliesFallback.Add(1)
+}
+
+func (m *GatewayMetrics) IncSecurityAnomalyUnauthorizedDelete() {
+	m.SecurityAnomaliesUnauthorizedDelete.Add(1)
+}
+
+func (m *GatewayMetrics) IncSecurityAnomalyUnauthorizedEdit() {
+	m.SecurityAnomaliesUnauthorizedEdit.Add(1)
+}
+
+func (m *GatewayMetrics) IncSecurityAnomalyUnauthorizedPin() {
+	m.SecurityAnomaliesUnauthorizedPin.Add(1)
+}
+
+func (m *GatewayMetrics) IncSecurityAnomalyBlocklistDrop() {
+	m.SecurityAnomaliesBlocklistDrop.Add(1)
+}
+
+func (m *GatewayMetrics) IncSecurityAnomalyRateLimit() {
+	m.SecurityAnomaliesRateLimit.Add(1)
+}
+
+// SecurityAuditEvent represents a structured JSON security audit record
+type SecurityAuditEvent struct {
+	Tag         string `json:"tag"` // "SECURITY_AUDIT"
+	Timestamp   string `json:"timestamp"`
+	ActorID     string `json:"actor_id,omitempty"`
+	TargetID    string `json:"target_id,omitempty"`
+	Action      string `json:"action"`
+	Reason      string `json:"reason"`
+	AnomalyType string `json:"anomaly_type"`
+}
+
+func LogSecurityAudit(actorID, targetID, action, reason, anomalyType string) {
+	event := SecurityAuditEvent{
+		Tag:         "SECURITY_AUDIT",
+		Timestamp:   time.Now().UTC().Format(time.RFC3339Nano),
+		ActorID:     actorID,
+		TargetID:    targetID,
+		Action:      action,
+		Reason:      reason,
+		AnomalyType: anomalyType,
+	}
+	bytes, _ := json.Marshal(event)
+	slog.Warn(string(bytes))
+}
+
 // PrometheusHandler exposes Prometheus-compatible metrics text format
 func (m *GatewayMetrics) PrometheusHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -69,6 +130,15 @@ func (m *GatewayMetrics) PrometheusHandler() http.HandlerFunc {
 
 		fmt.Fprintf(w, "# HELP websocket_disconnect_errors_total Total abnormal WebSocket disconnects\n")
 		fmt.Fprintf(w, "# TYPE websocket_disconnect_errors_total counter\n")
-		fmt.Fprintf(w, "websocket_disconnect_errors_total %d\n", m.DisconnectErrors.Load())
+		fmt.Fprintf(w, "websocket_disconnect_errors_total %d\n\n", m.DisconnectErrors.Load())
+
+		fmt.Fprintf(w, "# HELP security_anomalies_total Total detected security anomalies categorized by type\n")
+		fmt.Fprintf(w, "# TYPE security_anomalies_total counter\n")
+		fmt.Fprintf(w, "security_anomalies_total{type=\"crypto_fallback\"} %d\n", m.SecurityAnomaliesFallback.Load())
+		fmt.Fprintf(w, "security_anomalies_total{type=\"unauthorized_delete\"} %d\n", m.SecurityAnomaliesUnauthorizedDelete.Load())
+		fmt.Fprintf(w, "security_anomalies_total{type=\"unauthorized_edit\"} %d\n", m.SecurityAnomaliesUnauthorizedEdit.Load())
+		fmt.Fprintf(w, "security_anomalies_total{type=\"unauthorized_pin\"} %d\n", m.SecurityAnomaliesUnauthorizedPin.Load())
+		fmt.Fprintf(w, "security_anomalies_total{type=\"blocked_message_drop\"} %d\n", m.SecurityAnomaliesBlocklistDrop.Load())
+		fmt.Fprintf(w, "security_anomalies_total{type=\"rate_limit_exceeded\"} %d\n", m.SecurityAnomaliesRateLimit.Load())
 	}
 }

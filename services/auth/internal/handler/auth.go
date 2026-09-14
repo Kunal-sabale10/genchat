@@ -68,6 +68,28 @@ type AuthStore interface {
 	GetPushTokensForUser(ctx context.Context, userID uuid.UUID) ([]store.PushToken, error)
 
 	EnsureDevUserAndDevice(ctx context.Context, userID, deviceID uuid.UUID, displayName string) error
+
+	// Key Backup
+	SaveKeyBackup(ctx context.Context, userID uuid.UUID, ciphertext, salt []byte, algorithm string, params []byte, version int) error
+	GetKeyBackup(ctx context.Context, userID uuid.UUID) (*store.UserKeyBackup, error)
+	DeleteKeyBackup(ctx context.Context, userID uuid.UUID) error
+
+	// Device Linking
+	CreateDeviceLinkingSession(ctx context.Context, sessionID, primaryUserID, primaryDeviceID uuid.UUID, ephemeralPubkey, authCodeHash []byte, expiresAt time.Time) error
+	GetDeviceLinkingSession(ctx context.Context, sessionID uuid.UUID) (*store.DeviceLinkingSession, error)
+	ApproveDeviceLinkingSession(ctx context.Context, sessionID uuid.UUID, encryptedBundle []byte, newDeviceID uuid.UUID) error
+	CompleteDeviceLinkingSession(ctx context.Context, sessionID uuid.UUID) error
+
+	// Blocking & Abuse Reporting
+	BlockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error
+	UnblockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error
+	GetBlockedUsers(ctx context.Context, blockerID uuid.UUID) ([]uuid.UUID, error)
+	IsUserBlocked(ctx context.Context, blockerID, blockedID uuid.UUID) (bool, error)
+	SubmitAbuseReport(ctx context.Context, reporterID, reportedID uuid.UUID, convID, msgID, reason, decryptedContent string, rawCiphertext []byte) (uuid.UUID, error)
+
+	// GDPR
+	ExportUserData(ctx context.Context, userID uuid.UUID) (*store.UserExportData, error)
+	EraseUser(ctx context.Context, userID uuid.UUID) error
 }
 
 

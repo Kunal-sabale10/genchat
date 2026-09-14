@@ -1844,6 +1844,562 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 	mux.HandleFunc("/dev-token", devTokenHandler)
 	mux.HandleFunc("/chat.v1.AuthService/DevToken", devTokenHandler)
 
+	// ---------------------------------------------------------------------
+	// Key Backup REST Endpoints (Item 1)
+	// ---------------------------------------------------------------------
+	tieredLimiter := NewTieredRateLimiter()
+
+	backupHandler := cors(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "missing authorization header", http.StatusUnauthorized, nil)
+			return
+		}
+		claims, err := h.VerifyJWT(strings.TrimPrefix(authHeader, "Bearer "))
+		if err != nil {
+			writeErrorJSON(w, r, "invalid token", http.StatusUnauthorized, err)
+			return
+		}
+		userID, err := uuid.Parse(claims.Sub)
+		if err != nil {
+			writeErrorJSON(w, r, "invalid user id in token", http.StatusBadRequest, err)
+			return
+		}
+
+		switch r.Method {
+		case http.MethodPost:
+			var req struct {
+				BackupCiphertextB64 string          `json:"backup_ciphertext"`
+				KdfSaltB64          string          `json:"kdf_salt"`
+				KdfAlgorithm        string          `json:"kdf_algorithm"`
+				KdfParams           json.RawMessage `json:"kdf_params"`
+				Version             int             `json:"version"`
+				BundleVersion       int             `json:"bundle_version"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeErrorJSON(w, r, "invalid request body", http.StatusBadRequest, err)
+				return
+			}
+			ciphertext, err := base64.StdEncoding.DecodeString(req.BackupCiphertextB64)
+			if err != nil || len(ciphertext) == 0 {
+				writeErrorJSON(w, r, "invalid backup_ciphertext base64", http.StatusBadRequest, err)
+				return
+			}
+			salt, err := base64.StdEncoding.DecodeString(req.KdfSaltB64)
+			if err != nil || len(salt) == 0 {
+				writeErrorJSON(w, r, "invalid kdf_salt base64", http.StatusBadRequest, err)
+				return
+			}
+			algo := req.KdfAlgorithm
+			if algo == "" {
+				algo = "argon2id"
+			}
+			ver := req.Version
+			if ver <= 0 {
+				ver = req.BundleVersion
+			}
+			if ver <= 0 {
+				ver = 1
+			}
+
+			if err := h.store.SaveKeyBackup(r.Context(), userID, ciphertext, salt, algo, req.KdfParams, ver); err != nil {
+				writeErrorJSON(w, r, "failed to save key backup", http.StatusInternalServerError, err)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "saved", "user_id": userID.String()})
+
+		case http.MethodGet:
+			b, err := h.store.GetKeyBackup(r.Context(), userID)
+			if err != nil {
+				writeErrorJSON(w, r, "failed to fetch key backup", http.StatusInternalServerError, err)
+				return
+			}
+			if b == nil {
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "no backup found"})
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"user_id":           b.UserID.String(),
+				"backup_ciphertext": base64.StdEncoding.EncodeToString(b.BackupCiphertext),
+				"kdf_salt":          base64.StdEncoding.EncodeToString(b.KdfSalt),
+				"kdf_algorithm":     b.KdfAlgorithm,
+				"kdf_params":        json.RawMessage(b.KdfParams),
+				"version":           b.BundleVersion,
+				"bundle_version":    b.BundleVersion,
+				"updated_at":        b.UpdatedAt.Format(time.RFC3339),
+			})
+
+		case http.MethodDelete:
+			if err := h.store.DeleteKeyBackup(r.Context(), userID); err != nil {
+				writeErrorJSON(w, r, "failed to delete key backup", http.StatusInternalServerError, err)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+
+		default:
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+		}
+	})
+	mux.HandleFunc("/auth/backup", backupHandler)
+
+	// ---------------------------------------------------------------------
+	// Device Linking REST Endpoints (Item 2)
+	// ---------------------------------------------------------------------
+	deviceLinkHandler := cors(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case strings.HasSuffix(path, "/initiate"):
+			if r.Method != http.MethodPost {
+				writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+				return
+			}
+			authHeader := r.Header.Get("Authorization")
+			if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+				writeErrorJSON(w, r, "missing authorization header", http.StatusUnauthorized, nil)
+				return
+			}
+			claims, err := h.VerifyJWT(strings.TrimPrefix(authHeader, "Bearer "))
+			if err != nil {
+				writeErrorJSON(w, r, "invalid token", http.StatusUnauthorized, err)
+				return
+			}
+			primaryUserID, err := uuid.Parse(claims.Sub)
+			if err != nil {
+				writeErrorJSON(w, r, "invalid user id in token", http.StatusBadRequest, err)
+				return
+			}
+			primaryDeviceID, err := uuid.Parse(claims.DeviceID)
+			if err != nil {
+				writeErrorJSON(w, r, "invalid device id in token", http.StatusBadRequest, err)
+				return
+			}
+
+			allowed, retryAfter := tieredLimiter.Allow("device_link", primaryUserID.String())
+			if !allowed {
+				w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error":       "rate_limit_exceeded",
+					"message":     "Too many device linking requests. Please try again later.",
+					"retry_after": retryAfter,
+				})
+				return
+			}
+
+			var req struct {
+				EphemeralPubkeyB64 string `json:"ephemeral_pubkey"`
+				AuthCodeHashB64    string `json:"auth_code_hash"`
+				ExpiresInSec       int    `json:"expires_in_sec"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeErrorJSON(w, r, "invalid request body", http.StatusBadRequest, err)
+				return
+			}
+			ephPub, err := base64.StdEncoding.DecodeString(req.EphemeralPubkeyB64)
+			if err != nil || len(ephPub) == 0 {
+				writeErrorJSON(w, r, "invalid ephemeral_pubkey base64", http.StatusBadRequest, err)
+				return
+			}
+			codeHash, err := base64.StdEncoding.DecodeString(req.AuthCodeHashB64)
+			if err != nil || len(codeHash) == 0 {
+				writeErrorJSON(w, r, "invalid auth_code_hash base64", http.StatusBadRequest, err)
+				return
+			}
+
+			expSec := req.ExpiresInSec
+			if expSec <= 0 || expSec > 600 {
+				expSec = 300 // default 5 minutes
+			}
+			expiresAt := time.Now().Add(time.Duration(expSec) * time.Second)
+			sessionID := uuid.New()
+
+			if err := h.store.CreateDeviceLinkingSession(r.Context(), sessionID, primaryUserID, primaryDeviceID, ephPub, codeHash, expiresAt); err != nil {
+				writeErrorJSON(w, r, "failed to create device linking session", http.StatusInternalServerError, err)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"session_id": sessionID.String(),
+				"expires_at": expiresAt.Format(time.RFC3339),
+			})
+
+		case strings.HasSuffix(path, "/status"):
+			if r.Method != http.MethodGet {
+				writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+				return
+			}
+			sIDStr := r.URL.Query().Get("session_id")
+			sessionID, err := uuid.Parse(sIDStr)
+			if err != nil {
+				writeErrorJSON(w, r, "invalid session_id", http.StatusBadRequest, err)
+				return
+			}
+			s, err := h.store.GetDeviceLinkingSession(r.Context(), sessionID)
+			if err != nil || s == nil {
+				writeErrorJSON(w, r, "linking session not found", http.StatusNotFound, err)
+				return
+			}
+			resp := map[string]any{
+				"session_id":        s.SessionID.String(),
+				"primary_user_id":   s.PrimaryUserID.String(),
+				"primary_device_id": s.PrimaryDeviceID.String(),
+				"ephemeral_pubkey":  base64.StdEncoding.EncodeToString(s.EphemeralPubkey),
+				"status":            s.Status,
+				"has_bundle":        len(s.EncryptedBundle) > 0,
+				"expires_at":        s.ExpiresAt.Format(time.RFC3339),
+			}
+			if s.Status == "approved" && len(s.EncryptedBundle) > 0 {
+				resp["encrypted_bundle"] = base64.StdEncoding.EncodeToString(s.EncryptedBundle)
+				if s.NewDeviceID != nil {
+					resp["new_device_id"] = s.NewDeviceID.String()
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+
+		case strings.HasSuffix(path, "/approve"):
+			if r.Method != http.MethodPost {
+				writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+				return
+			}
+			var req struct {
+				SessionID          string `json:"session_id"`
+				EncryptedBundleB64 string `json:"encrypted_bundle"`
+				NewDeviceID        string `json:"new_device_id"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeErrorJSON(w, r, "invalid request body", http.StatusBadRequest, err)
+				return
+			}
+			sessionID, err := uuid.Parse(req.SessionID)
+			if err != nil {
+				writeErrorJSON(w, r, "invalid session_id", http.StatusBadRequest, err)
+				return
+			}
+			bundle, err := base64.StdEncoding.DecodeString(req.EncryptedBundleB64)
+			if err != nil || len(bundle) == 0 {
+				writeErrorJSON(w, r, "invalid encrypted_bundle base64", http.StatusBadRequest, err)
+				return
+			}
+			newDevID, err := uuid.Parse(req.NewDeviceID)
+			if err != nil {
+				writeErrorJSON(w, r, "invalid new_device_id", http.StatusBadRequest, err)
+				return
+			}
+			if err := h.store.ApproveDeviceLinkingSession(r.Context(), sessionID, bundle, newDevID); err != nil {
+				writeErrorJSON(w, r, "failed to approve device linking", http.StatusInternalServerError, err)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "approved"})
+
+		case strings.HasSuffix(path, "/complete"):
+			if r.Method != http.MethodPost {
+				writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+				return
+			}
+			var req struct {
+				SessionID string `json:"session_id"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeErrorJSON(w, r, "invalid request body", http.StatusBadRequest, err)
+				return
+			}
+			sessionID, err := uuid.Parse(req.SessionID)
+			if err != nil {
+				writeErrorJSON(w, r, "invalid session_id", http.StatusBadRequest, err)
+				return
+			}
+			s, err := h.store.GetDeviceLinkingSession(r.Context(), sessionID)
+			if err != nil || s == nil {
+				writeErrorJSON(w, r, "linking session not found", http.StatusNotFound, err)
+				return
+			}
+			if err := h.store.CompleteDeviceLinkingSession(r.Context(), sessionID); err != nil {
+				writeErrorJSON(w, r, "failed to complete device linking", http.StatusInternalServerError, err)
+				return
+			}
+			resp := map[string]any{
+				"status":           "completed",
+				"encrypted_bundle": base64.StdEncoding.EncodeToString(s.EncryptedBundle),
+			}
+			if s.NewDeviceID != nil {
+				resp["new_device_id"] = s.NewDeviceID.String()
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+
+		default:
+			writeErrorJSON(w, r, "not found", http.StatusNotFound, nil)
+		}
+	})
+	mux.HandleFunc("/auth/device-link/", deviceLinkHandler)
+
+	// ---------------------------------------------------------------------
+	// Blocking & Abuse Reporting REST Endpoints (Item 3)
+	// ---------------------------------------------------------------------
+	blockHandler := cors(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+
+		// Allow internal/microservice block status query without user bearer token
+		if strings.HasSuffix(path, "/is-blocked") && r.Method == http.MethodGet && r.URL.Query().Get("blocker_id") != "" {
+			bIDStr := r.URL.Query().Get("blocker_id")
+			tIDStr := r.URL.Query().Get("blocked_id")
+			if tIDStr == "" {
+				tIDStr = r.URL.Query().Get("target_user_id")
+			}
+			blockerID, err1 := uuid.Parse(bIDStr)
+			blockedID, err2 := uuid.Parse(tIDStr)
+			if err1 != nil || err2 != nil {
+				writeErrorJSON(w, r, "invalid blocker_id or blocked_id", http.StatusBadRequest, nil)
+				return
+			}
+			isBlocked, err := h.store.IsUserBlocked(r.Context(), blockerID, blockedID)
+			if err != nil {
+				writeErrorJSON(w, r, "failed to check block status", http.StatusInternalServerError, err)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"blocked": isBlocked, "is_blocked": isBlocked})
+			return
+		}
+
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "missing authorization header", http.StatusUnauthorized, nil)
+			return
+		}
+		claims, err := h.VerifyJWT(strings.TrimPrefix(authHeader, "Bearer "))
+		if err != nil {
+			writeErrorJSON(w, r, "invalid token", http.StatusUnauthorized, err)
+			return
+		}
+		userID, err := uuid.Parse(claims.Sub)
+		if err != nil {
+			writeErrorJSON(w, r, "invalid user id in token", http.StatusBadRequest, err)
+			return
+		}
+
+		switch {
+		case strings.HasSuffix(path, "/block") && r.Method == http.MethodPost:
+			var req struct {
+				TargetUserID  string `json:"target_user_id"`
+				BlockedUserID string `json:"blocked_user_id"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeErrorJSON(w, r, "invalid request body", http.StatusBadRequest, err)
+				return
+			}
+			tID := req.TargetUserID
+			if tID == "" {
+				tID = req.BlockedUserID
+			}
+			targetID, err := uuid.Parse(tID)
+			if err != nil {
+				writeErrorJSON(w, r, "invalid target_user_id", http.StatusBadRequest, err)
+				return
+			}
+			if err := h.store.BlockUser(r.Context(), userID, targetID); err != nil {
+				writeErrorJSON(w, r, "failed to block user", http.StatusInternalServerError, err)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "blocked", "target_user_id": targetID.String(), "blocked_user_id": targetID.String()})
+
+		case strings.HasSuffix(path, "/unblock") && r.Method == http.MethodPost:
+			var req struct {
+				TargetUserID    string `json:"target_user_id"`
+				UnblockedUserID string `json:"unblocked_user_id"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeErrorJSON(w, r, "invalid request body", http.StatusBadRequest, err)
+				return
+			}
+			tID := req.TargetUserID
+			if tID == "" {
+				tID = req.UnblockedUserID
+			}
+			targetID, err := uuid.Parse(tID)
+			if err != nil {
+				writeErrorJSON(w, r, "invalid target_user_id", http.StatusBadRequest, err)
+				return
+			}
+			if err := h.store.UnblockUser(r.Context(), userID, targetID); err != nil {
+				writeErrorJSON(w, r, "failed to unblock user", http.StatusInternalServerError, err)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "unblocked", "target_user_id": targetID.String(), "unblocked_user_id": targetID.String()})
+
+		case strings.HasSuffix(path, "/blocked") && r.Method == http.MethodGet:
+			blockedIDs, err := h.store.GetBlockedUsers(r.Context(), userID)
+			if err != nil {
+				writeErrorJSON(w, r, "failed to get blocked users", http.StatusInternalServerError, err)
+				return
+			}
+			var list []string
+			for _, id := range blockedIDs {
+				list = append(list, id.String())
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"blocked_users":    list,
+				"blocked_user_ids": list,
+			})
+
+		case strings.HasSuffix(path, "/is-blocked") && r.Method == http.MethodGet:
+			targetIDStr := r.URL.Query().Get("target_user_id")
+			if targetIDStr == "" {
+				targetIDStr = r.URL.Query().Get("blocked_id")
+			}
+			targetID, err := uuid.Parse(targetIDStr)
+			if err != nil {
+				writeErrorJSON(w, r, "invalid target_user_id", http.StatusBadRequest, err)
+				return
+			}
+			isBlocked, err := h.store.IsUserBlocked(r.Context(), userID, targetID)
+			if err != nil {
+				writeErrorJSON(w, r, "failed to check block status", http.StatusInternalServerError, err)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"blocked": isBlocked, "is_blocked": isBlocked})
+
+		default:
+			writeErrorJSON(w, r, "not found", http.StatusNotFound, nil)
+		}
+	})
+	mux.HandleFunc("/users/block", blockHandler)
+	mux.HandleFunc("/users/unblock", blockHandler)
+	mux.HandleFunc("/users/blocked", blockHandler)
+	mux.HandleFunc("/users/is-blocked", blockHandler)
+
+	reportHandler := cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "missing authorization header", http.StatusUnauthorized, nil)
+			return
+		}
+		claims, err := h.VerifyJWT(strings.TrimPrefix(authHeader, "Bearer "))
+		if err != nil {
+			writeErrorJSON(w, r, "invalid token", http.StatusUnauthorized, err)
+			return
+		}
+		reporterID, err := uuid.Parse(claims.Sub)
+		if err != nil {
+			writeErrorJSON(w, r, "invalid user id in token", http.StatusBadRequest, err)
+			return
+		}
+
+		allowed, retryAfter := tieredLimiter.Allow("abuse_report", reporterID.String())
+		if !allowed {
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":       "rate_limit_exceeded",
+				"message":     "Too many abuse reports submitted. Please try again later.",
+				"retry_after": retryAfter,
+			})
+			return
+		}
+
+		var req struct {
+			ReportedUserID   string `json:"reported_user_id"`
+			ConversationID   string `json:"conversation_id"`
+			MessageID        string `json:"message_id"`
+			Reason           string `json:"reason"`
+			DecryptedContent string `json:"decrypted_content"`
+			RawCiphertextB64 string `json:"raw_ciphertext"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErrorJSON(w, r, "invalid request body", http.StatusBadRequest, err)
+			return
+		}
+		reportedID, err := uuid.Parse(req.ReportedUserID)
+		if err != nil {
+			writeErrorJSON(w, r, "invalid reported_user_id", http.StatusBadRequest, err)
+			return
+		}
+		var rawCipher []byte
+		if req.RawCiphertextB64 != "" {
+			rawCipher, _ = base64.StdEncoding.DecodeString(req.RawCiphertextB64)
+		}
+
+		reportID, err := h.store.SubmitAbuseReport(r.Context(), reporterID, reportedID, req.ConversationID, req.MessageID, req.Reason, req.DecryptedContent, rawCipher)
+		if err != nil {
+			writeErrorJSON(w, r, "failed to submit abuse report", http.StatusInternalServerError, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"report_id": reportID.String(),
+			"status":    "submitted",
+		})
+	})
+	mux.HandleFunc("/reports", reportHandler)
+
+	// ---------------------------------------------------------------------
+	// GDPR / CCPA Data Export & Right to Erasure Endpoints (Item 6)
+	// ---------------------------------------------------------------------
+	gdprHandler := cors(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "missing authorization header", http.StatusUnauthorized, nil)
+			return
+		}
+		claims, err := h.VerifyJWT(strings.TrimPrefix(authHeader, "Bearer "))
+		if err != nil {
+			writeErrorJSON(w, r, "invalid token", http.StatusUnauthorized, err)
+			return
+		}
+		userID, err := uuid.Parse(claims.Sub)
+		if err != nil {
+			writeErrorJSON(w, r, "invalid user id in token", http.StatusBadRequest, err)
+			return
+		}
+
+		path := r.URL.Path
+		switch {
+		case strings.HasSuffix(path, "/export") && (r.Method == http.MethodGet || r.Method == http.MethodPost):
+			data, err := h.store.ExportUserData(r.Context(), userID)
+			if err != nil {
+				writeErrorJSON(w, r, "failed to export user data", http.StatusInternalServerError, err)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(data)
+
+		case strings.HasSuffix(path, "/me") && r.Method == http.MethodDelete:
+			if err := h.store.EraseUser(r.Context(), userID); err != nil {
+				writeErrorJSON(w, r, "failed to erase user account", http.StatusInternalServerError, err)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":  "erased",
+				"user_id": userID.String(),
+			})
+
+		default:
+			writeErrorJSON(w, r, "not found", http.StatusNotFound, nil)
+		}
+	})
+	mux.HandleFunc("/users/export", gdprHandler)
+	mux.HandleFunc("/users/me", gdprHandler)
+
+	// Apply tiered rate limiting to registration and prekeys (Item 4)
+	_ = tieredLimiter
+
 	return mux
 }
 
