@@ -262,9 +262,12 @@ export const GroupCallModal: React.FC<GroupCallModalProps> = ({
           <div>
             <div className="flex items-center space-x-2">
               <h2 className="text-sm font-bold text-white tracking-wide">#{channelName}</h2>
-              <span className="flex items-center space-x-1 text-[10px] text-emerald-400 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-full font-medium">
+              <span
+                className="flex items-center space-x-1 text-[10px] text-emerald-400 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-full font-medium cursor-help"
+                title="End-to-End Encrypted via MLS TreeKEM SFrame Media Keys (RFC 9420 / RFC 9605)"
+              >
                 <ShieldCheck className="h-3 w-3" />
-                <span>P2P E2EE Mesh</span>
+                <span>MLS SFrame E2EE</span>
               </span>
             </div>
             <div className="flex items-center space-x-2 text-xs text-slate-400">

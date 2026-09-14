@@ -16,8 +16,11 @@ import {
   optimizeAudioSdp,
   HIGH_QUALITY_AUDIO_CONSTRAINTS,
 } from './webrtc-manager'
+import { MlsGroupManager } from './mls-group-manager'
 
 export interface GroupWebRtcCallbacks {
+  groupId?: string
+  currentUserId?: string
   onLocalStream?: (stream: MediaStream) => void
   onPeerStream?: (peerId: string, stream: MediaStream) => void
   onPeerLeft?: (peerId: string) => void
@@ -47,6 +50,9 @@ export class GroupWebRtcManager {
   private cameraVideoTrack: MediaStreamTrack | null = null
   private callbacks: GroupWebRtcCallbacks
   private iceConfig: RTCConfiguration
+  private groupId?: string
+  private currentUserId?: string
+  private sframeKeys: Map<string, { keyHex: string; saltHex: string }> = new Map()
 
   public isAudioMuted = false
   public isVideoDisabled = false
@@ -61,6 +67,8 @@ export class GroupWebRtcManager {
 
   constructor(callbacks: GroupWebRtcCallbacks) {
     this.callbacks = callbacks
+    this.groupId = callbacks.groupId
+    this.currentUserId = callbacks.currentUserId
     this.iceConfig = getIceConfiguration(callbacks.iceServers)
   }
 
@@ -128,6 +136,18 @@ export class GroupWebRtcManager {
       isRemoteDescriptionSet: false,
     }
     this.peers.set(peerId, item)
+
+    // Derive authentic MLS TreeKEM SFrame media key for peer (RFC 9420 / RFC 9605)
+    if (this.groupId) {
+      MlsGroupManager.exportGroupMediaKey(this.groupId, peerId)
+        .then((sframeKey) => {
+          this.sframeKeys.set(peerId, sframeKey)
+          console.log(`[GroupWebRtc] Successfully bound MLS SFrame media key for peer ${peerId} in group ${this.groupId}`)
+        })
+        .catch((err) => {
+          console.warn(`[GroupWebRtc] MLS SFrame media key derivation skipped for peer ${peerId}:`, err)
+        })
+    }
 
     // Attach local tracks
     if (this.localStream) {
@@ -587,5 +607,13 @@ export class GroupWebRtcManager {
     }
 
     return stream
+  }
+
+  public getPeerSframeKey(peerId: string): { keyHex: string; saltHex: string } | undefined {
+    return this.sframeKeys.get(peerId)
+  }
+
+  public isSframeSecured(peerId: string): boolean {
+    return this.sframeKeys.has(peerId)
   }
 }

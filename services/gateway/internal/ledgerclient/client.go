@@ -49,7 +49,15 @@ func Dial(ctx context.Context, addr string) (*Client, error) {
 }
 
 func (c *Client) Close() error {
-	return c.conn.Close()
+	if c.conn != nil {
+		return c.conn.Close()
+	}
+	return nil
+}
+
+// NewTestClient returns a Client wired with a mock or provided LedgerServiceClient.
+func NewTestClient(rpc chatv1.LedgerServiceClient) *Client {
+	return &Client{rpc: rpc}
 }
 
 // StoreMessageResult is the durable identity assigned to a persisted message.

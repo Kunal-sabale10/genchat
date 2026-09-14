@@ -252,6 +252,7 @@ export default function ChatPage() {
   const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null)
   const [deleteTargetMessage, setDeleteTargetMessage] = useState<MessageItem | null>(null)
   const [editingMessage, setEditingMessage] = useState<MessageItem | null>(null)
+  const [conversationWarnings, setConversationWarnings] = useState<Record<string, string>>({})
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const photoInputRef = useRef<HTMLInputElement>(null)
@@ -832,6 +833,14 @@ export default function ChatPage() {
             isInsecureFallback = Boolean(decResult.isInsecureFallback)
             securityWarning = decResult.warning
             senderFingerprint = decResult.fingerprint
+
+            if (isInsecureFallback) {
+              setConversationWarnings((prev) => ({
+                ...prev,
+                [effectiveChannelId]:
+                  'Warning: Insecure fallback encryption was used on recent message(s). Conversation is not protected by Post-Quantum keys.',
+              }))
+            }
           }
 
           // Check if payload is an encrypted JSON envelope (media, voice note, or quoted reply)
@@ -1358,8 +1367,16 @@ export default function ChatPage() {
       } else {
         wireCiphertext = await E2eeService.encrypt(payloadString, activeChannelId, user.userId)
       }
-    } catch (err) {
-      console.warn('[E2EE] Encryption fallback:', err)
+    } catch (err: any) {
+      console.warn('[E2EE] Message send blocked:', err)
+      if (err?.message?.includes('PQXDH_SESSION_BLOCKED')) {
+        setConversationWarnings((prev) => ({
+          ...prev,
+          [activeChannelId]:
+            'Message blocked: Recipient has no post-quantum keys registered. Insecure fallback was prevented to guarantee end-to-end privacy.',
+        }))
+        return
+      }
     }
 
     const isWireFallback =
@@ -2548,6 +2565,19 @@ export default function ChatPage() {
                   <span>The encryption keys for @{activeConversation.name} have changed since your last verification. Tap here to inspect and verify.</span>
                 </div>
               </button>
+            </div>
+          )}
+
+          {/* Conversation Encryption / Fallback Warning Banner */}
+          {conversationWarnings[activeChannelId] && (
+            <div className="flex justify-center mb-3">
+              <div className="flex items-center space-x-2.5 rounded-xl bg-amber-500/15 border border-amber-500/40 px-4 py-2 text-xs text-amber-300 shadow-md max-w-xl">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400 animate-pulse" />
+                <div>
+                  <span className="font-semibold">Security Notice:</span>{' '}
+                  <span>{conversationWarnings[activeChannelId]}</span>
+                </div>
+              </div>
             </div>
           )}
 

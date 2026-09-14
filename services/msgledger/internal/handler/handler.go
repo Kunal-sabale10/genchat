@@ -12,17 +12,34 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	chatv1 "github.com/genchat/proto/gen/chat/v1"
-	"github.com/genchat/services/msgledger/internal/sequence"
 	"github.com/genchat/services/msgledger/internal/store"
 )
 
-type LedgerHandler struct {
-	chatv1.UnimplementedLedgerServiceServer
-	store  *store.ScyllaStore
-	seqGen *sequence.Generator
+type Store interface {
+	GetDedup(ctx context.Context, conversationID, clientMsgID string) (*store.DedupRecord, error)
+	InsertMessage(ctx context.Context, msg *store.StoredMessage) error
+	InsertDedup(ctx context.Context, conversationID, clientMsgID string, messageID gocql.UUID, sequenceNum int64, ttlSec int64) error
+	FetchMessages(ctx context.Context, conversationID, bucket string, limit int, beforeID *uuid.UUID) ([]*store.StoredMessage, error)
+	UpsertReceipt(ctx context.Context, conversationID, userID string, delID, readID *uuid.UUID, delSeq, readSeq int64) error
+	GetReceipts(ctx context.Context, conversationID string) ([]*store.Receipt, error)
+	RecordAuthor(ctx context.Context, conversationID, messageID, senderID string) error
+	GetAuthor(ctx context.Context, conversationID, messageID string) (string, time.Time, error)
+	RecordEvent(ctx context.Context, conversationID, messageID, eventType, actorID string, newCiphertext []byte) error
+	FetchEvents(ctx context.Context, conversationID, messageID string) ([]*store.MessageEvent, error)
 }
 
-func NewLedgerHandler(s *store.ScyllaStore, sg *sequence.Generator) *LedgerHandler {
+type SeqGenerator interface {
+	Next(ctx context.Context, conversationID string) (int64, error)
+	Current(ctx context.Context, conversationID string) (int64, error)
+}
+
+type LedgerHandler struct {
+	chatv1.UnimplementedLedgerServiceServer
+	store  Store
+	seqGen SeqGenerator
+}
+
+func NewLedgerHandler(s Store, sg SeqGenerator) *LedgerHandler {
 	return &LedgerHandler{store: s, seqGen: sg}
 }
 

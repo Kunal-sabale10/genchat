@@ -602,17 +602,18 @@ func (r *Router) handleFetchHistory(ctx context.Context, conn *ws.Conn, data []b
 			resp, err := r.channelClient.GetChannelMembers(ctx, &chatv1.GetChannelMembersRequest{
 				ChannelId: cleanID,
 			})
-			if err == nil && len(resp.GetMembers()) > 0 {
-				isMember := false
-				for _, m := range resp.GetMembers() {
-					if m.GetUserId() == conn.UserID {
-						isMember = true
-						break
-					}
+			if err != nil {
+				return r.sendError(conn, "FORBIDDEN", "cannot verify channel membership")
+			}
+			isMember := false
+			for _, m := range resp.GetMembers() {
+				if m.GetUserId() == conn.UserID {
+					isMember = true
+					break
 				}
-				if !isMember {
-					return r.sendError(conn, "FORBIDDEN", "user is not a member of this channel")
-				}
+			}
+			if !isMember {
+				return r.sendError(conn, "FORBIDDEN", "user is not a member of this channel")
 			}
 		}
 	}
@@ -1262,31 +1263,44 @@ func (r *Router) handlePinMessage(ctx context.Context, conn *ws.Conn, data []byt
 
 	conversationID := getConversationID(conn.UserID, frame.ChannelID)
 
-	// Verify membership for group channel
+	// Verify membership for group channel (fail-closed)
 	if strings.HasPrefix(frame.ChannelID, "chan_") && frame.ChannelID != "chan_public" {
 		cleanID := strings.TrimPrefix(frame.ChannelID, "chan_")
 		if r.channelClient != nil {
 			resp, err := r.channelClient.GetChannelMembers(ctx, &chatv1.GetChannelMembersRequest{
 				ChannelId: cleanID,
 			})
-			if err == nil && len(resp.GetMembers()) > 0 {
-				isMember := false
-				for _, m := range resp.GetMembers() {
-					if m.GetUserId() == conn.UserID {
-						isMember = true
-						break
-					}
+			if err != nil {
+				return r.sendError(conn, "PERMISSION_DENIED", "cannot verify channel membership")
+			}
+			isMember := false
+			for _, m := range resp.GetMembers() {
+				if m.GetUserId() == conn.UserID {
+					isMember = true
+					break
 				}
-				if !isMember {
-					return r.sendError(conn, "PERMISSION_DENIED", "only channel members can pin or unpin messages")
-				}
+			}
+			if !isMember {
+				return r.sendError(conn, "PERMISSION_DENIED", "only channel members can pin or unpin messages")
 			}
 		}
 	}
 
-	// Persist pin event in ScyllaDB msgledger
+	// Verify message in ledger before pinning (fail-closed)
 	if r.ledger != nil {
+		authorID, err := r.ledger.GetMessageAuthor(ctx, conversationID, messageID)
+		if err != nil || authorID == "" {
+			slog.Warn("failed to verify message author from ledger, rejecting pin (failing closed)",
+				"error", err,
+				"conversation_id", conversationID,
+				"message_id", messageID,
+				"sender", conn.UserID,
+			)
+			return r.sendError(conn, "PERMISSION_DENIED", "cannot verify message to pin")
+		}
 		_ = r.ledger.RecordMessageEvent(ctx, conversationID, messageID, op, conn.UserID, nil)
+	} else {
+		return r.sendError(conn, "INTERNAL_ERROR", "ledger unavailable to verify message authorship")
 	}
 
 	serverTime := time.Now().Unix()

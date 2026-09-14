@@ -335,7 +335,8 @@ export class E2eeService {
     conversationId: string,
     currentUserId: string,
     sequenceNum: number = 1,
-    token?: string
+    token?: string,
+    allowInsecureFallback: boolean = false
   ): Promise<string> {
     if (token) this.authToken = token
     if (!this.identityBundle && currentUserId) {
@@ -353,6 +354,13 @@ export class E2eeService {
         session = result.session
         initMsg = result.initMessage
       }
+    }
+
+    // BLOCK SENDING: Refuse to silently ship weak publicly-derivable crypto
+    if (!session && peerUserId !== currentUserId && !allowInsecureFallback) {
+      throw new Error(
+        `PQXDH_SESSION_BLOCKED: Post-Quantum session with ${peerUserId} is not yet established. Handshake retries failed or peer pre-keys unavailable.`
+      )
     }
 
     const isFallback = !session
