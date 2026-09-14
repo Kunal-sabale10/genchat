@@ -969,8 +969,22 @@ func (s *PostgresStore) ExportUserData(ctx context.Context, userID uuid.UUID) (*
 }
 
 func (s *PostgresStore) EraseUser(ctx context.Context, userID uuid.UUID) error {
-	// Cascade deletes from users table deletes user_devices, device_pre_keys, device_one_time_keys,
-	// auth_sessions, device_push_tokens, user_mls_key_packages, user_key_backups, user_blocks, etc.
+	// 1. Identify all channels the user participates in before deleting
+	rows, err := s.pool.Query(ctx, `SELECT channel_id FROM channel_members WHERE user_id = $1`, userID)
+	var channelIDs []uuid.UUID
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var cid uuid.UUID
+			if err := rows.Scan(&cid); err == nil {
+				channelIDs = append(channelIDs, cid)
+			}
+		}
+	}
+
+	// 2. Cascade deletes from users table deletes user_devices, device_pre_keys, device_one_time_keys,
+	// auth_sessions, device_push_tokens, user_mls_key_packages, user_key_backups, user_blocks,
+	// channel_members, and sets channel_mls_commits.sender_id = NULL.
 	res, err := s.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, userID)
 	if err != nil {
 		return fmt.Errorf("erase user failed: %w", err)
@@ -978,6 +992,16 @@ func (s *PostgresStore) EraseUser(ctx context.Context, userID uuid.UUID) error {
 	if res.RowsAffected() == 0 {
 		return fmt.Errorf("user not found for erasure")
 	}
+
+	// 3. Clean up any abandoned channels that now have 0 members remaining
+	if len(channelIDs) > 0 {
+		_, _ = s.pool.Exec(ctx, `
+			DELETE FROM channels c 
+			WHERE c.id = ANY($1) 
+			  AND NOT EXISTS (SELECT 1 FROM channel_members cm WHERE cm.channel_id = c.id)
+		`, channelIDs)
+	}
+
 	return nil
 }
 

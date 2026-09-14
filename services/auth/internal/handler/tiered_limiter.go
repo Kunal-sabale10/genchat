@@ -74,6 +74,10 @@ func (l *TieredRateLimiter) Allow(action string, key string) (bool, int) {
 		// 10 reports per hour per user
 		maxTokens = 10.0
 		refillRate = 10.0 / 3600.0
+	case "backup_recovery":
+		// 5 recovery attempts per 15 minutes per user/IP to mitigate PIN brute-forcing
+		maxTokens = 5.0
+		refillRate = 5.0 / 900.0
 	default:
 		// Default generic sustained action: 120 per minute
 		maxTokens = 120.0

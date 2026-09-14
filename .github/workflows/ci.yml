@@ -213,6 +213,39 @@ jobs:
       - name: Run Group Fan-Out High Concurrency Load Test
         run: node tests/integration/test_group_load_fanout.mjs
 
+      - name: Run Zero-Knowledge Key/Account Backup & Recovery Verification
+        run: node tests/integration/test_key_backup.mjs
+
+      - name: Run Real Multi-Device Key Synchronization & QR Linking Verification
+        run: node tests/integration/test_device_linking.mjs
+
+      - name: Run Device Linking Session Hijack & Replay Pen-Test
+        run: node tests/security/test_device_linking_pentest.mjs
+
+      - name: Run Key Backup Recovery Brute-Force Rate Limiting Test
+        run: node tests/security/test_backup_pin_security.mjs
+
+      - name: Run Blocking & Voluntary Abuse Reporting Verification
+        run: node tests/integration/test_blocking_and_reports.mjs
+
+      - name: Run Tiered Rate Limiting & Abuse Defense Verification
+        run: node tests/integration/test_tiered_ratelimit.mjs
+
+      - name: Run GDPR Data Export & Cascade Right-to-Erasure Verification
+        run: node tests/integration/test_gdpr_erasure.mjs
+
+      - name: Run GDPR Group & MLS State Erasure Verification
+        run: node tests/integration/test_gdpr_group_mls_erasure.mjs
+
+      - name: Run Multi-Device Persistence & Event Sync Verification
+        run: node tests/integration/test_multi_device_sync.mjs
+
+      - name: Run Disaster Recovery & E2EE State Resilience Verification
+        run: node tests/integration/test_disaster_recovery.mjs
+
+      - name: Run Enterprise Realistic Group Load Benchmark
+        run: node tests/load/realistic_group_load.mjs
+
       - name: Collect Container Logs on Failure
         if: failure()
         run: |

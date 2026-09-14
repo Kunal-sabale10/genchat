@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -1910,6 +1912,18 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "saved", "user_id": userID.String()})
 
 		case http.MethodGet:
+			allowed, retryAfter := tieredLimiter.Allow("backup_recovery", userID.String())
+			if !allowed {
+				w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error":       "rate_limit_exceeded",
+					"message":     "Too many recovery attempts. Please try again later.",
+					"retry_after": retryAfter,
+				})
+				return
+			}
 			b, err := h.store.GetKeyBackup(r.Context(), userID)
 			if err != nil {
 				writeErrorJSON(w, r, "failed to fetch key backup", http.StatusInternalServerError, err)
@@ -2053,11 +2067,9 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 				"has_bundle":        len(s.EncryptedBundle) > 0,
 				"expires_at":        s.ExpiresAt.Format(time.RFC3339),
 			}
-			if s.Status == "approved" && len(s.EncryptedBundle) > 0 {
-				resp["encrypted_bundle"] = base64.StdEncoding.EncodeToString(s.EncryptedBundle)
-				if s.NewDeviceID != nil {
-					resp["new_device_id"] = s.NewDeviceID.String()
-				}
+			// Security hardening: NEVER leak encrypted_bundle via unauthenticated status polling!
+			if s.NewDeviceID != nil {
+				resp["new_device_id"] = s.NewDeviceID.String()
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(resp)
@@ -2071,6 +2083,7 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 				SessionID          string `json:"session_id"`
 				EncryptedBundleB64 string `json:"encrypted_bundle"`
 				NewDeviceID        string `json:"new_device_id"`
+				AuthCode           string `json:"auth_code"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				writeErrorJSON(w, r, "invalid request body", http.StatusBadRequest, err)
@@ -2079,6 +2092,25 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			sessionID, err := uuid.Parse(req.SessionID)
 			if err != nil {
 				writeErrorJSON(w, r, "invalid session_id", http.StatusBadRequest, err)
+				return
+			}
+			s, err := h.store.GetDeviceLinkingSession(r.Context(), sessionID)
+			if err != nil || s == nil {
+				writeErrorJSON(w, r, "linking session not found", http.StatusNotFound, err)
+				return
+			}
+			if s.Status != "pending" {
+				writeErrorJSON(w, r, "session is not pending approval", http.StatusConflict, nil)
+				return
+			}
+			if time.Now().After(s.ExpiresAt) {
+				writeErrorJSON(w, r, "linking session expired", http.StatusGone, nil)
+				return
+			}
+			// Verify 6-digit confirmation code matches the SHA-256 hash committed at session initiation
+			codeHash := sha256.Sum256([]byte(req.AuthCode))
+			if !bytes.Equal(codeHash[:], s.AuthCodeHash) {
+				writeErrorJSON(w, r, "invalid confirmation code", http.StatusForbidden, nil)
 				return
 			}
 			bundle, err := base64.StdEncoding.DecodeString(req.EncryptedBundleB64)
@@ -2105,6 +2137,7 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			}
 			var req struct {
 				SessionID string `json:"session_id"`
+				AuthCode  string `json:"auth_code"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				writeErrorJSON(w, r, "invalid request body", http.StatusBadRequest, err)
@@ -2118,6 +2151,20 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 			s, err := h.store.GetDeviceLinkingSession(r.Context(), sessionID)
 			if err != nil || s == nil {
 				writeErrorJSON(w, r, "linking session not found", http.StatusNotFound, err)
+				return
+			}
+			if s.Status != "approved" {
+				writeErrorJSON(w, r, "session not approved or already consumed", http.StatusConflict, nil)
+				return
+			}
+			if time.Now().After(s.ExpiresAt) {
+				writeErrorJSON(w, r, "linking session expired", http.StatusGone, nil)
+				return
+			}
+			// Verify confirmation code before releasing encrypted state to secondary device
+			codeHash := sha256.Sum256([]byte(req.AuthCode))
+			if !bytes.Equal(codeHash[:], s.AuthCodeHash) {
+				writeErrorJSON(w, r, "invalid confirmation code", http.StatusForbidden, nil)
 				return
 			}
 			if err := h.store.CompleteDeviceLinkingSession(r.Context(), sessionID); err != nil {

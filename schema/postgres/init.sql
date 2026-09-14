@@ -172,7 +172,7 @@ CREATE INDEX IF NOT EXISTS idx_channel_welcomes_user
 CREATE TABLE IF NOT EXISTS channel_mls_commits (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     channel_id      UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-    sender_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    sender_id       UUID REFERENCES users(id) ON DELETE SET NULL,
     epoch           BIGINT NOT NULL,
     commit_data     BYTEA NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),

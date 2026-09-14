@@ -126,6 +126,7 @@ async function run() {
       session_id,
       new_device_id: newDeviceId,
       encrypted_bundle: combinedPayload.toString('base64'),
+      auth_code: code,
     }),
   });
   assert.strictEqual(approveRes.status, 200, 'Approve session should return HTTP 200');
@@ -147,7 +148,7 @@ async function run() {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${primary.access_token}`,
     },
-    body: JSON.stringify({ session_id }),
+    body: JSON.stringify({ session_id, auth_code: code }),
   });
   assert.strictEqual(completeRes.status, 200, 'Complete session should return HTTP 200');
   const completeData = await completeRes.json();

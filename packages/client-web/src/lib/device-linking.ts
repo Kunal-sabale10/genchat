@@ -153,6 +153,7 @@ export async function approveDeviceLinking(
   secondaryPublicKeyHex: string,
   secretsToTransfer: Record<string, unknown>,
   newDeviceId: string,
+  authCode: string,
   apiBase = ''
 ): Promise<void> {
   // 1. Import secondary public key
@@ -198,6 +199,7 @@ export async function approveDeviceLinking(
       session_id: sessionId,
       new_device_id: newDeviceId,
       encrypted_bundle: bufferToBase64(combined),
+      auth_code: authCode,
     }),
   })
 
@@ -215,6 +217,7 @@ export async function completeDeviceLinking(
   sessionId: string,
   secondaryPrivateKey: CryptoKey,
   primaryPublicKeyHex: string,
+  authCode: string,
   apiBase = ''
 ): Promise<Record<string, unknown>> {
   // 1. Fetch bundle from auth service
@@ -226,6 +229,7 @@ export async function completeDeviceLinking(
     },
     body: JSON.stringify({
       session_id: sessionId,
+      auth_code: authCode,
     }),
   })
 

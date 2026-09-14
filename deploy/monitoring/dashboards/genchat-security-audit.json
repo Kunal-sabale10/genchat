@@ -1,0 +1,173 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Crypto Fallback Rate (Alert: Must Be 0)",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "sum(rate(security_anomalies_total{type=\"crypto_fallback\"}[1m]))",
+          "legendFormat": "Fallbacks/sec",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.001 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+      "id": 2,
+      "title": "Blocked Message Drops (Signal Privacy)",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "sum(rate(security_anomalies_total{type=\"blocked_message_drop\"}[1m]))",
+          "legendFormat": "Drops/sec",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null },
+              { "color": "orange", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+      "id": 3,
+      "title": "Unauthorized Delete/Edit/Pin Spikes",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "sum(rate(security_anomalies_total{type=~\"unauthorized_.*\"}[1m]))",
+          "legendFormat": "Spikes/sec",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.01 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+      "id": 4,
+      "title": "Rate Limit & Abuse Drops",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "sum(rate(security_anomalies_total{type=\"rate_limit_exceeded\"}[1m]))",
+          "legendFormat": "Drops/sec",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "id": 5,
+      "title": "Security Anomaly Rates by Type (Time-Series)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (type) (rate(security_anomalies_total[1m]))",
+          "legendFormat": "{{ type }}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "id": 6,
+      "title": "Unauthorized Relay Action Breakdown",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "rate(security_anomalies_total{type=\"unauthorized_delete\"}[1m])",
+          "legendFormat": "Delete Rejections",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(security_anomalies_total{type=\"unauthorized_edit\"}[1m])",
+          "legendFormat": "Edit Rejections",
+          "refId": "B"
+        },
+        {
+          "expr": "rate(security_anomalies_total{type=\"unauthorized_pin\"}[1m])",
+          "legendFormat": "Pin Rejections",
+          "refId": "C"
+        },
+        {
+          "expr": "rate(security_anomalies_total{type=\"device_link_failed\"}[1m])",
+          "legendFormat": "Failed Device Linkings",
+          "refId": "D"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["genchat", "security", "audit", "anomalies", "e2ee"],
+  "title": "GenChat - Security Audit & Anomaly Telemetry",
+  "uid": "genchat-security-audit"
+}

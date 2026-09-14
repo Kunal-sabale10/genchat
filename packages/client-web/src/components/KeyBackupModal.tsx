@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import {
   ShieldCheck,
   Shield,
@@ -27,6 +27,24 @@ interface KeyBackupModalProps {
   onBackupRestored?: (recoveredData: Record<string, unknown>) => void
 }
 
+function getPinStrength(pass: string): { score: number; label: string; color: string; feedback: string } {
+  if (!pass) return { score: 0, label: 'Empty', color: 'bg-slate-700', feedback: 'Enter a strong passphrase or PIN' }
+  let score = 0
+  if (pass.length >= 8) score += 1
+  if (pass.length >= 12) score += 1
+  if (/[0-9]/.test(pass)) score += 1
+  if (/[a-z]/.test(pass) && /[A-Z]/.test(pass)) score += 1
+  if (/[^a-zA-Z0-9]/.test(pass)) score += 1
+
+  if (/^(.)\1+$/.test(pass) || /^(123456|abcdef|password|qwerty|000000)/i.test(pass)) {
+    return { score: 1, label: 'Very Weak', color: 'bg-rose-500', feedback: 'Trivially guessable pattern. Use mixed characters.' }
+  }
+  if (score <= 1) return { score: 1, label: 'Weak', color: 'bg-rose-500', feedback: 'Too short. Recommend at least 8 characters with numbers.' }
+  if (score === 2) return { score: 2, label: 'Fair', color: 'bg-amber-500', feedback: 'Moderate. Add uppercase letters or symbols for better protection.' }
+  if (score === 3 || score === 4) return { score: 3, label: 'Strong', color: 'bg-emerald-500', feedback: 'Strong passphrase. Resistant to offline brute-forcing.' }
+  return { score: 4, label: 'Excellent', color: 'bg-indigo-500', feedback: 'Exceptional entropy! Highly secure against GPU brute-force.' }
+}
+
 export const KeyBackupModal: React.FC<KeyBackupModalProps> = ({
   isOpen,
   onClose,
@@ -40,6 +58,8 @@ export const KeyBackupModal: React.FC<KeyBackupModalProps> = ({
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const [existingBackup, setExistingBackup] = useState<BackupPayload | null>(null)
+
+  const pinStrength = getPinStrength(passphrase)
 
   useEffect(() => {
     if (isOpen && authToken) {
@@ -63,8 +83,8 @@ export const KeyBackupModal: React.FC<KeyBackupModalProps> = ({
     setError(null)
     setSuccess(null)
 
-    if (passphrase.length < 6) {
-      setError('Passphrase must be at least 6 characters long.')
+    if (passphrase.length < 8 || pinStrength.score < 2) {
+      setError('Passphrase is too weak. Must be at least 8 characters with mixed characters.')
       return
     }
     if (passphrase !== confirmPassphrase) {
@@ -232,6 +252,21 @@ export const KeyBackupModal: React.FC<KeyBackupModalProps> = ({
                   required
                 />
               </div>
+              {passphrase && (
+                <div className="mt-2 space-y-1">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground">Strength:</span>
+                    <span className="font-semibold text-foreground">{pinStrength.label}</span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1 h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
+                    <div className={`h-full ${pinStrength.score >= 1 ? pinStrength.color : 'bg-slate-700'}`}></div>
+                    <div className={`h-full ${pinStrength.score >= 2 ? pinStrength.color : 'bg-slate-700'}`}></div>
+                    <div className={`h-full ${pinStrength.score >= 3 ? pinStrength.color : 'bg-slate-700'}`}></div>
+                    <div className={`h-full ${pinStrength.score >= 4 ? pinStrength.color : 'bg-slate-700'}`}></div>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">{pinStrength.feedback}</p>
+                </div>
+              )}
             </div>
 
             <div>
