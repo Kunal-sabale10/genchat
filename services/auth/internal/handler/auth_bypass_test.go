@@ -239,6 +239,62 @@ func (m *mockAuthStore) GetLatestMlsCommit(ctx context.Context, channelID uuid.U
 	return nil, 0, nil
 }
 
+func (m *mockAuthStore) SaveKeyBackup(ctx context.Context, userID uuid.UUID, ciphertext, salt []byte, algorithm string, params []byte, version int) error {
+	return nil
+}
+
+func (m *mockAuthStore) GetKeyBackup(ctx context.Context, userID uuid.UUID) (*store.UserKeyBackup, error) {
+	return nil, nil
+}
+
+func (m *mockAuthStore) DeleteKeyBackup(ctx context.Context, userID uuid.UUID) error {
+	return nil
+}
+
+func (m *mockAuthStore) CreateDeviceLinkingSession(ctx context.Context, sessionID, primaryUserID, primaryDeviceID uuid.UUID, ephemeralPubkey, authCodeHash []byte, expiresAt time.Time) error {
+	return nil
+}
+
+func (m *mockAuthStore) GetDeviceLinkingSession(ctx context.Context, sessionID uuid.UUID) (*store.DeviceLinkingSession, error) {
+	return nil, nil
+}
+
+func (m *mockAuthStore) ApproveDeviceLinkingSession(ctx context.Context, sessionID uuid.UUID, encryptedBundle []byte, newDeviceID uuid.UUID) error {
+	return nil
+}
+
+func (m *mockAuthStore) CompleteDeviceLinkingSession(ctx context.Context, sessionID uuid.UUID) error {
+	return nil
+}
+
+func (m *mockAuthStore) BlockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error {
+	return nil
+}
+
+func (m *mockAuthStore) UnblockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error {
+	return nil
+}
+
+func (m *mockAuthStore) GetBlockedUsers(ctx context.Context, blockerID uuid.UUID) ([]uuid.UUID, error) {
+	return nil, nil
+}
+
+func (m *mockAuthStore) IsUserBlocked(ctx context.Context, blockerID, blockedID uuid.UUID) (bool, error) {
+	return false, nil
+}
+
+func (m *mockAuthStore) SubmitAbuseReport(ctx context.Context, reporterID, reportedID uuid.UUID, convID, msgID, reason, decryptedContent string, rawCiphertext []byte) (uuid.UUID, error) {
+	return uuid.New(), nil
+}
+
+func (m *mockAuthStore) ExportUserData(ctx context.Context, userID uuid.UUID) (*store.UserExportData, error) {
+	return &store.UserExportData{}, nil
+}
+
+func (m *mockAuthStore) EraseUser(ctx context.Context, userID uuid.UUID) error {
+	return nil
+}
+
 
 // setupTestGRPCServer starts an in-process bufconn gRPC server with the AuthHandler and interceptors.
 func setupTestGRPCServer(t *testing.T, jwtSecret string) (*mockAuthStore, *grpc.ClientConn, func()) {
