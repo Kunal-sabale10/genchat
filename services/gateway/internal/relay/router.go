@@ -1060,16 +1060,25 @@ func (r *Router) handleDeleteMessage(ctx context.Context, conn *ws.Conn, data []
 
 	// 1. If delete_scope == "everyone", verify ownership and broadcast push frame to conversation participants
 	if scope == "everyone" {
-		// CRITICAL SECURITY: Verify message author before broadcasting revocation
+		// CRITICAL SECURITY: Verify message author before broadcasting revocation (fail-closed)
 		if r.ledger != nil {
 			authorID, err := r.ledger.GetMessageAuthor(ctx, conversationID, messageID)
-			if err == nil && authorID != "" {
-				if authorID != conn.UserID {
-					return r.sendError(conn, "PERMISSION_DENIED", "only the original message author can delete for everyone")
-				}
+			if err != nil || authorID == "" {
+				slog.Warn("failed to verify message author from ledger, rejecting delete (failing closed)",
+					"error", err,
+					"conversation_id", conversationID,
+					"message_id", messageID,
+					"sender", conn.UserID,
+				)
+				return r.sendError(conn, "PERMISSION_DENIED", "cannot verify message authorship")
+			}
+			if authorID != conn.UserID {
+				return r.sendError(conn, "PERMISSION_DENIED", "only the original message author can delete for everyone")
 			}
 			// Persist deletion event in ScyllaDB msgledger
 			_ = r.ledger.RecordMessageEvent(ctx, conversationID, messageID, "deleted", conn.UserID, nil)
+		} else {
+			return r.sendError(conn, "INTERNAL_ERROR", "ledger unavailable to verify message authorship")
 		}
 
 		pushPayload, err := json.Marshal(DeleteMessagePushFrame{
@@ -1147,17 +1156,26 @@ func (r *Router) handleEditMessage(ctx context.Context, conn *ws.Conn, data []by
 
 	conversationID := getConversationID(conn.UserID, frame.ChannelID)
 
-	// CRITICAL SECURITY: Verify message author before broadcasting edit
+	// CRITICAL SECURITY: Verify message author before broadcasting edit (fail-closed)
 	if r.ledger != nil {
 		authorID, err := r.ledger.GetMessageAuthor(ctx, conversationID, messageID)
-		if err == nil && authorID != "" {
-			if authorID != conn.UserID {
-				return r.sendError(conn, "PERMISSION_DENIED", "only the original message author can edit this message")
-			}
+		if err != nil || authorID == "" {
+			slog.Warn("failed to verify message author from ledger, rejecting edit (failing closed)",
+				"error", err,
+				"conversation_id", conversationID,
+				"message_id", messageID,
+				"sender", conn.UserID,
+			)
+			return r.sendError(conn, "PERMISSION_DENIED", "cannot verify message authorship")
+		}
+		if authorID != conn.UserID {
+			return r.sendError(conn, "PERMISSION_DENIED", "only the original message author can edit this message")
 		}
 		// Persist edit event in ScyllaDB msgledger
 		ctBytes, _ := base64.StdEncoding.DecodeString(frame.CiphertextB64)
 		_ = r.ledger.RecordMessageEvent(ctx, conversationID, messageID, "edited", conn.UserID, ctBytes)
+	} else {
+		return r.sendError(conn, "INTERNAL_ERROR", "ledger unavailable to verify message authorship")
 	}
 
 	serverTime := time.Now().Unix()

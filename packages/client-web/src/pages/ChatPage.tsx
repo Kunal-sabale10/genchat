@@ -88,6 +88,8 @@ interface MessageItem {
   status: 'pending' | 'sent' | 'delivered' | 'read'
   timestamp: string
   isEncrypted?: boolean
+  isInsecureFallback?: boolean
+  securityWarning?: string
   senderFingerprint?: string
   ephemeralTtlSec?: number
   expiresAt?: number
@@ -814,6 +816,8 @@ export default function ChatPage() {
 
         let displayText: string | undefined = env.ciphertext
         let isEncrypted = false
+        let isInsecureFallback = false
+        let securityWarning: string | undefined = undefined
         let senderFingerprint: string | undefined = undefined
 
         // Try decrypting with MLS if group channel or MLS envelope, else client-side E2EE ratchet
@@ -825,6 +829,8 @@ export default function ChatPage() {
             const decResult = await E2eeService.decrypt(env.ciphertext, effectiveChannelId, myUserId || '')
             displayText = decResult.text
             isEncrypted = decResult.isEncrypted
+            isInsecureFallback = Boolean(decResult.isInsecureFallback)
+            securityWarning = decResult.warning
             senderFingerprint = decResult.fingerprint
           }
 
@@ -879,6 +885,8 @@ export default function ChatPage() {
           status: 'delivered',
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           isEncrypted,
+          isInsecureFallback,
+          securityWarning,
           senderFingerprint,
           ephemeralTtlSec: ttlSec > 0 ? ttlSec : undefined,
           expiresAt,
@@ -1354,6 +1362,10 @@ export default function ChatPage() {
       console.warn('[E2EE] Encryption fallback:', err)
     }
 
+    const isWireFallback =
+      wireCiphertext.includes('"protocol":"genchat-fallback-v1"') ||
+      wireCiphertext.includes('"insecureFallback":true')
+
     const optimisticMsg: MessageItem = {
       id: clientMsgId,
       clientMsgId,
@@ -1364,7 +1376,9 @@ export default function ChatPage() {
       reactions: {},
       status: 'pending',
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      isEncrypted: true,
+      isEncrypted: !isWireFallback,
+      isInsecureFallback: isWireFallback,
+      securityWarning: isWireFallback ? 'Insecure fallback encryption used without PQXDH.' : undefined,
       ephemeralTtlSec: ttlSec > 0 ? ttlSec : undefined,
       expiresAt,
     }
@@ -2855,11 +2869,19 @@ export default function ChatPage() {
                         <Pin className="h-2.5 w-2.5 text-emerald-400 fill-emerald-400/30" />
                       </span>
                     )}
-                    {m.isEncrypted && (
-                      <span title="End-to-End Encrypted">
+                    {m.isInsecureFallback ? (
+                      <span
+                        title="Warning: Insecure fallback encryption used. Message is NOT protected by Post-Quantum E2EE."
+                        className="flex items-center gap-0.5 text-amber-400 text-[10px] font-medium bg-amber-500/10 px-1 py-0.5 rounded border border-amber-500/20"
+                      >
+                        <AlertTriangle className="h-2.5 w-2.5 text-amber-400" />
+                        Insecure
+                      </span>
+                    ) : m.isEncrypted ? (
+                      <span title="Post-Quantum End-to-End Encrypted (PQXDH)">
                         <Lock className="h-2.5 w-2.5 text-emerald-400" />
                       </span>
-                    )}
+                    ) : null}
                     {m.expiresAt && (
                       <DisappearingTimerBadge expiresAt={m.expiresAt} />
                     )}

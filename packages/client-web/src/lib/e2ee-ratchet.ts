@@ -17,8 +17,10 @@ import {
   WasmPqxdhInitMessage,
 } from './wasm-crypto'
 
+export type EnvelopeProtocol = 'genchat-pq-v1' | 'genchat-fallback-v1'
+
 export interface EncryptedEnvelope {
-  protocol: 'genchat-pq-v1'
+  protocol: EnvelopeProtocol
   conversationId: string
   sequenceNum: number
   senderId: string
@@ -28,12 +30,22 @@ export interface EncryptedEnvelope {
   ciphertextBase64: string
   macHex?: string
   senderFingerprint: string
+  insecureFallback?: boolean
 }
 
 interface ActiveSession {
   key: CryptoKey
   sharedSecretHex: string
   peerIdentityKeyHex: string
+  pendingInitMessage?: WasmPqxdhInitMessage
+}
+
+export interface DecryptResult {
+  text: string
+  isEncrypted: boolean
+  isInsecureFallback?: boolean
+  warning?: string
+  fingerprint?: string
 }
 
 function hexToBase64(hex: string): string {
@@ -66,9 +78,77 @@ export class E2eeService {
   private static sessionCache = new Map<string, ActiveSession>()
   // Peer public identity keys: peerUserId -> Ed25519 pub hex
   private static peerIdentityKeys = new Map<string, string>()
+  // In-flight handshake promises to avoid concurrent duplicate requests
+  private static pendingHandshakes = new Map<
+    string,
+    Promise<{ session: ActiveSession; initMessage: WasmPqxdhInitMessage } | null>
+  >()
 
   public static setAuthToken(token: string): void {
     this.authToken = token
+  }
+
+  /**
+   * Attempts to establish a genuine PQXDH session with peer with automatic retry on failure.
+   * Queues concurrent handshake requests to the same peer.
+   */
+  private static async establishSessionWithRetry(
+    peerUserId: string,
+    conversationId: string,
+    maxRetries: number = 3
+  ): Promise<{ session: ActiveSession; initMessage: WasmPqxdhInitMessage } | null> {
+    if (!this.identityBundle) return null
+
+    // If a handshake is already in progress for this peer, queue behind it
+    const existing = this.pendingHandshakes.get(peerUserId)
+    if (existing) {
+      return existing
+    }
+
+    const handshakeTask = (async () => {
+      let attempt = 0
+      let lastErr: any = null
+
+      while (attempt < maxRetries) {
+        attempt++
+        try {
+          const peerBundle = await this.fetchPreKeyBundle(peerUserId, this.authToken)
+          if (peerBundle) {
+            const initRes = await WasmCrypto.initiatePqxdhHandshake(this.identityBundle!, peerBundle)
+            const key = await this.deriveKeyFromSecret(initRes.shared_secret_hex, conversationId)
+            const session: ActiveSession = {
+              key,
+              sharedSecretHex: initRes.shared_secret_hex,
+              peerIdentityKeyHex: peerBundle.identity_key_hex,
+              pendingInitMessage: initRes.init_message,
+            }
+            this.sessionCache.set(peerUserId, session)
+            return { session, initMessage: initRes.init_message }
+          } else {
+            lastErr = new Error(`PreKeyBundle not available for user ${peerUserId}`)
+          }
+        } catch (err) {
+          lastErr = err
+        }
+
+        if (attempt < maxRetries) {
+          await new Promise((resolve) => setTimeout(resolve, attempt * 300))
+        }
+      }
+
+      console.warn(
+        `[E2eeService] PQXDH handshake failed after ${maxRetries} attempts for peer ${peerUserId}:`,
+        lastErr
+      )
+      return null
+    })()
+
+    this.pendingHandshakes.set(peerUserId, handshakeTask)
+    try {
+      return await handshakeTask
+    } finally {
+      this.pendingHandshakes.delete(peerUserId)
+    }
   }
 
   /**
@@ -264,33 +344,26 @@ export class E2eeService {
 
     const peerUserId = this.extractPeerId(conversationId, currentUserId)
     let session = this.sessionCache.get(peerUserId)
-    let initMsg: WasmPqxdhInitMessage | undefined
+    let initMsg: WasmPqxdhInitMessage | undefined = session?.pendingInitMessage
 
-    // Establish PQXDH session if not yet negotiated with peer
+    // Establish PQXDH session if not yet negotiated with peer, queuing and retrying if necessary
     if (!session && this.identityBundle && peerUserId !== currentUserId) {
-      const peerBundle = await this.fetchPreKeyBundle(peerUserId, this.authToken)
-      if (peerBundle) {
-        try {
-          const initRes = await WasmCrypto.initiatePqxdhHandshake(this.identityBundle, peerBundle)
-          const key = await this.deriveKeyFromSecret(initRes.shared_secret_hex, conversationId)
-          session = {
-            key,
-            sharedSecretHex: initRes.shared_secret_hex,
-            peerIdentityKeyHex: peerBundle.identity_key_hex,
-          }
-          this.sessionCache.set(peerUserId, session)
-          initMsg = initRes.init_message
-        } catch (err) {
-          console.warn('[E2eeService] PQXDH handshake failed, using secure fallback:', err)
-        }
+      const result = await this.establishSessionWithRetry(peerUserId, conversationId)
+      if (result) {
+        session = result.session
+        initMsg = result.initMessage
       }
     }
 
-    // Fallback key derivation if peer prekey bundle is unavailable
+    const isFallback = !session
     let keyToUse: CryptoKey
+
     if (session) {
       keyToUse = session.key
     } else {
+      console.warn(
+        `[E2eeService] WARNING: Using INSECURE FALLBACK key derivation for message to ${peerUserId} (conversation ${conversationId}). Message is NOT post-quantum protected!`
+      )
       const enc = new TextEncoder()
       const fallbackIkm = enc.encode(`genchat_fallback_${conversationId}_${currentUserId}`)
       const baseKey = await crypto.subtle.importKey('raw', fallbackIkm, { name: 'HKDF' }, false, ['deriveKey'])
@@ -319,8 +392,9 @@ export class E2eeService {
     const myIdKey = this.getPublicIdentityKey()
     const senderFingerprint = myIdKey ? myIdKey.slice(0, 16) : await this.getFingerprint(currentUserId)
 
+    // Fallback envelopes are tagged with 'genchat-fallback-v1' and insecureFallback: true
     const envelope: EncryptedEnvelope = {
-      protocol: 'genchat-pq-v1',
+      protocol: isFallback ? 'genchat-fallback-v1' : 'genchat-pq-v1',
       conversationId,
       sequenceNum,
       senderId: currentUserId,
@@ -329,6 +403,7 @@ export class E2eeService {
       ivHex,
       ciphertextBase64,
       senderFingerprint,
+      insecureFallback: isFallback,
     }
 
     return JSON.stringify(envelope)
@@ -342,7 +417,7 @@ export class E2eeService {
     conversationId: string,
     currentUserId: string,
     token?: string
-  ): Promise<{ text: string; isEncrypted: boolean; fingerprint?: string }> {
+  ): Promise<DecryptResult> {
     if (!rawCiphertext || !rawCiphertext.startsWith('{')) {
       return { text: rawCiphertext, isEncrypted: false }
     }
@@ -351,10 +426,15 @@ export class E2eeService {
 
     try {
       const envelope: EncryptedEnvelope = JSON.parse(rawCiphertext)
-      if (envelope.protocol !== 'genchat-pq-v1' || !envelope.ivHex || !envelope.ciphertextBase64) {
+      if (
+        (envelope.protocol !== 'genchat-pq-v1' && envelope.protocol !== 'genchat-fallback-v1') ||
+        !envelope.ivHex ||
+        !envelope.ciphertextBase64
+      ) {
         return { text: rawCiphertext, isEncrypted: false }
       }
 
+      const isFallbackEnvelope = envelope.protocol === 'genchat-fallback-v1' || envelope.insecureFallback === true
       const senderId = envelope.senderId || this.extractPeerId(conversationId, currentUserId)
       let session = this.sessionCache.get(senderId)
 
@@ -378,10 +458,8 @@ export class E2eeService {
       }
 
       let keyToUse: CryptoKey
-      if (session) {
-        keyToUse = session.key
-      } else {
-        // Fallback for legacy or fallback envelopes
+      if (isFallbackEnvelope) {
+        // Fallback key derivation strictly for explicitly tagged fallback envelopes
         const enc = new TextEncoder()
         const convToUse = envelope.conversationId || conversationId
         const fallbackIkm = enc.encode(`genchat_fallback_${convToUse}_${senderId}`)
@@ -396,8 +474,21 @@ export class E2eeService {
           baseKey,
           { name: 'AES-GCM', length: 256 },
           false,
-          ['encrypt', 'decrypt']
+          ['decrypt']
         )
+      } else {
+        // Genuine PQXDH envelope: fail closed if no session was negotiated or initialized
+        if (!session) {
+          console.warn(
+            `[E2eeService] Refusing to decrypt 'genchat-pq-v1' envelope from ${senderId}: No active cryptographic session or InitMessage.`
+          )
+          return {
+            text: rawCiphertext,
+            isEncrypted: false,
+            warning: 'Failed to decrypt PQXDH message: No active cryptographic session.',
+          }
+        }
+        keyToUse = session.key
       }
 
       const iv = new Uint8Array(envelope.ivHex.match(/.{1,2}/g)!.map((byte) => parseInt(byte, 16)))
@@ -408,11 +499,15 @@ export class E2eeService {
       }
 
       const decryptedBuffer = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, keyToUse, ctBytes)
-
       const decryptedText = new TextDecoder().decode(decryptedBuffer)
+
       return {
         text: decryptedText,
-        isEncrypted: true,
+        isEncrypted: !isFallbackEnvelope,
+        isInsecureFallback: isFallbackEnvelope,
+        warning: isFallbackEnvelope
+          ? 'Warning: Insecure fallback encryption used for this message. Not protected by PQXDH.'
+          : undefined,
         fingerprint: envelope.senderFingerprint,
       }
     } catch (err) {

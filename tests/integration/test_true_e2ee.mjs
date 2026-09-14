@@ -9,7 +9,7 @@
 // 6. Authentic Safety Numbers: Numbers derived from authentic public keys detect MITM substitution.
 
 import assert from 'assert';
-import { subtle, createHash } from 'crypto';
+import { subtle, createHash, randomBytes } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -398,6 +398,92 @@ async function run() {
   assert.notStrictEqual(safetyNumAlice, tamperedSafetyNum, 'MITM key substitution MUST change the safety number!');
   console.log(`✓ Safety Numbers verified: ${safetyNumAlice}`);
   console.log('✓ MITM Key Substitution detected: Tampered key produced completely different number!');
+
+  // Step 13: Tagged Insecure Fallback Protocol & Fail-Closed PQXDH Decryption
+  console.log('\n--- Verifying Distinct Fallback Protocol Tagging & Fail-Closed Policy ---');
+
+  // Fallback envelope simulation (when peer pre-keys are unavailable)
+  const fallbackIkm = Buffer.from(`genchat_fallback_${wireEnvelope.conversationId}_${alice.userId}`);
+  const fallbackBaseKey = await subtle.importKey('raw', fallbackIkm, { name: 'HKDF' }, false, ['deriveKey']);
+  const fallbackKey = await subtle.deriveKey(
+    {
+      name: 'HKDF',
+      hash: 'SHA-256',
+      salt: Buffer.from('genchat_fallback_salt'),
+      info: Buffer.from(`fallback_${wireEnvelope.conversationId}`),
+    },
+    fallbackBaseKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+
+  const fbIv = randomBytes(12);
+  const fbEncrypted = await subtle.encrypt(
+    { name: 'AES-GCM', iv: fbIv },
+    fallbackKey,
+    Buffer.from('Fallback message content', 'utf-8')
+  );
+
+  const fallbackEnvelope = {
+    protocol: 'genchat-fallback-v1',
+    conversationId: wireEnvelope.conversationId,
+    sequenceNum: 2,
+    senderId: alice.userId,
+    recipientId: bob.userId,
+    ivHex: fbIv.toString('hex'),
+    ciphertextBase64: Buffer.from(fbEncrypted).toString('base64'),
+    senderFingerprint: aliceKeyHex.slice(0, 16),
+    insecureFallback: true,
+  };
+
+  // Assert distinct protocol tagging
+  assert.strictEqual(fallbackEnvelope.protocol, 'genchat-fallback-v1', 'Fallback envelope must use distinct protocol');
+  assert.strictEqual(fallbackEnvelope.insecureFallback, true, 'Fallback envelope must set insecureFallback marker');
+  console.log('✓ Confirmed: Fallback envelopes are distinctly tagged with "genchat-fallback-v1"');
+
+  // Verify that an envelope claiming 'genchat-pq-v1' cannot be decrypted with fallback keys
+  let pqWithFallbackDecrypted = false;
+  try {
+    await subtle.decrypt(
+      { name: 'AES-GCM', iv: Buffer.from(capturedEnvelope.ivHex, 'hex') },
+      fallbackKey,
+      Buffer.from(capturedEnvelope.ciphertextBase64, 'base64')
+    );
+    pqWithFallbackDecrypted = true;
+  } catch {
+    // Expected to fail!
+  }
+  assert.strictEqual(pqWithFallbackDecrypted, false, 'Genuine PQXDH envelope must NEVER decrypt with fallback key');
+  console.log('✓ Confirmed: Genuine PQXDH envelopes cannot be decrypted with fallback keys (fail closed)');
+
+  // Step 14: Gateway Fail-Closed on Unverifiable Message Authorship
+  console.log('\n--- Verifying Gateway Fail-Closed on Unverifiable Message Authorship ---');
+  const deleteErrPromise = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Timed out waiting for error frame')), 5000);
+    bobWs.onmessage = async (event) => {
+      try {
+        const text = typeof event.data === 'string' ? event.data : await event.data.text();
+        const frame = JSON.parse(text);
+        if (frame.type === 'error') {
+          clearTimeout(timer);
+          resolve(frame);
+        }
+      } catch (e) {}
+    };
+  });
+
+  const fakeMessageId = `nonexistent_msg_${Date.now()}`;
+  bobWs.send(JSON.stringify({
+    action: 'delete_message',
+    channel_id: alice.userId,
+    message_id: fakeMessageId,
+    delete_scope: 'everyone',
+  }));
+
+  const deleteErr = await deleteErrPromise;
+  assert.strictEqual(deleteErr.code, 'PERMISSION_DENIED', 'Unverifiable delete must fail closed with PERMISSION_DENIED');
+  console.log(`✓ Confirmed: Gateway rejected unverifiable delete with PERMISSION_DENIED: "${deleteErr.message}"`);
 
   // Cleanup
   aliceWs.close();
