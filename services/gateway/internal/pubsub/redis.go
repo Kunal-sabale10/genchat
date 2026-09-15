@@ -148,3 +148,68 @@ func (r *RedisPubSub) Heartbeat(ctx context.Context, userID string) error {
 	key := fmt.Sprintf("presence:%s", userID)
 	return r.client.Expire(ctx, key, 60*time.Second).Err()
 }
+
+// -------------------------------------------------------------
+// Cross-Instance Gateway Routing & Presence Directory
+// -------------------------------------------------------------
+
+type PodEnvelope struct {
+	TargetUserID string `json:"target_user_id"`
+	Payload      []byte `json:"payload"`
+}
+
+// RegisterUserGateway records that a user is connected to a specific gateway pod instance.
+// It sets user:{id}:gateway_instance = instanceID and adds instanceID to user:{id}:gateways.
+func (r *RedisPubSub) RegisterUserGateway(ctx context.Context, userID, instanceID string) error {
+	pipe := r.client.Pipeline()
+	pipe.Set(ctx, fmt.Sprintf("user:%s:gateway_instance", userID), instanceID, 24*time.Hour)
+	pipe.SAdd(ctx, fmt.Sprintf("user:%s:gateways", userID), instanceID)
+	pipe.Expire(ctx, fmt.Sprintf("user:%s:gateways", userID), 24*time.Hour)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// DeregisterUserGateway removes a gateway pod instance from a user's presence.
+// When no more pods host the user, it deletes the presence keys.
+func (r *RedisPubSub) DeregisterUserGateway(ctx context.Context, userID, instanceID string) error {
+	pipe := r.client.Pipeline()
+	pipe.SRem(ctx, fmt.Sprintf("user:%s:gateways", userID), instanceID)
+	pipe.Del(ctx, fmt.Sprintf("user:%s:gateway_instance", userID))
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// GetUserGateways returns all gateway pod IDs that currently host active sessions for userID.
+func (r *RedisPubSub) GetUserGateways(ctx context.Context, userID string) ([]string, error) {
+	members, err := r.client.SMembers(ctx, fmt.Sprintf("user:%s:gateways", userID)).Result()
+	if err == nil && len(members) > 0 {
+		return members, nil
+	}
+	// Fallback to direct key if set is not populated
+	val, err := r.client.Get(ctx, fmt.Sprintf("user:%s:gateway_instance", userID)).Result()
+	if err == nil && val != "" {
+		return []string{val}, nil
+	}
+	return nil, nil
+}
+
+// PublishToPod routes an outbound message envelope to a specific gateway pod instance.
+func (r *RedisPubSub) PublishToPod(ctx context.Context, targetPodID string, targetUserID string, payload []byte) error {
+	envelope := PodEnvelope{
+		TargetUserID: targetUserID,
+		Payload:      payload,
+	}
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		return err
+	}
+	topic := fmt.Sprintf("gateway:pod:%s", targetPodID)
+	return r.client.Publish(ctx, topic, data).Err()
+}
+
+// SubscribePod subscribes to the dedicated Redis pub/sub channel for this pod instance.
+func (r *RedisPubSub) SubscribePod(ctx context.Context, instanceID string) *redis.PubSub {
+	topic := fmt.Sprintf("gateway:pod:%s", instanceID)
+	return r.client.Subscribe(ctx, topic)
+}
+

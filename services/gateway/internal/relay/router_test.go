@@ -13,6 +13,7 @@ import (
 	chatv1 "github.com/genchat/proto/gen/chat/v1"
 	"github.com/genchat/services/gateway/internal/ledgerclient"
 	"github.com/genchat/services/gateway/internal/ws"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // mockLedgerRPC implements chatv1.LedgerServiceClient for unit testing.
@@ -426,3 +427,100 @@ func TestTableDriven_PinMessage(t *testing.T) {
 		})
 	}
 }
+
+func TestRouter_ProtobufWireProtocol(t *testing.T) {
+	mockL := &mockLedgerRPC{}
+	mockC := &mockChannelRPC{}
+	router, hub := setupTestRouter(mockL, mockC)
+
+	senderConn := newTestConn(hub, "alice", "dev_alice")
+	recipientConn := newTestConn(hub, "bob", "dev_bob")
+
+	// 1. Test Protobuf SendMessageAction
+	sendPacket := &chatv1.Packet{
+		TraceId: "trace-proto-1",
+		SentAt:  timestamppb.Now(),
+		Payload: &chatv1.Packet_ClientAction{
+			ClientAction: &chatv1.ClientAction{
+				RequestId: "req-1",
+				Action: &chatv1.ClientAction_SendMessageAction{
+					SendMessageAction: &chatv1.SendMessageAction{
+						ConversationId:   "bob",
+						ClientMsgId:      "msg-proto-1",
+						EncryptedPayload: []byte("encrypted-ciphertext-bytes"),
+						MessageIndex:     1,
+					},
+				},
+			},
+		},
+	}
+
+	rawProto, err := encodePacket(sendPacket)
+	if err != nil {
+		t.Fatalf("failed to encode packet: %v", err)
+	}
+
+	err = router.Handle(context.Background(), senderConn, rawProto)
+	if err != nil {
+		t.Fatalf("unexpected Handle error for protobuf frame: %v", err)
+	}
+
+	// Verify Alice received Protobuf ActionAck
+	select {
+	case ackBytes := <-senderConn.Send:
+		ackPacket, err := decodePacket(ackBytes)
+		if err != nil {
+			t.Fatalf("failed to decode ACK packet: %v", err)
+		}
+		ackEvt := ackPacket.GetServerEvent().GetActionAck()
+		if ackEvt == nil || !ackEvt.Success || ackEvt.RequestId != "msg-proto-1" {
+			t.Fatalf("unexpected ActionAck: %+v", ackEvt)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("timeout waiting for Protobuf ActionAck on senderConn")
+	}
+
+	// Verify Bob received Protobuf MessageDeliveredEvent
+	select {
+	case pushBytes := <-recipientConn.Send:
+		pushPacket, err := decodePacket(pushBytes)
+		if err != nil {
+			t.Fatalf("failed to decode push packet: %v", err)
+		}
+		delEvt := pushPacket.GetServerEvent().GetMessageDelivered()
+		if delEvt == nil || delEvt.SenderUserId != "alice" || string(delEvt.EncryptedPayload) != "encrypted-ciphertext-bytes" {
+			t.Fatalf("unexpected MessageDelivered: %+v", delEvt)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("timeout waiting for Protobuf MessageDelivered on recipientConn")
+	}
+
+	// 2. Test Protobuf Heartbeat
+	hbPacket := &chatv1.Packet{
+		TraceId: "hb-1",
+		Payload: &chatv1.Packet_Heartbeat{
+			Heartbeat: &chatv1.Heartbeat{
+				SequenceNumber: 7,
+			},
+		},
+	}
+	rawHb, _ := encodePacket(hbPacket)
+	err = router.Handle(context.Background(), senderConn, rawHb)
+	if err != nil {
+		t.Fatalf("heartbeat Handle failed: %v", err)
+	}
+
+	select {
+	case pongBytes := <-senderConn.Send:
+		pongPacket, err := decodePacket(pongBytes)
+		if err != nil {
+			t.Fatalf("failed to decode pong packet: %v", err)
+		}
+		if pongPacket.GetHeartbeat() == nil || pongPacket.GetHeartbeat().SequenceNumber != 8 {
+			t.Fatalf("expected pong seq 8, got %+v", pongPacket.GetHeartbeat())
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("timeout waiting for Protobuf Heartbeat pong")
+	}
+}
+

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -61,11 +62,66 @@ type FCMSilentPayload struct {
 	Data     map[string]string `json:"data"`
 }
 
+// ErrProviderThrottled is returned when an outbound push is skipped due to active provider 429 throttling or an open circuit breaker.
+var ErrProviderThrottled = fmt.Errorf("push provider is throttled or circuit breaker open")
+
+// ProviderState tracks rate-limiting and circuit-breaker health for a push provider (APNs, FCM, WebPush).
+type ProviderState struct {
+	mu                  sync.RWMutex
+	ThrottledUntil      time.Time
+	ConsecutiveFailures int
+	CircuitOpen         bool
+	CircuitOpenUntil    time.Time
+}
+
+func (p *ProviderState) IsThrottled() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	now := time.Now()
+	if now.Before(p.ThrottledUntil) {
+		return true
+	}
+	if p.CircuitOpen && now.Before(p.CircuitOpenUntil) {
+		return true
+	}
+	return false
+}
+
+func (p *ProviderState) RecordRateLimit(retryAfter time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if retryAfter <= 0 {
+		retryAfter = 5 * time.Second
+	}
+	p.ThrottledUntil = time.Now().Add(retryAfter)
+	slog.Warn("push provider rate limit encountered, backing off", "retry_after", retryAfter)
+}
+
+func (p *ProviderState) RecordFailure() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.ConsecutiveFailures++
+	if p.ConsecutiveFailures >= 5 {
+		p.CircuitOpen = true
+		p.CircuitOpenUntil = time.Now().Add(30 * time.Second)
+		slog.Error("push provider circuit breaker tripped due to consecutive failures", "failures", p.ConsecutiveFailures, "break_duration", 30*time.Second)
+	}
+}
+
+func (p *ProviderState) RecordSuccess() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.ConsecutiveFailures = 0
+	p.CircuitOpen = false
+}
+
 type Dispatcher struct {
 	httpClient      *http.Client
 	queue           chan PushNotification
 	workers         int
 	dispatchedCount atomic.Uint64
+	providersMu     sync.RWMutex
+	providers       map[Platform]*ProviderState
 }
 
 func NewDispatcher(workers int, queueSize int) *Dispatcher {
@@ -73,7 +129,19 @@ func NewDispatcher(workers int, queueSize int) *Dispatcher {
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 		queue:      make(chan PushNotification, queueSize),
 		workers:    workers,
+		providers:  make(map[Platform]*ProviderState),
 	}
+}
+
+func (d *Dispatcher) GetProviderState(platform Platform) *ProviderState {
+	d.providersMu.Lock()
+	defer d.providersMu.Unlock()
+	state, ok := d.providers[platform]
+	if !ok {
+		state = &ProviderState{}
+		d.providers[platform] = state
+	}
+	return state
 }
 
 func (d *Dispatcher) DispatchedTotal() uint64 {
@@ -110,6 +178,12 @@ func (d *Dispatcher) worker(ctx context.Context, id int) {
 }
 
 func (d *Dispatcher) dispatch(ctx context.Context, notif PushNotification) error {
+	state := d.GetProviderState(notif.Platform)
+	if state.IsThrottled() {
+		slog.Warn("push dispatch skipped: provider throttled or circuit open", "platform", notif.Platform, "device_id", notif.DeviceID)
+		return ErrProviderThrottled
+	}
+
 	d.dispatchedCount.Add(1)
 
 	switch notif.Platform {

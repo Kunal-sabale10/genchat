@@ -218,7 +218,21 @@ export class GatewayClient {
         }
 
 
-        // 4. Handle server errors
+        // 4. Handle server shutdown graceful reconnect notice
+        if (raw.type === 'reconnect') {
+          console.warn('[Gateway] Server requested reconnect (shutdown/drain):', raw.reason)
+          const baseDelay = raw.reconnect_after_ms ? Number(raw.reconnect_after_ms) : 1000
+          const jitteredDelay = Math.floor(Math.random() * baseDelay) + 200
+          setTimeout(() => {
+            if (this.ws) {
+              this.ws.close(1000, 'server drain reconnect')
+            }
+            this.scheduleReconnect()
+          }, jitteredDelay)
+          return
+        }
+
+        // 5. Handle server errors
         if (raw.type === 'error') {
           console.warn('[Gateway] Server error frame:', raw.code, raw.message)
           return
@@ -690,8 +704,12 @@ export class GatewayClient {
   private scheduleReconnect(): void {
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++
-      const delay = Math.min(this.reconnectInterval * Math.pow(1.5, this.reconnectAttempts - 1), 30000)
-      console.log(`[Gateway] Reconnecting in ${Math.round(delay)}ms (attempt ${this.reconnectAttempts})...`)
+      // Full Jitter Exponential Backoff (AWS/Google distributed architecture standard):
+      // delay = (0.5 + 0.5 * random) * min(base * 1.5^(attempts-1), max)
+      const expBackoff = Math.min(this.reconnectInterval * Math.pow(1.5, this.reconnectAttempts - 1), 30000)
+      const jitter = 0.5 + Math.random() * 0.5
+      const delay = Math.max(500, Math.round(expBackoff * jitter))
+      console.log(`[Gateway] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}, jittered)...`)
       setTimeout(() => this.connect(), delay)
     }
   }

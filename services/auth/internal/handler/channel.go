@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"os"
+	"strconv"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -10,6 +12,17 @@ import (
 
 	chatv1 "github.com/genchat/proto/gen/chat/v1"
 )
+
+const defaultMaxChannelMembers = 256
+
+func getMaxChannelMembers() int {
+	if val := os.Getenv("MAX_CHANNEL_MEMBERS"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultMaxChannelMembers
+}
 
 func (h *AuthHandler) CreateChannel(ctx context.Context, req *chatv1.CreateChannelRequest) (*chatv1.CreateChannelResponse, error) {
 	creatorID, err := getUserIDFromCtx(ctx)
@@ -33,6 +46,11 @@ func (h *AuthHandler) CreateChannel(ctx context.Context, req *chatv1.CreateChann
 	memberIDs := make([]uuid.UUID, 0, len(memberMap))
 	for uid := range memberMap {
 		memberIDs = append(memberIDs, uid)
+	}
+
+	maxMembers := getMaxChannelMembers()
+	if len(memberIDs) > maxMembers {
+		return nil, status.Errorf(codes.InvalidArgument, "channel member count %d exceeds maximum ceiling of %d members", len(memberIDs), maxMembers)
 	}
 
 	channelType := "group"
@@ -103,6 +121,11 @@ func (h *AuthHandler) JoinChannel(ctx context.Context, req *chatv1.JoinChannelRe
 	channelID, err := uuid.Parse(req.ChannelId)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid channel_id")
+	}
+
+	existingMembers, err := h.store.GetChannelMembers(ctx, channelID)
+	if err == nil && len(existingMembers) >= getMaxChannelMembers() {
+		return nil, status.Errorf(codes.ResourceExhausted, "channel has reached maximum capacity of %d members", getMaxChannelMembers())
 	}
 
 	if err := h.store.JoinChannel(ctx, channelID, userID); err != nil {

@@ -2,6 +2,8 @@ package ws
 
 import (
 	"bytes"
+	"context"
+	"sync"
 	"testing"
 	"time"
 )
@@ -212,3 +214,155 @@ func TestHub_BroadcastAll(t *testing.T) {
 		// expected
 	}
 }
+
+type mockDirectoryRouter struct {
+	sync.Mutex
+	registered   map[string]string
+	deregistered map[string]string
+	podGateways  map[string][]string
+	published    []struct {
+		podID   string
+		userID  string
+		payload []byte
+	}
+}
+
+func newMockDirectoryRouter() *mockDirectoryRouter {
+	return &mockDirectoryRouter{
+		registered:   make(map[string]string),
+		deregistered: make(map[string]string),
+		podGateways:  make(map[string][]string),
+	}
+}
+
+func (m *mockDirectoryRouter) RegisterUserGateway(ctx context.Context, userID, instanceID string) error {
+	m.Lock()
+	defer m.Unlock()
+	m.registered[userID] = instanceID
+	return nil
+}
+
+func (m *mockDirectoryRouter) DeregisterUserGateway(ctx context.Context, userID, instanceID string) error {
+	m.Lock()
+	defer m.Unlock()
+	m.deregistered[userID] = instanceID
+	return nil
+}
+
+func (m *mockDirectoryRouter) GetUserGateways(ctx context.Context, userID string) ([]string, error) {
+	m.Lock()
+	defer m.Unlock()
+	return m.podGateways[userID], nil
+}
+
+func (m *mockDirectoryRouter) PublishToPod(ctx context.Context, targetPodID string, targetUserID string, payload []byte) error {
+	m.Lock()
+	defer m.Unlock()
+	m.published = append(m.published, struct {
+		podID   string
+		userID  string
+		payload []byte
+	}{podID: targetPodID, userID: targetUserID, payload: payload})
+	return nil
+}
+
+func TestHub_CrossPodRouting(t *testing.T) {
+	mockRouter := newMockDirectoryRouter()
+	mockRouter.podGateways["remoteUser"] = []string{"pod-beta"}
+
+	hub := NewHubWithRouter("pod-alpha", mockRouter)
+	go hub.Run()
+
+	localConn := &Conn{
+		ID:       "cLocal",
+		UserID:   "localUser",
+		DeviceID: "dev1",
+		Send:     make(chan []byte, 10),
+		Hub:      hub,
+	}
+	hub.Register(localConn)
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify localUser was registered in directory router
+	mockRouter.Lock()
+	if pod, ok := mockRouter.registered["localUser"]; !ok || pod != "pod-alpha" {
+		t.Fatalf("expected localUser to be registered on pod-alpha, got %v", pod)
+	}
+	mockRouter.Unlock()
+
+	// Send message to remote user on pod-beta
+	payload := []byte("cross-pod secret")
+	hub.SendToUser("remoteUser", payload)
+	time.Sleep(100 * time.Millisecond)
+
+	mockRouter.Lock()
+	if len(mockRouter.published) != 1 {
+		t.Fatalf("expected 1 cross-pod publish, got %d", len(mockRouter.published))
+	}
+	pub := mockRouter.published[0]
+	if pub.podID != "pod-beta" || pub.userID != "remoteUser" || !bytes.Equal(pub.payload, payload) {
+		t.Fatalf("unexpected publish details: %+v", pub)
+	}
+	mockRouter.Unlock()
+
+	// Verify DeliverLocal delivers directly without remote routing
+	inboundCrossPod := []byte("delivered from pod-gamma")
+	hub.DeliverLocal("localUser", inboundCrossPod)
+
+	select {
+	case msg := <-localConn.Send:
+		if !bytes.Equal(msg, inboundCrossPod) {
+			t.Fatalf("expected inboundCrossPod payload, got: %s", msg)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("timeout waiting for DeliverLocal message on localConn")
+	}
+
+	// Unregister and verify deregistration from router
+	hub.Unregister(localConn)
+	time.Sleep(50 * time.Millisecond)
+
+	mockRouter.Lock()
+	if pod, ok := mockRouter.deregistered["localUser"]; !ok || pod != "pod-alpha" {
+		t.Fatalf("expected localUser to be deregistered from pod-alpha, got %v", pod)
+	}
+	mockRouter.Unlock()
+}
+
+func TestHub_Drain(t *testing.T) {
+	mockRouter := newMockDirectoryRouter()
+	hub := NewHubWithRouter("pod-alpha", mockRouter)
+	go hub.Run()
+
+	conn := &Conn{
+		ID:       "cDraining",
+		UserID:   "userDraining",
+		DeviceID: "devDrain",
+		Send:     make(chan []byte, 10),
+		Hub:      hub,
+	}
+	hub.Register(conn)
+	time.Sleep(50 * time.Millisecond)
+
+	reconnectNotice := []byte(`{"type":"reconnect","reason":"server_shutdown"}`)
+	drainCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go hub.Drain(drainCtx, reconnectNotice)
+
+	select {
+	case msg := <-conn.Send:
+		if !bytes.Equal(msg, reconnectNotice) {
+			t.Fatalf("expected reconnectNotice, got %s", msg)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatalf("timeout waiting for reconnectNotice on draining connection")
+	}
+
+	mockRouter.Lock()
+	if _, ok := mockRouter.deregistered["userDraining"]; !ok {
+		t.Fatalf("expected userDraining to be deregistered during drain")
+	}
+	mockRouter.Unlock()
+}
+

@@ -3,11 +3,15 @@ package relay
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
+
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	chatv1 "github.com/genchat/proto/gen/chat/v1"
 	"github.com/genchat/services/gateway/internal/blocklist"
@@ -304,14 +308,246 @@ func NewRouter(hub *ws.Hub, ledger *ledgerclient.Client, pushClient chatv1.PushS
 	}
 }
 
+func isProtobufPayload(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	b := data[0]
+	return b != '{' && b != ' ' && b != '\t' && b != '\n' && b != '\r' && b != '['
+}
+
+func decodePacket(data []byte) (*chatv1.Packet, error) {
+	if len(data) >= 4 {
+		length := binary.BigEndian.Uint32(data[:4])
+		if int(length) == len(data)-4 {
+			var p chatv1.Packet
+			if err := proto.Unmarshal(data[4:], &p); err == nil && (p.GetClientAction() != nil || p.GetHeartbeat() != nil || p.GetServerEvent() != nil) {
+				return &p, nil
+			}
+		}
+	}
+	var p chatv1.Packet
+	if err := proto.Unmarshal(data, &p); err == nil && (p.GetClientAction() != nil || p.GetHeartbeat() != nil || p.GetServerEvent() != nil) {
+		return &p, nil
+	}
+	return nil, fmt.Errorf("not a protobuf packet")
+}
+
+func encodePacket(packet *chatv1.Packet) ([]byte, error) {
+	body, err := proto.Marshal(packet)
+	if err != nil {
+		return nil, err
+	}
+	buf := make([]byte, 4+len(body))
+	binary.BigEndian.PutUint32(buf[:4], uint32(len(body)))
+	copy(buf[4:], body)
+	return buf, nil
+}
+
+func (r *Router) handleProtobufPacket(ctx context.Context, conn *ws.Conn, packet *chatv1.Packet) error {
+	if hb := packet.GetHeartbeat(); hb != nil {
+		pong := &chatv1.Packet{
+			TraceId: packet.TraceId,
+			SentAt:  timestamppb.Now(),
+			Payload: &chatv1.Packet_Heartbeat{
+				Heartbeat: &chatv1.Heartbeat{
+					SequenceNumber: hb.SequenceNumber + 1,
+				},
+			},
+		}
+		raw, err := encodePacket(pong)
+		if err == nil {
+			select {
+			case conn.Send <- raw:
+			default:
+			}
+		}
+		return nil
+	}
+
+	action := packet.GetClientAction()
+	if action == nil {
+		return r.sendProtoError(conn, packet.TraceId, "NO_ACTION", "missing client action in packet")
+	}
+
+	switch act := action.Action.(type) {
+	case *chatv1.ClientAction_SendMessageAction:
+		return r.handleProtoSendMessage(ctx, conn, action.RequestId, packet.TraceId, act.SendMessageAction)
+	case *chatv1.ClientAction_TypingIndicatorAction:
+		return r.handleProtoTyping(conn, act.TypingIndicatorAction)
+	case *chatv1.ClientAction_AckReceiptAction:
+		return r.handleProtoReceipt(ctx, conn, act.AckReceiptAction)
+	default:
+		return r.sendProtoError(conn, action.RequestId, "UNSUPPORTED_ACTION", "action not supported over protobuf wire format")
+	}
+}
+
+func (r *Router) sendProtoError(conn *ws.Conn, reqID, code, msg string) error {
+	errPacket := &chatv1.Packet{
+		TraceId: reqID,
+		SentAt:  timestamppb.Now(),
+		Payload: &chatv1.Packet_ServerEvent{
+			ServerEvent: &chatv1.ServerEvent{
+				Event: &chatv1.ServerEvent_ActionAck{
+					ActionAck: &chatv1.ActionAckEvent{
+						RequestId: reqID,
+						Success:   false,
+						ErrorCode: code,
+						ErrorMsg:  msg,
+					},
+				},
+			},
+		},
+	}
+	raw, err := encodePacket(errPacket)
+	if err == nil {
+		select {
+		case conn.Send <- raw:
+		default:
+		}
+	}
+	return nil
+}
+
+func (r *Router) handleProtoSendMessage(ctx context.Context, conn *ws.Conn, reqID, traceID string, act *chatv1.SendMessageAction) error {
+	if act.ConversationId == "" || act.ClientMsgId == "" || len(act.EncryptedPayload) == 0 {
+		return r.sendProtoError(conn, reqID, "MISSING_FIELDS", "conversation_id, client_msg_id, encrypted_payload required")
+	}
+
+	var stored *ledgerclient.StoreMessageResult
+	var err error
+
+	if r.ledger != nil {
+		stored, err = r.ledger.StoreMessage(ctx, act.ConversationId, conn.UserID, act.ClientMsgId, act.EncryptedPayload, act.SenderRatchetKey, 1, 0)
+		if err != nil {
+			slog.Error("ledger StoreMessage failed", "error", err)
+			return r.sendProtoError(conn, reqID, "LEDGER_STORE_FAILED", "failed to store message")
+		}
+	} else {
+		stored = &ledgerclient.StoreMessageResult{
+			MessageID:   "mem-" + act.ClientMsgId,
+			SequenceNum: time.Now().UnixNano(),
+		}
+	}
+
+	// 1. Send ACK packet to sender
+	ackPacket := &chatv1.Packet{
+		TraceId: reqID,
+		SentAt:  timestamppb.Now(),
+		Payload: &chatv1.Packet_ServerEvent{
+			ServerEvent: &chatv1.ServerEvent{
+				GlobalSequence: uint64(stored.SequenceNum),
+				Event: &chatv1.ServerEvent_ActionAck{
+					ActionAck: &chatv1.ActionAckEvent{
+						RequestId: act.ClientMsgId,
+						Success:   true,
+					},
+				},
+			},
+		},
+	}
+	if rawAck, err := encodePacket(ackPacket); err == nil {
+		r.hub.SendToUser(conn.UserID, rawAck)
+	}
+
+	// If duplicate replay, do not push to recipient
+	if stored.Deduplicated {
+		return nil
+	}
+
+	// 2. Deliver MessageDeliveredEvent packet to recipient
+	pushEvent := &chatv1.Packet{
+		TraceId: traceID,
+		SentAt:  timestamppb.Now(),
+		Payload: &chatv1.Packet_ServerEvent{
+			ServerEvent: &chatv1.ServerEvent{
+				GlobalSequence: uint64(stored.SequenceNum),
+				Event: &chatv1.ServerEvent_MessageDelivered{
+					MessageDelivered: &chatv1.MessageDeliveredEvent{
+						ConversationId:   act.ConversationId,
+						MessageId:        stored.MessageID,
+						ClientMsgId:      act.ClientMsgId,
+						SenderUserId:     conn.UserID,
+						SequenceNumber:   uint64(stored.SequenceNum),
+						CreatedAt:        timestamppb.Now(),
+						EncryptedPayload: act.EncryptedPayload,
+						SenderRatchetKey: act.SenderRatchetKey,
+						MessageIndex:     act.MessageIndex,
+						ReplyToMessageId: act.ReplyToMessageId,
+					},
+				},
+			},
+		},
+	}
+	if rawPush, err := encodePacket(pushEvent); err == nil {
+		r.hub.SendToUser(act.ConversationId, rawPush)
+	}
+
+	return nil
+}
+
+func (r *Router) handleProtoTyping(conn *ws.Conn, act *chatv1.TypingIndicatorAction) error {
+	typingEvt := &chatv1.Packet{
+		SentAt: timestamppb.Now(),
+		Payload: &chatv1.Packet_ServerEvent{
+			ServerEvent: &chatv1.ServerEvent{
+				Event: &chatv1.ServerEvent_TypingBroadcast{
+					TypingBroadcast: &chatv1.TypingBroadcastEvent{
+						ConversationId: act.ConversationId,
+						UserId:         conn.UserID,
+						IsTyping:       act.IsTyping,
+					},
+				},
+			},
+		},
+	}
+	if raw, err := encodePacket(typingEvt); err == nil {
+		r.hub.SendToUser(act.ConversationId, raw)
+	}
+	return nil
+}
+
+func (r *Router) handleProtoReceipt(ctx context.Context, conn *ws.Conn, act *chatv1.AckReceiptAction) error {
+	receiptEvt := &chatv1.Packet{
+		SentAt: timestamppb.Now(),
+		Payload: &chatv1.Packet_ServerEvent{
+			ServerEvent: &chatv1.ServerEvent{
+				Event: &chatv1.ServerEvent_ReceiptUpdated{
+					ReceiptUpdated: &chatv1.ReceiptUpdatedEvent{
+						ConversationId: act.ConversationId,
+						UserId:         conn.UserID,
+						Type:           act.Type,
+						MessageId:      act.GetMessageId(),
+						UpToSeq:        act.GetUpToSeq(),
+						Timestamp:      timestamppb.Now(),
+					},
+				},
+			},
+		},
+	}
+	if raw, err := encodePacket(receiptEvt); err == nil {
+		r.hub.SendToUser(act.ConversationId, raw)
+	}
+	return nil
+}
+
 // Handle satisfies ws.MessageHandler — entry point for every inbound WebSocket frame.
 func (r *Router) Handle(ctx context.Context, conn *ws.Conn, data []byte) error {
-	// Parse action from raw JSON
+	// 1. Detect and decode binary protobuf wire format
+	if conn.WireFormat == ws.FormatProtobuf || isProtobufPayload(data) {
+		packet, err := decodePacket(data)
+		if err == nil && packet != nil {
+			conn.WireFormat = ws.FormatProtobuf
+			return r.handleProtobufPacket(ctx, conn, packet)
+		}
+	}
+
+	// 2. Parse action from raw JSON (legacy / debug wire format)
 	var base struct {
 		Action string `json:"action"`
 	}
 	if err := json.Unmarshal(data, &base); err != nil {
-		return r.sendError(conn, "INVALID_JSON", "frame is not valid JSON")
+		return r.sendError(conn, "INVALID_JSON", "frame is not valid JSON or Protobuf")
 	}
 
 	switch base.Action {

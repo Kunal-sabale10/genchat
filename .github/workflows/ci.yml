@@ -246,6 +246,21 @@ jobs:
       - name: Run Enterprise Realistic Group Load Benchmark
         run: node tests/load/realistic_group_load.mjs
 
+      - name: Run Feature Flagging & Staged Rollout Verification
+        run: node tests/integration/test_feature_flags.mjs
+
+      - name: Run Cross-Pod Gateway Message Routing & Redis Presence Verification
+        run: node tests/integration/test_cross_pod_routing.mjs
+
+      - name: Run Exactly-Once Delivery Resilience Across Mid-Flight Retries Verification
+        run: node tests/integration/test_restart_exactly_once.mjs
+
+      - name: Run Graceful Pod Draining & Reconnect Signaling Verification
+        run: node tests/integration/test_graceful_draining.mjs
+
+      - name: Run MLS Group Size Ceiling Enforcement Load Test
+        run: node tests/load/test_max_group_ceiling.mjs
+
       - name: Collect Container Logs on Failure
         if: failure()
         run: |

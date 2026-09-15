@@ -113,6 +113,7 @@ services:
       - "8081:8081"
     environment:
       - JWT_SECRET=dev-secret-change-in-production
+      - REDIS_ADDR=redis:6379
       - LEDGER_ADDR=ledger:50052
       - AUTH_ADDR=auth:50051
       # Local dev only — do not set this in any deployed environment. It

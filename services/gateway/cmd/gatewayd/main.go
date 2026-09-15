@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,9 +12,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/genchat/services/gateway/internal/blocklist"
 	"github.com/genchat/services/gateway/internal/ledgerclient"
 	"github.com/genchat/services/gateway/internal/metrics"
+	"github.com/genchat/services/gateway/internal/pubsub"
 	"github.com/genchat/services/gateway/internal/push"
 	"github.com/genchat/services/gateway/internal/ratelimit"
 	"github.com/genchat/services/gateway/internal/relay"
@@ -54,8 +57,26 @@ func main() {
 		}
 	}
 
-	hub := ws.NewHub()
+	redisAddr := getEnv("REDIS_ADDR", "localhost:6379")
+	redisPass := getEnv("REDIS_PASSWORD", "")
+	podID := getEnv("POD_NAME", getEnv("HOSTNAME", "pod-"+uuid.New().String()[:8]))
+
+	redisPubSub := pubsub.NewRedisPubSub(redisAddr, redisPass)
+	defer redisPubSub.Close()
+
+	hub := ws.NewHubWithRouter(podID, redisPubSub)
 	go hub.Run()
+
+	// Subscribe to cross-instance deliveries directed to this pod
+	podSub := redisPubSub.SubscribePod(context.Background(), podID)
+	go func() {
+		for msg := range podSub.Channel() {
+			var env pubsub.PodEnvelope
+			if err := json.Unmarshal([]byte(msg.Payload), &env); err == nil {
+				hub.DeliverLocal(env.TargetUserID, env.Payload)
+			}
+		}
+	}()
 
 	jwtSecret := getEnv("JWT_SECRET", "dev-secret-change-in-production")
 
@@ -120,8 +141,21 @@ func main() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
-		slog.Info("shutting down gateway...")
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		slog.Info("shutting down gateway, draining connections...", "pod_id", podID)
+
+		// Broadcast reconnect notice to clients so they cleanly re-connect to other pods
+		reconnectNotice, _ := json.Marshal(map[string]interface{}{
+			"type":               "reconnect",
+			"reason":             "server_shutdown",
+			"reconnect_after_ms": 1000,
+		})
+
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer drainCancel()
+		hub.Drain(drainCtx, reconnectNotice)
+		_ = podSub.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		httpServer.Shutdown(ctx)
 	}()

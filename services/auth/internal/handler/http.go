@@ -17,6 +17,7 @@ import (
 	"time"
 
 	chatv1 "github.com/genchat/proto/gen/chat/v1"
+	"github.com/genchat/services/auth/internal/features"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -2443,6 +2444,28 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 	})
 	mux.HandleFunc("/users/export", gdprHandler)
 	mux.HandleFunc("/users/me", gdprHandler)
+
+	featuresHandler := cors(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+			return
+		}
+		userID := ""
+		authHeader := r.Header.Get("Authorization")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			if claims, err := h.VerifyJWT(strings.TrimPrefix(authHeader, "Bearer ")); err == nil {
+				userID = claims.Sub
+			}
+		}
+		flags := features.DefaultRegistry.GetAllFlagsForUser(userID)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"features": flags,
+			"user_id":  userID,
+		})
+	})
+	mux.HandleFunc("/features", featuresHandler)
+	mux.HandleFunc("/api/v1/features", featuresHandler)
 
 	// Apply tiered rate limiting to registration and prekeys (Item 4)
 	_ = tieredLimiter

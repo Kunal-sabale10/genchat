@@ -147,9 +147,12 @@ export class WsTransport {
   }
 
   private _scheduleReconnect() {
-    const backoff = Math.min(1000 * Math.pow(2, this.reconnectAttempts), MAX_BACKOFF_MS)
+    const expBackoff = Math.min(1000 * Math.pow(2, this.reconnectAttempts), MAX_BACKOFF_MS)
     this.reconnectAttempts++
-    console.info(`[WsTransport] Reconnecting in ${backoff}ms`)
+    // Full Jitter: randomize between 50% and 100% of exponential backoff
+    const jitter = 0.5 + Math.random() * 0.5
+    const backoff = Math.max(250, Math.round(expBackoff * jitter))
+    console.info(`[WsTransport] Reconnecting in ${backoff}ms (attempt ${this.reconnectAttempts}, jittered)`)
     this.reconnectTimer = setTimeout(() => this._connect(), backoff)
   }
 
