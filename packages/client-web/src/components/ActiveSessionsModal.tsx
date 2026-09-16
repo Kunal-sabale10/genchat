@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import {
   Shield,
   Smartphone,
@@ -14,16 +14,7 @@ import {
   KeyRound,
 } from 'lucide-react'
 
-export interface ActiveSession {
-  id: string
-  user_id: string
-  device_id: string
-  device_label: string
-  created_at: string
-  last_seen_at: string
-  expires_at: string
-  is_current: boolean
-}
+import { ActiveSession, sessionClient } from '../lib/session-client'
 
 export interface ActiveSessionsModalProps {
   isOpen: boolean
@@ -45,28 +36,13 @@ export const ActiveSessionsModal: React.FC<ActiveSessionsModalProps> = ({
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
 
-  const authBaseUrl = (import.meta as any).env?.VITE_AUTH_URL || ''
-
   const fetchSessions = async () => {
     if (!authToken) return
     setLoading(true)
     setError(null)
     try {
-      const resp = await fetch(`${authBaseUrl}/api/v1/sessions`, {
-        headers: {
-          Authorization: `Bearer ${authToken}`,
-        },
-      })
-      if (!resp.ok) {
-        throw new Error(`Failed to load sessions: ${resp.status} ${resp.statusText}`)
-      }
-      const data = await resp.json()
-      const rawSessions: ActiveSession[] = data.sessions || []
-      const mapped = rawSessions.map((s) => ({
-        ...s,
-        is_current: currentDeviceId ? s.device_id === currentDeviceId : s.is_current,
-      }))
-      setSessions(mapped)
+      const active = await sessionClient.listActiveSessions(authToken, currentDeviceId)
+      setSessions(active)
     } catch (err: any) {
       setError(err?.message || 'Could not fetch active sessions')
     } finally {
@@ -93,26 +69,7 @@ export const ActiveSessionsModal: React.FC<ActiveSessionsModalProps> = ({
     setError(null)
     setSuccessMessage(null)
     try {
-      const resp = await fetch(`${authBaseUrl}/api/v1/sessions/${sessionId}`, {
-        method: 'DELETE',
-        headers: {
-          Authorization: `Bearer ${authToken}`,
-          'Content-Type': 'application/json',
-        },
-      })
-      if (!resp.ok) {
-        const postResp = await fetch(`${authBaseUrl}/api/v1/sessions/revoke`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${authToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ session_id: sessionId }),
-        })
-        if (!postResp.ok) {
-          throw new Error(`Failed to revoke session (${resp.status})`)
-        }
-      }
+      await sessionClient.revokeSession(authToken, sessionId)
       setSessions((prev) => prev.filter((s) => s.id !== sessionId))
       setConfirmRevokeId(null)
       setSuccessMessage('Session revoked successfully.')
