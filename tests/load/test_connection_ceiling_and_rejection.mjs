@@ -39,13 +39,21 @@ function connectWs(token) {
       clearTimeout(timer);
       reject(err);
     });
-    ws.addEventListener('message', (event) => {
-      messages.push(event.data);
+    ws.addEventListener('message', async (event) => {
+      let data = event.data;
+      if (typeof Blob !== 'undefined' && data instanceof Blob) {
+        data = await data.text();
+      } else if (data instanceof ArrayBuffer) {
+        data = new TextDecoder().decode(data);
+      } else if (Buffer.isBuffer(data)) {
+        data = data.toString('utf8');
+      }
+      messages.push(typeof data === 'string' ? data : String(data));
     });
   });
 }
 
-function attemptWsUpgrade(token) {
+function attemptWsUpgrade(token, customHeaders = {}) {
   return new Promise((resolve, reject) => {
     const url = new URL(`${GATEWAY_HTTP_URL}/ws?token=${encodeURIComponent(token)}`);
     const req = http.request({
@@ -58,13 +66,19 @@ function attemptWsUpgrade(token) {
         'Upgrade': 'websocket',
         'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
         'Sec-WebSocket-Version': '13',
+        ...customHeaders,
       },
     });
 
     req.on('response', (res) => {
-      resolve({
-        status: res.statusCode,
-        headers: res.headers,
+      let body = '';
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        resolve({
+          status: res.statusCode,
+          headers: res.headers,
+          body: body.trim(),
+        });
       });
     });
 
@@ -73,6 +87,7 @@ function attemptWsUpgrade(token) {
       resolve({
         status: 101,
         headers: res.headers,
+        body: '',
       });
     });
 
@@ -128,44 +143,96 @@ async function run() {
   assert.ok(!foundRevoked, 'Revoked session should not be returned in active sessions');
   console.log('✓ Active sessions and remote revocation verified');
 
-  // Test 2: Per-User Device Limit (5 devices max)
-  console.log('\n[Test 2] Enforce Per-User 5-Device Ceiling...');
+  // Test 2: Pod Connection Capacity Ceiling Rejection (Directive 1 & Directive 8)
+  console.log('\n[Test 2] Pod Connection Capacity Ceiling Rejection (503 + Retry-After)...');
+  const ceilingUser = await provisionUserWithDevice('Ceiling Tester', crypto.randomUUID(), crypto.randomUUID());
+  const ceilingResp = await attemptWsUpgrade(ceilingUser.access_token, {
+    'X-Test-Simulate-Ceiling': 'true',
+  });
+  assert.strictEqual(ceilingResp.status, 503, 'Connection over ceiling must return HTTP 503 Service Unavailable');
+  assert.strictEqual(ceilingResp.headers['retry-after'], '30', '503 response must include Retry-After: 30 header');
+  assert.strictEqual(ceilingResp.body, 'server connection capacity reached', '503 response body must state connection capacity reached');
+  console.log('✓ HTTP 503 + Retry-After: 30 capacity ceiling rejection verified');
+
+  // Test 3: Per-User Device Limit Hard Rejection (DEVICE_CAP_POLICY=reject_new)
+  console.log('\n[Test 3] Enforce Per-User 5-Device Ceiling (Hard Reject Policy)...');
   const capUserId = crypto.randomUUID();
   const sockets = [];
+  const deviceMessages = [];
   const deviceIds = [];
 
   for (let i = 1; i <= 5; i++) {
     const devId = crypto.randomUUID();
     deviceIds.push(devId);
     const user = await provisionUserWithDevice(`Device User ${i}`, capUserId, devId);
-    const { ws } = await connectWs(user.access_token);
+    const { ws, messages } = await connectWs(user.access_token);
     sockets.push(ws);
+    deviceMessages.push(messages);
     console.log(`  ✓ Device ${i} (${devId.slice(0, 8)}) connected`);
   }
 
-  // Attempt 6th device connection for the same user
+  // Attempt 6th device connection with policy=reject_new
   const dev6Id = crypto.randomUUID();
   const user6 = await provisionUserWithDevice('Device User 6', capUserId, dev6Id);
-  const rejectResp = await attemptWsUpgrade(user6.access_token);
-  assert.strictEqual(rejectResp.status, 403, '6th concurrent device should be rejected with HTTP 403');
-  console.log('✓ 6th concurrent device rejected with HTTP 403 Forbidden');
+  const rejectResp = await attemptWsUpgrade(user6.access_token, {
+    'X-Test-Device-Cap-Policy': 'reject_new',
+  });
+  assert.strictEqual(rejectResp.status, 403, '6th concurrent device should be rejected with HTTP 403 when policy=reject_new');
+  assert.ok(
+    rejectResp.body.includes('device limit exceeded (maximum 5 active devices per account)'),
+    `Rejection body should contain expected message, got: "${rejectResp.body}"`
+  );
+  console.log('✓ 6th concurrent device rejected with HTTP 403 Forbidden & clear policy message');
 
-  // Test 3: Same-Device Reconnect Supersession
-  console.log('\n[Test 3] Same-Device Reconnect Supersession...');
-  let dev1Closed = false;
+  // Test 4: Device Cap UX - Auto-Evict Oldest Device (DEVICE_CAP_POLICY=evict_oldest)
+  console.log('\n[Test 4] Per-User Device Cap Auto-Eviction UX (evict_oldest Policy)...');
+  let dev1Evicted = false;
   sockets[0].addEventListener('close', () => {
-    dev1Closed = true;
+    dev1Evicted = true;
   });
 
-  // Reconnect with same user and device 1
-  const user1Reconnect = await provisionUserWithDevice('Device User 1 Reconnected', capUserId, deviceIds[0]);
-  const { ws: newWs } = await connectWs(user1Reconnect.access_token);
-  sockets.push(newWs);
-  console.log('  ✓ Reconnected socket for device 1 accepted');
+  // Attempt 6th device connection with default policy=evict_oldest
+  const evictUpgradeResp = await attemptWsUpgrade(user6.access_token, {
+    'X-Test-Device-Cap-Policy': 'evict_oldest',
+  });
+  assert.strictEqual(evictUpgradeResp.status, 101, '6th device should be upgraded to WebSocket under evict_oldest policy');
+
+  // Connect 6th device fully via WebSocket
+  const { ws: ws6 } = await connectWs(user6.access_token);
+  sockets.push(ws6);
+  console.log('  ✓ 6th device connected successfully');
+
+  // Wait for Device 1 (oldest) to receive the session_evicted frame and close
+  await new Promise((r) => setTimeout(r, 400));
+  assert.strictEqual(dev1Evicted, true, 'Oldest device socket should be closed by server');
+  const d1Msgs = deviceMessages[0].map((m) => {
+    try {
+      return JSON.parse(m);
+    } catch {
+      return null;
+    }
+  }).filter(Boolean);
+  const evictedNotice = d1Msgs.find((m) => m.type === 'session_evicted');
+  assert.ok(evictedNotice, 'Device 1 should have received a session_evicted frame');
+  assert.strictEqual(evictedNotice.reason, 'device_limit_superseded', 'Reason should be device_limit_superseded');
+  console.log('✓ Oldest device evicted with session_evicted notice & socket cleanly closed');
+
+  // Test 5: Same-Device Reconnect Supersession
+  console.log('\n[Test 5] Same-Device Reconnect Supersession...');
+  let dev2Closed = false;
+  sockets[1].addEventListener('close', () => {
+    dev2Closed = true;
+  });
+
+  // Reconnect with same user and device 2
+  const user2Reconnect = await provisionUserWithDevice('Device User 2 Reconnected', capUserId, deviceIds[1]);
+  const { ws: newWs2 } = await connectWs(user2Reconnect.access_token);
+  sockets.push(newWs2);
+  console.log('  ✓ Reconnected socket for device 2 accepted');
 
   // Wait a small slice for previous socket close
-  await new Promise((r) => setTimeout(r, 200));
-  assert.strictEqual(dev1Closed, true, 'Older connection on same device ID must be superseded and closed');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.strictEqual(dev2Closed, true, 'Older connection on same device ID must be superseded and closed');
   console.log('✓ Older connection superseded and evicted cleanly');
 
   // Cleanup open sockets
@@ -176,8 +243,8 @@ async function run() {
     } catch {}
   }
 
-  // Test 4: Prometheus Resilience Metrics Exposure
-  console.log('\n[Test 4] Verifying Prometheus Gateway Resilience Metrics...');
+  // Test 6: Prometheus Resilience Metrics Exposure
+  console.log('\n[Test 6] Verifying Prometheus Gateway Resilience Metrics...');
   const metricsResp = await fetch(`${GATEWAY_HTTP_URL}/metrics`);
   assert.strictEqual(metricsResp.status, 200, 'Metrics endpoint should return 200');
   const metricsText = await metricsResp.text();
