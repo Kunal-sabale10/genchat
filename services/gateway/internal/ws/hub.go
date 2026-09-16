@@ -2,6 +2,7 @@ package ws
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"time"
 )
@@ -260,6 +261,62 @@ func (h *Hub) EvictDeviceConnections(userID, deviceID string) {
 	h.mu.RUnlock()
 
 	for _, conn := range toEvict {
+		h.Unregister(conn)
+	}
+}
+
+// GetOldestDeviceID returns the device ID of the oldest active connection for the user.
+// Returns (deviceID, true) if found, or ("", false) if no active connections exist.
+func (h *Hub) GetOldestDeviceID(userID string) (string, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	conns, ok := h.connections[userID]
+	if !ok || len(conns) == 0 {
+		return "", false
+	}
+	var oldestDev string
+	var oldestTime time.Time
+	for _, conn := range conns {
+		dev := conn.DeviceID
+		if dev == "" {
+			dev = conn.ID
+		}
+		if oldestDev == "" || conn.ConnectedAt.Before(oldestTime) {
+			oldestDev = dev
+			oldestTime = conn.ConnectedAt
+		}
+	}
+	return oldestDev, oldestDev != ""
+}
+
+// EvictDeviceWithNotice sends a session_evicted frame to the specified device's active sockets,
+// and unregisters the connections so they are closed.
+func (h *Hub) EvictDeviceWithNotice(userID, deviceID, reason string) {
+	if deviceID == "" {
+		return
+	}
+	h.mu.RLock()
+	var toEvict []*Conn
+	if conns, ok := h.connections[userID]; ok {
+		for _, conn := range conns {
+			if conn.DeviceID == deviceID || conn.ID == deviceID {
+				toEvict = append(toEvict, conn)
+			}
+		}
+	}
+	h.mu.RUnlock()
+
+	notice, _ := json.Marshal(map[string]string{
+		"type":    "session_evicted",
+		"reason":  reason,
+		"message": "You were signed out because this account reached the active device limit.",
+	})
+
+	for _, conn := range toEvict {
+		select {
+		case conn.Send <- notice:
+		default:
+		}
 		h.Unregister(conn)
 	}
 }

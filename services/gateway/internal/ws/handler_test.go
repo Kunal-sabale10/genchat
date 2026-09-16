@@ -5,9 +5,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,6 +92,7 @@ func TestHandler_DeviceCapRejection_403(t *testing.T) {
 	handler := NewHandlerWithOptions(hub, dummyMsgHandler, limiter, secret, HandlerOptions{
 		MaxConnectionsPerPod: 100,
 		MaxDevicesPerUser:    2, // ceiling is 2
+		DeviceCapPolicy:      "reject_new",
 	})
 
 	// Attempting to connect a 3rd distinct device "dev3" should fail with 403
@@ -101,6 +104,69 @@ func TestHandler_DeviceCapRejection_403(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected HTTP 403 for device cap exceeded, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "device limit exceeded") {
+		t.Fatalf("expected device limit error message in body, got: %s", w.Body.String())
+	}
+}
+
+func TestHandler_DeviceCap_EvictOldest(t *testing.T) {
+	hub := NewHub()
+	go hub.Run()
+
+	secret := "test-secret"
+
+	// Register 2 distinct devices for "user_capped" with conn1 being older
+	conn1 := &Conn{
+		ID:          "c1",
+		UserID:      "user_capped",
+		DeviceID:    "dev1",
+		Send:        make(chan []byte, 10),
+		ConnectedAt: time.Now().Add(-10 * time.Minute),
+	}
+	conn2 := &Conn{
+		ID:          "c2",
+		UserID:      "user_capped",
+		DeviceID:    "dev2",
+		Send:        make(chan []byte, 10),
+		ConnectedAt: time.Now().Add(-5 * time.Minute),
+	}
+	hub.Register(conn1)
+	hub.Register(conn2)
+	time.Sleep(50 * time.Millisecond)
+
+	limiter := ratelimit.NewLimiter(100, 10)
+	handler := NewHandlerWithOptions(hub, dummyMsgHandler, limiter, secret, HandlerOptions{
+		MaxConnectionsPerPod: 100,
+		MaxDevicesPerUser:    2, // ceiling is 2
+		DeviceCapPolicy:      "evict_oldest",
+	})
+
+	// Attempting to connect 3rd device "dev3" should trigger evict_oldest
+	token := generateJWTForTest("user_capped", "dev3", secret, time.Hour)
+	req := httptest.NewRequest("GET", "/ws?token="+token, nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	// Since httptest doesn't support WebSocket upgrade hijacking, ServeHTTP reaches websocket.Accept
+	// which won't return 403 Forbidden because the connection was admitted!
+	if w.Code == http.StatusForbidden {
+		t.Fatalf("expected evict_oldest to admit connection, got 403 Forbidden")
+	}
+
+	// Verify dev1 (oldest) received eviction notice
+	select {
+	case payload := <-conn1.Send:
+		var notice map[string]string
+		if err := json.Unmarshal(payload, &notice); err != nil {
+			t.Fatalf("failed to unmarshal eviction notice: %v", err)
+		}
+		if notice["type"] != "session_evicted" || notice["reason"] != "device_limit_superseded" {
+			t.Fatalf("unexpected eviction notice: %v", notice)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("expected dev1 to receive session_evicted notice")
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,6 +37,7 @@ type MessageHandler func(ctx context.Context, conn *Conn, data []byte) error
 type HandlerOptions struct {
 	MaxConnectionsPerPod int
 	MaxDevicesPerUser    int
+	DeviceCapPolicy      string // "evict_oldest" (default) or "reject_new"
 	PreAuthRatePerMinute int
 	PreAuthBurst         int
 	Shedder              *loadshed.LoadShedder
@@ -50,6 +52,7 @@ type Handler struct {
 	jwtSecret            string
 	maxConnectionsPerPod int
 	maxDevicesPerUser    int
+	deviceCapPolicy      string
 }
 
 func NewHandler(hub *Hub, msgHandler MessageHandler, limiter *ratelimit.Limiter, jwtSecret string) *Handler {
@@ -64,6 +67,10 @@ func NewHandlerWithOptions(hub *Hub, msgHandler MessageHandler, limiter *ratelim
 	maxDevices := opts.MaxDevicesPerUser
 	if maxDevices <= 0 {
 		maxDevices = 5
+	}
+	deviceCapPolicy := opts.DeviceCapPolicy
+	if deviceCapPolicy == "" {
+		deviceCapPolicy = "evict_oldest"
 	}
 	preRate := opts.PreAuthRatePerMinute
 	if preRate <= 0 {
@@ -83,6 +90,7 @@ func NewHandlerWithOptions(hub *Hub, msgHandler MessageHandler, limiter *ratelim
 		jwtSecret:            jwtSecret,
 		maxConnectionsPerPod: maxConns,
 		maxDevicesPerUser:    maxDevices,
+		deviceCapPolicy:      deviceCapPolicy,
 	}
 }
 
@@ -177,11 +185,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Hard Per-Pod Connection Ceiling (Directive 1)
-	if h.maxConnectionsPerPod > 0 && h.hub.OnlineCount() >= h.maxConnectionsPerPod {
+	effectiveMaxConns := h.maxConnectionsPerPod
+	simulateCeiling := false
+	if os.Getenv("WS_ALLOW_ANY_ORIGIN") == "true" {
+		if testCeiling := r.Header.Get("X-Test-Max-Connections"); testCeiling != "" {
+			if n, err := strconv.Atoi(testCeiling); err == nil {
+				effectiveMaxConns = n
+			}
+		} else if r.Header.Get("X-Test-Simulate-Ceiling") == "true" {
+			simulateCeiling = true
+		}
+	}
+	if simulateCeiling || (effectiveMaxConns > 0 && h.hub.OnlineCount() >= effectiveMaxConns) {
 		metrics.DefaultMetrics.IncConnectionCapacityRejections()
 		slog.Warn("pod connection capacity ceiling reached, rejecting connection",
 			"online_count", h.hub.OnlineCount(),
-			"ceiling", h.maxConnectionsPerPod,
+			"ceiling", effectiveMaxConns,
 		)
 		w.Header().Set("Retry-After", "30")
 		http.Error(w, "server connection capacity reached", http.StatusServiceUnavailable)
@@ -218,22 +237,42 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	userID := claims.Sub
 	deviceID := claims.DeviceID
 
-	// 6. Per-User Device & Connection Cap (Directive 2)
+	// 6. Per-User Device & Connection Cap (Directive 2 & 3)
 	// If the same device ID is already connected, cleanly evict the previous stale connection
 	// so a reconnecting device supersedes its older socket.
+	policy := h.deviceCapPolicy
+	if os.Getenv("WS_ALLOW_ANY_ORIGIN") == "true" {
+		if testPolicy := r.Header.Get("X-Test-Device-Cap-Policy"); testPolicy != "" {
+			policy = testPolicy
+		}
+	}
+
 	if deviceID != "" && h.hub.HasDevice(userID, deviceID) {
 		slog.Debug("evicting superseded connection for device", "user_id", userID, "device_id", deviceID)
 		h.hub.EvictDeviceConnections(userID, deviceID)
 	} else if h.maxDevicesPerUser > 0 && h.hub.GetActiveDeviceCount(userID) >= h.maxDevicesPerUser {
-		metrics.DefaultMetrics.IncDeviceLimitRejections()
-		slog.Warn("user device cap exceeded, rejecting new device connection",
-			"user_id", userID,
-			"device_id", deviceID,
-			"active_devices", h.hub.GetActiveDeviceCount(userID),
-			"max", h.maxDevicesPerUser,
-		)
-		http.Error(w, fmt.Sprintf("device limit exceeded (maximum %d active devices per account)", h.maxDevicesPerUser), http.StatusForbidden)
-		return
+		if policy == "evict_oldest" {
+			oldestDev, ok := h.hub.GetOldestDeviceID(userID)
+			if ok && oldestDev != "" {
+				slog.Info("device cap reached: evicting oldest device for user to admit new device",
+					"user_id", userID,
+					"evicted_device_id", oldestDev,
+					"new_device_id", deviceID,
+				)
+				h.hub.EvictDeviceWithNotice(userID, oldestDev, "device_limit_superseded")
+			}
+		} else {
+			// Hard reject (policy = "reject_new")
+			metrics.DefaultMetrics.IncDeviceLimitRejections()
+			slog.Warn("user device cap exceeded, rejecting new device connection",
+				"user_id", userID,
+				"device_id", deviceID,
+				"active_devices", h.hub.GetActiveDeviceCount(userID),
+				"max", h.maxDevicesPerUser,
+			)
+			http.Error(w, fmt.Sprintf("device limit exceeded (maximum %d active devices per account)", h.maxDevicesPerUser), http.StatusForbidden)
+			return
+		}
 	}
 
 	// 7. Upgrade connection using nhooyr.io/websocket.

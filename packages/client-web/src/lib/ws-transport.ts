@@ -15,7 +15,7 @@ export interface GatewayAck {
 }
 
 export interface InboundFrame {
-  type: 'push' | 'ack' | 'read_receipt' | 'pong'
+  type: 'push' | 'ack' | 'read_receipt' | 'pong' | 'session_evicted'
   [key: string]: unknown
 }
 
@@ -127,6 +127,13 @@ export class WsTransport {
           this.pendingAcks.delete(ack.client_msg_id)
           resolver(ack as GatewayAck)
         }
+      }
+
+      // Handle server-side session eviction (e.g. device limit superseded)
+      if (frame.type === 'session_evicted') {
+        console.warn('[WsTransport] Session evicted by server:', frame)
+        this.destroyed = true
+        this._clearTimers()
       }
 
       // Notify all inbound handlers
