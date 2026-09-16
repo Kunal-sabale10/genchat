@@ -121,6 +121,10 @@ services:
       - WS_ALLOW_ANY_ORIGIN=true
       - PREAUTH_RATE_PER_MINUTE=10000
       - PREAUTH_BURST=1000
+      - WS_RATE_PER_MINUTE=12000
+      - WS_RATE_BURST=1000
+      - WS_FRESH_RATE_PER_MINUTE=12000
+      - WS_FRESH_BURST=1000
     depends_on:
       redis:
         condition: service_healthy

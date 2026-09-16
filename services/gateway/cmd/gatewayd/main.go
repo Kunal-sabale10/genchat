@@ -94,7 +94,24 @@ func main() {
 			burst = n
 		}
 	}
-	limiter := ratelimit.NewLimiter(ratePerMin, burst)
+
+	freshRatePerMin := 60
+	freshBurst := 10
+	if os.Getenv("WS_ALLOW_ANY_ORIGIN") == "true" {
+		freshRatePerMin = ratePerMin
+		freshBurst = burst
+	}
+	if val := os.Getenv("WS_FRESH_RATE_PER_MINUTE"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil {
+			freshRatePerMin = n
+		}
+	}
+	if val := os.Getenv("WS_FRESH_BURST"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil {
+			freshBurst = n
+		}
+	}
+	limiter := ratelimit.NewTieredLimiter(ratePerMin, burst, freshRatePerMin, freshBurst)
 
 	authAddr := getEnv("AUTH_ADDR", "auth:50051")
 	var pushClient chatv1.PushServiceClient
