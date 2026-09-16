@@ -809,6 +809,12 @@ func (r *Router) notifyOfflineRecipient(recipientUserID, channelID string, seqNu
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// Verify recipient is still offline across the entire cluster before issuing push
+	if r.hub.IsUserOnlineCluster(ctx, recipientUserID) {
+		slog.Debug("recipient is online in cluster, skipping push notification", "recipient", recipientUserID)
+		return
+	}
+
 	resp, err := r.pushClient.GetPushTokens(ctx, &chatv1.GetPushTokensRequest{
 		UserId: recipientUserID,
 	})
@@ -1648,7 +1654,9 @@ func (r *Router) sendError(conn *ws.Conn, code, msg string) error {
 // Kept for backward compatibility.
 func (r *Router) RouteMessage(senderUserID string, conversationID string, payload []byte) error {
 	r.hub.SendToUser(conversationID, payload)
-	if !r.hub.IsOnline(conversationID) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if !r.hub.IsUserOnlineCluster(ctx, conversationID) {
 		slog.Debug("recipient is offline, message will be synced later", "recipient_id", conversationID)
 	}
 	return nil
