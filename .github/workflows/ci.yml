@@ -264,6 +264,9 @@ jobs:
       - name: Run Connection Ceiling, Device Cap & Resilience Verification
         run: node tests/load/test_connection_ceiling_and_rejection.mjs
 
+      - name: Run Active Session Management & Remote Revocation Verification
+        run: node tests/integration/test_session_management.mjs
+
       - name: Collect Container Logs on Failure
         if: failure()
         run: |
