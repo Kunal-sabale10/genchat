@@ -1,0 +1,42 @@
+﻿groups:
+  - name: gateway_resilience_and_load_shedding
+    rules:
+      - alert: GatewayConnectionCapacityRejections
+        expr: increase(gateway_connection_capacity_rejections_total[1m]) > 0
+        for: 30s
+        labels:
+          severity: warning
+          service: gateway
+        annotations:
+          summary: "Gateway pod reached hard connection capacity ceiling"
+          description: "Gateway instance is rejecting new connections with HTTP 503 (Retry-After: 30s). Scale out gateway replicas via HPA."
+
+      - alert: GatewayLoadSheddingActive
+        expr: increase(gateway_loadshed_rejections_total[1m]) > 0
+        for: 15s
+        labels:
+          severity: critical
+          service: gateway
+        annotations:
+          summary: "Gateway load-shedding circuit breaker tripped"
+          description: "Gateway instance is shedding connection upgrades due to goroutine or memory pressure to protect active real-time sessions."
+
+      - alert: GatewayDeviceLimitAbuse
+        expr: increase(gateway_device_limit_rejections_total[5m]) > 20
+        for: 1m
+        labels:
+          severity: warning
+          service: gateway
+        annotations:
+          summary: "Abnormal surge in per-user device limit rejections"
+          description: "High volume of 6th+ concurrent device connection attempts rejected with HTTP 403. Potential credential sharing or automated token replay."
+
+      - alert: GatewayPreAuthHandshakeDDoS
+        expr: increase(gateway_preauth_rate_limit_rejections_total[1m]) > 50
+        for: 30s
+        labels:
+          severity: critical
+          service: gateway
+        annotations:
+          summary: "Pre-auth connection flood detected on gateway WebSocket"
+          description: "Handshake attempts exceeded pre-auth IP rate limiter. Inbound connection flood is being dropped before cryptographic JWT validation."
