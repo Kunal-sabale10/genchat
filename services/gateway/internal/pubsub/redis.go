@@ -39,6 +39,10 @@ func (r *RedisPubSub) Close() error {
 	return r.client.Close()
 }
 
+func (r *RedisPubSub) Ping(ctx context.Context) error {
+	return r.client.Ping(ctx).Err()
+}
+
 // -------------------------------------------------------------
 // Channel Fan-Out Pub/Sub
 // -------------------------------------------------------------

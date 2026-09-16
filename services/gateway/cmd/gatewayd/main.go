@@ -199,6 +199,30 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+
+		if err := redisPubSub.Ping(ctx); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "not_ready",
+				"error":  "redis unreachable: " + err.Error(),
+			})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":            "ready",
+			"pod_id":            podID,
+			"redis":             "healthy",
+			"total_connections": hub.TotalConnections(),
+			"online_users":      hub.OnlineCount(),
+		})
+	})
 	mux.HandleFunc("/metrics", metrics.DefaultMetrics.PrometheusHandler())
 
 	httpServer := &http.Server{Addr: wsAddr, Handler: mux}
