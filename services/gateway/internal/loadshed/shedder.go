@@ -17,7 +17,7 @@ type Options struct {
 func DefaultOptions() Options {
 	return Options{
 		MaxGoroutines: 25000,
-		MaxHeapMB:     1024, // 1GB
+		MaxHeapMB:     1536, // 1.5GB (~75% of 2Gi pod limit)
 	}
 }
 
@@ -36,7 +36,7 @@ func New(opts Options) *LoadShedder {
 		opts.MaxGoroutines = 25000
 	}
 	if opts.MaxHeapMB <= 0 {
-		opts.MaxHeapMB = 1024
+		opts.MaxHeapMB = 1536
 	}
 	return &LoadShedder{
 		opts: opts,

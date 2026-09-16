@@ -13,6 +13,12 @@ global:
 gateway:
   replicaCount: 3
   port: 8081
+  maxConnectionsPerPod: 10000
+  maxDevicesPerUser: 5
+  deviceCapPolicy: "evict_oldest"
+  maxHeapMB: 1536
+  maxGoroutines: 25000
+  gomemlimit: "1800MiB"
   resources:
     limits:
       cpu: "2000m"

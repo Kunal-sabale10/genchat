@@ -125,6 +125,9 @@ services:
       - WS_RATE_BURST=1000
       - WS_FRESH_RATE_PER_MINUTE=12000
       - WS_FRESH_BURST=1000
+      - DEVICE_CAP_POLICY=evict_oldest
+      - MAX_HEAP_MB=1536
+      - GOMEMLIMIT=1800MiB
     depends_on:
       redis:
         condition: service_healthy
@@ -133,7 +136,7 @@ services:
       auth:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8081/healthz || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/readyz || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 12

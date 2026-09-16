@@ -43,6 +43,18 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-shared-secrets
                   key: jwt-secret
+            - name: MAX_CONNECTIONS_PER_POD
+              value: "{{ .Values.gateway.maxConnectionsPerPod | default 10000 }}"
+            - name: MAX_DEVICES_PER_USER
+              value: "{{ .Values.gateway.maxDevicesPerUser | default 5 }}"
+            - name: DEVICE_CAP_POLICY
+              value: "{{ .Values.gateway.deviceCapPolicy | default "evict_oldest" }}"
+            - name: MAX_HEAP_MB
+              value: "{{ .Values.gateway.maxHeapMB | default 1536 }}"
+            - name: MAX_GOROUTINES
+              value: "{{ .Values.gateway.maxGoroutines | default 25000 }}"
+            - name: GOMEMLIMIT
+              value: "{{ .Values.gateway.gomemlimit | default "1800MiB" }}"
           resources:
             {{- toYaml .Values.gateway.resources | nindent 12 }}
           livenessProbe:
@@ -53,7 +65,7 @@ spec:
             periodSeconds: 10
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: ws
             initialDelaySeconds: 5
             periodSeconds: 5

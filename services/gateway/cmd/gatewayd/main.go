@@ -156,12 +156,13 @@ func main() {
 			maxGoroutines = n
 		}
 	}
-	maxHeapMB := 1024
+	maxHeapMB := 1536
 	if val := os.Getenv("MAX_HEAP_MB"); val != "" {
 		if n, err := strconv.Atoi(val); err == nil {
 			maxHeapMB = n
 		}
 	}
+	deviceCapPolicy := getEnv("DEVICE_CAP_POLICY", "evict_oldest")
 	preAuthRate := 60
 	if val := os.Getenv("PREAUTH_RATE_PER_MINUTE"); val != "" {
 		if n, err := strconv.Atoi(val); err == nil {
@@ -184,6 +185,7 @@ func main() {
 	wsHandler := ws.NewHandlerWithOptions(hub, router.Handle, limiter, jwtSecret, ws.HandlerOptions{
 		MaxConnectionsPerPod: maxConns,
 		MaxDevicesPerUser:    maxDevices,
+		DeviceCapPolicy:      deviceCapPolicy,
 		PreAuthRatePerMinute: preAuthRate,
 		PreAuthBurst:         preAuthBurst,
 		Shedder:              shedder,
