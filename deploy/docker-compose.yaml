@@ -119,6 +119,8 @@ services:
       # Local dev only — do not set this in any deployed environment. It
       # disables the WebSocket Origin/CSRF check.
       - WS_ALLOW_ANY_ORIGIN=true
+      - PREAUTH_RATE_PER_MINUTE=10000
+      - PREAUTH_BURST=1000
     depends_on:
       redis:
         condition: service_healthy

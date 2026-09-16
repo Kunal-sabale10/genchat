@@ -103,6 +103,14 @@ func extractClientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
+func isLoopbackOrPrivate(ipStr string) bool {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+}
+
 type jwtClaims struct {
 	Sub      string `json:"sub"`
 	DeviceID string `json:"device_id"`
@@ -118,20 +126,25 @@ func parseAndValidateJWT(tokenStr, secret string) (*jwtClaims, error) {
 	sigBase := parts[0] + "." + parts[1]
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(sigBase))
-	expectedSig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	expectedSig := mac.Sum(nil)
 
-	if !hmac.Equal([]byte(parts[2]), []byte(expectedSig)) {
-		return nil, fmt.Errorf("signature mismatch")
+	sigBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return nil, fmt.Errorf("invalid signature encoding: %w", err)
+	}
+
+	if !hmac.Equal(sigBytes, expectedSig) {
+		return nil, fmt.Errorf("invalid token signature")
 	}
 
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return nil, fmt.Errorf("decode payload: %w", err)
+		return nil, fmt.Errorf("invalid payload encoding: %w", err)
 	}
 
 	var claims jwtClaims
 	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
-		return nil, fmt.Errorf("unmarshal claims: %w", err)
+		return nil, fmt.Errorf("invalid payload json: %w", err)
 	}
 
 	if claims.Exp > 0 && time.Now().Unix() > claims.Exp {
@@ -145,7 +158,8 @@ func parseAndValidateJWT(tokenStr, secret string) (*jwtClaims, error) {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 1. Pre-Auth Handshake IP Rate Limiting (Directive 6)
 	clientIP := extractClientIP(r)
-	if h.preAuthLimiter != nil && !h.preAuthLimiter.Allow(clientIP) {
+	isDevExempt := os.Getenv("WS_ALLOW_ANY_ORIGIN") == "true" && isLoopbackOrPrivate(clientIP)
+	if !isDevExempt && h.preAuthLimiter != nil && !h.preAuthLimiter.Allow(clientIP) {
 		metrics.DefaultMetrics.IncPreAuthRateLimitRejections()
 		slog.Warn("pre-auth rate limit exceeded on websocket upgrade", "ip", clientIP)
 		w.Header().Set("Retry-After", "10")
