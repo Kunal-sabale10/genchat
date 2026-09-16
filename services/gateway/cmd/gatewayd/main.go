@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/genchat/services/gateway/internal/blocklist"
 	"github.com/genchat/services/gateway/internal/ledgerclient"
+	"github.com/genchat/services/gateway/internal/loadshed"
 	"github.com/genchat/services/gateway/internal/metrics"
 	"github.com/genchat/services/gateway/internal/pubsub"
 	"github.com/genchat/services/gateway/internal/push"
@@ -120,8 +121,56 @@ func main() {
 	}
 	blockChecker := blocklist.NewHTTPBlockChecker(authHTTPURL)
 
+	maxConns := 10000
+	if val := os.Getenv("MAX_CONNECTIONS_PER_POD"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil {
+			maxConns = n
+		}
+	}
+	maxDevices := 5
+	if val := os.Getenv("MAX_DEVICES_PER_USER"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil {
+			maxDevices = n
+		}
+	}
+	maxGoroutines := 25000
+	if val := os.Getenv("MAX_GOROUTINES"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil {
+			maxGoroutines = n
+		}
+	}
+	maxHeapMB := 1024
+	if val := os.Getenv("MAX_HEAP_MB"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil {
+			maxHeapMB = n
+		}
+	}
+	preAuthRate := 60
+	if val := os.Getenv("PREAUTH_RATE_PER_MINUTE"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil {
+			preAuthRate = n
+		}
+	}
+	preAuthBurst := 10
+	if val := os.Getenv("PREAUTH_BURST"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil {
+			preAuthBurst = n
+		}
+	}
+
+	shedder := loadshed.New(loadshed.Options{
+		MaxGoroutines: maxGoroutines,
+		MaxHeapMB:     int64(maxHeapMB),
+	})
+
 	router := relay.NewRouter(hub, ledger, pushClient, channelClient, dispatcher, blockChecker)
-	wsHandler := ws.NewHandler(hub, router.Handle, limiter, jwtSecret)
+	wsHandler := ws.NewHandlerWithOptions(hub, router.Handle, limiter, jwtSecret, ws.HandlerOptions{
+		MaxConnectionsPerPod: maxConns,
+		MaxDevicesPerUser:    maxDevices,
+		PreAuthRatePerMinute: preAuthRate,
+		PreAuthBurst:         preAuthBurst,
+		Shedder:              shedder,
+	})
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", wsHandler.ServeHTTP)

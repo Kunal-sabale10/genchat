@@ -261,6 +261,9 @@ jobs:
       - name: Run MLS Group Size Ceiling Enforcement Load Test
         run: node tests/load/test_max_group_ceiling.mjs
 
+      - name: Run Connection Ceiling, Device Cap & Resilience Verification
+        run: node tests/load/test_connection_ceiling_and_rejection.mjs
+
       - name: Collect Container Logs on Failure
         if: failure()
         run: |

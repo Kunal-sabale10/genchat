@@ -295,6 +295,14 @@ func (m *mockAuthStore) EraseUser(ctx context.Context, userID uuid.UUID) error {
 	return nil
 }
 
+func (m *mockAuthStore) ListActiveAuthSessions(ctx context.Context, userID uuid.UUID) ([]*store.ActiveSession, error) {
+	return []*store.ActiveSession{}, nil
+}
+
+func (m *mockAuthStore) RevokeAuthSessionByID(ctx context.Context, userID, sessionID uuid.UUID) error {
+	return nil
+}
+
 
 // setupTestGRPCServer starts an in-process bufconn gRPC server with the AuthHandler and interceptors.
 func setupTestGRPCServer(t *testing.T, jwtSecret string) (*mockAuthStore, *grpc.ClientConn, func()) {

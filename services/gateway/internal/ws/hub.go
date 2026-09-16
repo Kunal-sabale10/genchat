@@ -28,8 +28,9 @@ type Conn struct {
 	UserID     string
 	DeviceID   string
 	Send       chan []byte // Outbound message channel
-	Hub        *Hub
-	WireFormat WireFormat
+	Hub         *Hub
+	WireFormat  WireFormat
+	ConnectedAt time.Time
 }
 
 // Hub manages all active WebSocket connections
@@ -212,9 +213,55 @@ func (h *Hub) GetActiveDeviceCount(userID string) int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	if conns, ok := h.connections[userID]; ok {
-		return len(conns)
+		devices := make(map[string]bool)
+		for _, conn := range conns {
+			if conn.DeviceID != "" {
+				devices[conn.DeviceID] = true
+			} else {
+				devices[conn.ID] = true
+			}
+		}
+		return len(devices)
 	}
 	return 0
+}
+
+// HasDevice returns true if the user has an active connection from deviceID.
+func (h *Hub) HasDevice(userID, deviceID string) bool {
+	if deviceID == "" {
+		return false
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if conns, ok := h.connections[userID]; ok {
+		for _, conn := range conns {
+			if conn.DeviceID == deviceID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// EvictDeviceConnections cleanly closes any active connections for the specified deviceID.
+func (h *Hub) EvictDeviceConnections(userID, deviceID string) {
+	if deviceID == "" {
+		return
+	}
+	h.mu.RLock()
+	var toEvict []*Conn
+	if conns, ok := h.connections[userID]; ok {
+		for _, conn := range conns {
+			if conn.DeviceID == deviceID {
+				toEvict = append(toEvict, conn)
+			}
+		}
+	}
+	h.mu.RUnlock()
+
+	for _, conn := range toEvict {
+		h.Unregister(conn)
+	}
 }
 
 func (h *Hub) IsOnline(userID string) bool {
@@ -224,10 +271,39 @@ func (h *Hub) IsOnline(userID string) bool {
 	return ok
 }
 
+// IsUserOnlineCluster checks if a user is online anywhere in the cluster:
+// first on the local pod, then via the distributed directory router in Redis.
+func (h *Hub) IsUserOnlineCluster(ctx context.Context, userID string) bool {
+	if h.IsOnline(userID) {
+		return true
+	}
+	h.mu.RLock()
+	r := h.router
+	h.mu.RUnlock()
+	if r != nil {
+		gateways, err := r.GetUserGateways(ctx, userID)
+		if err == nil && len(gateways) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Hub) OnlineCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.connections)
+}
+
+// TotalConnections returns the total number of open WebSocket connections across all users on this pod.
+func (h *Hub) TotalConnections() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	total := 0
+	for _, conns := range h.connections {
+		total += len(conns)
+	}
+	return total
 }
 
 // DeliverLocal pushes a payload directly to local connections for a user without remote routing.

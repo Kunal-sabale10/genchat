@@ -44,6 +44,8 @@ type AuthStore interface {
 	CreateAuthSession(ctx context.Context, userID, deviceID uuid.UUID, refreshTokenHash []byte, expiresAt time.Time) error
 	GetAuthSession(ctx context.Context, refreshTokenHash []byte) (*store.AuthSession, error)
 	RevokeAuthSession(ctx context.Context, sessionID uuid.UUID) error
+	ListActiveAuthSessions(ctx context.Context, userID uuid.UUID) ([]*store.ActiveSession, error)
+	RevokeAuthSessionByID(ctx context.Context, userID, sessionID uuid.UUID) error
 
 	SaveCeremony(ctx context.Context, sessionID, ceremonyType string, sessionData, userID []byte, displayName string, expiresAt time.Time) error
 	GetCeremony(ctx context.Context, sessionID string) (*store.Ceremony, error)

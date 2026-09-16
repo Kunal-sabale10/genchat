@@ -1,8 +1,9 @@
 import React, { useState, useRef } from 'react'
-import { X, Upload, Check, Copy, User, Camera, Sparkles, Loader2, Trash2 } from 'lucide-react'
+import { X, Upload, Check, Copy, User, Camera, Sparkles, Loader2, Trash2, Shield } from 'lucide-react'
 import { UserAvatar } from './UserAvatar'
 import { AuthService } from '@/lib/grpc-client'
 import { MediaClient } from '@/lib/media-client'
+import { ActiveSessionsModal } from './ActiveSessionsModal'
 
 export interface ProfileModalProps {
   isOpen: boolean
@@ -42,6 +43,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [isSaving, setIsSaving] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [copiedId, setCopiedId] = useState(false)
+  const [isSessionsOpen, setIsSessionsOpen] = useState(false)
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const mediaClient = useRef(new MediaClient()).current
@@ -288,6 +290,23 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             )}
           </div>
 
+          {/* Active Sessions & Security */}
+          <div>
+            <button
+              type="button"
+              onClick={() => setIsSessionsOpen(true)}
+              className="w-full py-2.5 px-3.5 bg-zinc-950/70 hover:bg-zinc-800/60 border border-zinc-800/80 hover:border-zinc-700/80 rounded-xl text-xs font-medium text-zinc-300 flex items-center justify-between transition-all group"
+            >
+              <span className="flex items-center gap-2">
+                <Shield className="w-4 h-4 text-indigo-400 group-hover:text-indigo-300" />
+                Manage Active Sessions & Devices
+              </span>
+              <span className="text-[11px] text-zinc-500 group-hover:text-zinc-400">
+                View & Revoke →
+              </span>
+            </button>
+          </div>
+
           {/* Actions */}
           <div className="flex items-center justify-end gap-3 pt-2">
             <button
@@ -308,6 +327,13 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
           </div>
         </form>
       </div>
+
+      <ActiveSessionsModal
+        isOpen={isSessionsOpen}
+        onClose={() => setIsSessionsOpen(false)}
+        authToken={accessToken}
+        currentDeviceId={currentDeviceId}
+      />
     </div>
   )
 }

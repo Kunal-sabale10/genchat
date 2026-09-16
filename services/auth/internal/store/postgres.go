@@ -70,6 +70,16 @@ type AuthSession struct {
 	RevokedAt        *time.Time
 }
 
+type ActiveSession struct {
+	ID          uuid.UUID `json:"id"`
+	UserID      uuid.UUID `json:"user_id"`
+	DeviceID    uuid.UUID `json:"device_id"`
+	DeviceLabel string    `json:"device_label"`
+	CreatedAt   time.Time `json:"created_at"`
+	LastSeenAt  time.Time `json:"last_seen_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
 type Ceremony struct {
 	SessionID    string
 	CeremonyType string
@@ -302,6 +312,36 @@ func (s *PostgresStore) GetAuthSession(ctx context.Context, refreshTokenHash []b
 
 func (s *PostgresStore) RevokeAuthSession(ctx context.Context, sessionID uuid.UUID) error {
 	_, err := s.pool.Exec(ctx, `UPDATE auth_sessions SET revoked_at = $1 WHERE id = $2`, time.Now(), sessionID)
+	return err
+}
+
+func (s *PostgresStore) ListActiveAuthSessions(ctx context.Context, userID uuid.UUID) ([]*ActiveSession, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT s.id, s.user_id, s.device_id, COALESCE(d.device_label, 'Linked Device'), s.created_at, COALESCE(d.last_seen_at, s.created_at), s.expires_at
+		 FROM auth_sessions s
+		 LEFT JOIN user_devices d ON s.device_id = d.id
+		 WHERE s.user_id = $1 AND s.revoked_at IS NULL AND s.expires_at > now()
+		 ORDER BY s.created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []*ActiveSession
+	for rows.Next() {
+		sess := &ActiveSession{}
+		if err := rows.Scan(&sess.ID, &sess.UserID, &sess.DeviceID, &sess.DeviceLabel, &sess.CreatedAt, &sess.LastSeenAt, &sess.ExpiresAt); err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, sess)
+	}
+	return sessions, rows.Err()
+}
+
+func (s *PostgresStore) RevokeAuthSessionByID(ctx context.Context, userID, sessionID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE auth_sessions SET revoked_at = now() WHERE id = $1 AND user_id = $2`,
+		sessionID, userID)
 	return err
 }
 

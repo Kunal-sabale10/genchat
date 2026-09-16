@@ -677,7 +677,7 @@ func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []by
 				if uid == conn.UserID {
 					continue
 				}
-				if r.hub.IsOnline(uid) {
+				if r.hub.IsUserOnlineCluster(ctx, uid) {
 					r.hub.SendToUser(uid, push)
 				} else if r.dispatcher != nil {
 					go r.notifyOfflineRecipient(uid, frame.ChannelID, uint64(seqNum))
@@ -705,8 +705,8 @@ func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []by
 		}
 		r.hub.SendToUser(recipientUserID, push)
 
-		// If recipient is offline, dispatch silent background push notification
-		if !r.hub.IsOnline(recipientUserID) && r.dispatcher != nil {
+		// If recipient is offline across the entire cluster, dispatch silent background push notification (Directive 7)
+		if !r.hub.IsUserOnlineCluster(ctx, recipientUserID) && r.dispatcher != nil {
 			go r.notifyOfflineRecipient(recipientUserID, frame.ChannelID, uint64(seqNum))
 		}
 	}
@@ -782,7 +782,7 @@ func (r *Router) handleGroupCommit(ctx context.Context, conn *ws.Conn, data []by
 			if uid == conn.UserID {
 				continue
 			}
-			if r.hub.IsOnline(uid) {
+			if r.hub.IsUserOnlineCluster(ctx, uid) {
 				r.hub.SendToUser(uid, pushPayload)
 			}
 		}
@@ -1145,8 +1145,8 @@ func (r *Router) handleCallSignal(ctx context.Context, conn *ws.Conn, data []byt
 		return nil
 	}
 
-	// If recipient is offline and this is an offer, inform caller immediately
-	if frame.SignalType == "offer" && !r.hub.IsOnline(frame.TargetUserID) {
+	// If recipient is offline across cluster and this is an offer, inform caller immediately
+	if frame.SignalType == "offer" && !r.hub.IsUserOnlineCluster(ctx, frame.TargetUserID) {
 		slog.Info("call target is offline", "caller", conn.UserID, "target", frame.TargetUserID, "call_id", frame.CallID)
 		offlineNotice, _ := json.Marshal(CallSignalPushFrame{
 			Type:         "call_signal",

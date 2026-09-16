@@ -75,7 +75,7 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 				w.Header().Set("Vary", "Origin")
 				if isAllowedOrigin(origin, h.allowedOrigins) {
 					w.Header().Set("Access-Control-Allow-Origin", origin)
-					w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+					w.Header().Set("Access-Control-Allow-Methods", "POST, GET, DELETE, OPTIONS")
 					w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 					w.Header().Set("Access-Control-Allow-Credentials", "true")
 				} else {
@@ -1831,6 +1831,8 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 				writeErrorJSON(w, r, "failed to provision dev user in database", http.StatusInternalServerError, err)
 				return
 			}
+			dummyRefresh := sha256.Sum256([]byte(uuid.New().String() + time.Now().String()))
+			_ = h.store.CreateAuthSession(r.Context(), uID, dID, dummyRefresh[:], time.Now().Add(30*24*time.Hour))
 		}
 
 		token := generateJWT(targetUserID, targetDeviceID, h.jwtSecret, 15*time.Minute)
@@ -2466,6 +2468,105 @@ func (h *AuthHandler) HTTPHandler() http.Handler {
 	})
 	mux.HandleFunc("/features", featuresHandler)
 	mux.HandleFunc("/api/v1/features", featuresHandler)
+
+	sessionsHandler := cors(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+			writeErrorJSON(w, r, "missing authorization token", http.StatusUnauthorized, nil)
+			return
+		}
+		claims, err := h.VerifyJWT(strings.TrimPrefix(authHeader, "Bearer "))
+		if err != nil {
+			writeErrorJSON(w, r, "invalid token", http.StatusUnauthorized, err)
+			return
+		}
+		userID, err := uuid.Parse(claims.Sub)
+		if err != nil {
+			writeErrorJSON(w, r, "invalid user id in token", http.StatusUnauthorized, err)
+			return
+		}
+
+		path := r.URL.Path
+		switch {
+		case r.Method == http.MethodGet && (path == "/sessions" || path == "/api/v1/sessions" || path == "/sessions/" || path == "/api/v1/sessions/"):
+			sessions, err := h.store.ListActiveAuthSessions(r.Context(), userID)
+			if err != nil {
+				writeErrorJSON(w, r, "failed to list sessions", http.StatusInternalServerError, err)
+				return
+			}
+			type sessionResponse struct {
+				ID          string `json:"id"`
+				UserID      string `json:"user_id"`
+				DeviceID    string `json:"device_id"`
+				DeviceLabel string `json:"device_label"`
+				CreatedAt   string `json:"created_at"`
+				LastSeenAt  string `json:"last_seen_at"`
+				ExpiresAt   string `json:"expires_at"`
+				IsCurrent   bool   `json:"is_current"`
+			}
+			respList := make([]sessionResponse, 0, len(sessions))
+			for _, s := range sessions {
+				respList = append(respList, sessionResponse{
+					ID:          s.ID.String(),
+					UserID:      s.UserID.String(),
+					DeviceID:    s.DeviceID.String(),
+					DeviceLabel: s.DeviceLabel,
+					CreatedAt:   s.CreatedAt.Format(time.RFC3339),
+					LastSeenAt:  s.LastSeenAt.Format(time.RFC3339),
+					ExpiresAt:   s.ExpiresAt.Format(time.RFC3339),
+					IsCurrent:   s.DeviceID.String() == claims.DeviceID,
+				})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"sessions": respList,
+			})
+
+		case (r.Method == http.MethodDelete || r.Method == http.MethodPost) && (strings.Contains(path, "/sessions")):
+			var sessionIDStr string
+			if strings.HasPrefix(path, "/api/v1/sessions/") {
+				sessionIDStr = strings.TrimPrefix(path, "/api/v1/sessions/")
+			} else if strings.HasPrefix(path, "/sessions/") {
+				sessionIDStr = strings.TrimPrefix(path, "/sessions/")
+			}
+
+			if sessionIDStr == "revoke" || sessionIDStr == "" {
+				var req struct {
+					SessionID string `json:"session_id"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.SessionID != "" {
+					sessionIDStr = req.SessionID
+				}
+			}
+
+			sessUUID, err := uuid.Parse(sessionIDStr)
+			if err != nil {
+				writeErrorJSON(w, r, "invalid session id", http.StatusBadRequest, err)
+				return
+			}
+
+			if err := h.store.RevokeAuthSessionByID(r.Context(), userID, sessUUID); err != nil {
+				writeErrorJSON(w, r, "failed to revoke session", http.StatusInternalServerError, err)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":     "revoked",
+				"session_id": sessUUID.String(),
+			})
+
+		default:
+			writeErrorJSON(w, r, "method not allowed", http.StatusMethodNotAllowed, nil)
+		}
+	})
+
+	mux.HandleFunc("/sessions", sessionsHandler)
+	mux.HandleFunc("/sessions/", sessionsHandler)
+	mux.HandleFunc("/sessions/revoke", sessionsHandler)
+	mux.HandleFunc("/api/v1/sessions", sessionsHandler)
+	mux.HandleFunc("/api/v1/sessions/", sessionsHandler)
+	mux.HandleFunc("/api/v1/sessions/revoke", sessionsHandler)
 
 	// Apply tiered rate limiting to registration and prekeys (Item 4)
 	_ = tieredLimiter
