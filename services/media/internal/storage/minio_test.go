@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"net"
 	"net/url"
 	"sort"
 	"strings"
@@ -211,3 +212,29 @@ func TestSigV4PresignedURLVerificationAndTamperResistance(t *testing.T) {
 		t.Fatalf("Signature for PUT MUST be rejected when executed as GET!")
 	}
 }
+
+func TestMinIOStoragePing(t *testing.T) {
+	// 1. Success case: Active mock listener
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create test listener: %v", err)
+	}
+	defer ln.Close()
+
+	store := NewMinIOStorage(Config{
+		Endpoint: ln.Addr().String(),
+	})
+
+	if err := store.Ping(context.Background()); err != nil {
+		t.Fatalf("expected Ping to succeed against live listener, got %v", err)
+	}
+
+	// 2. Unreachable case
+	deadStore := NewMinIOStorage(Config{
+		Endpoint: "127.0.0.1:1",
+	})
+	if err := deadStore.Ping(context.Background()); err == nil {
+		t.Fatalf("expected Ping to fail against closed port 1")
+	}
+}
+

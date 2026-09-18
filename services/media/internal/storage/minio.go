@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/url"
 	"sort"
 	"strings"
@@ -52,6 +53,31 @@ func NewMinIOStorage(cfg Config) *MinIOStorage {
 		cfg.Region = "us-east-1"
 	}
 	return &MinIOStorage{cfg: cfg}
+}
+
+// Ping checks whether the configured MinIO / S3 storage endpoint is reachable.
+func (s *MinIOStorage) Ping(ctx context.Context) error {
+	addr := s.cfg.Endpoint
+	if strings.Contains(addr, "://") {
+		if u, err := url.Parse(addr); err == nil {
+			addr = u.Host
+		}
+	}
+	if !strings.Contains(addr, ":") {
+		if s.cfg.UseSSL {
+			addr = addr + ":443"
+		} else {
+			addr = addr + ":80"
+		}
+	}
+
+	dialer := net.Dialer{Timeout: 2 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return fmt.Errorf("minio endpoint unreachable at %s: %w", addr, err)
+	}
+	_ = conn.Close()
+	return nil
 }
 
 // GenerateUploadURL creates a pre-signed S3 PUT URL for client-side encrypted blobs
