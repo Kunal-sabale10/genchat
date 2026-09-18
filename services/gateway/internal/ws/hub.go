@@ -25,13 +25,14 @@ type DirectoryRouter interface {
 
 // Conn represents a connected client
 type Conn struct {
-	ID         string      // Connection ID (UUID)
-	UserID     string
-	DeviceID   string
-	Send       chan []byte // Outbound message channel
-	Hub         *Hub
-	WireFormat  WireFormat
-	ConnectedAt time.Time
+	ID            string // Connection ID (UUID)
+	UserID        string
+	DeviceID      string
+	CorrelationID string
+	Send          chan []byte // Outbound message channel
+	Hub           *Hub
+	WireFormat    WireFormat
+	ConnectedAt   time.Time
 }
 
 // Hub manages all active WebSocket connections

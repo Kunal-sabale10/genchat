@@ -287,14 +287,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	correlationID := r.Header.Get("X-Correlation-ID")
+	if correlationID == "" {
+		correlationID = r.Header.Get("X-Request-ID")
+	}
+	if correlationID == "" {
+		correlationID = uuid.New().String()
+	}
+	w.Header().Set("X-Correlation-ID", correlationID)
+
 	// 8. Create Conn, register with Hub
 	conn := &Conn{
-		ID:          uuid.New().String(),
-		UserID:      userID,
-		DeviceID:    deviceID,
-		Send:        make(chan []byte, sendChannelSize),
-		Hub:         h.hub,
-		ConnectedAt: time.Now(),
+		ID:            uuid.New().String(),
+		UserID:        userID,
+		DeviceID:      deviceID,
+		CorrelationID: correlationID,
+		Send:          make(chan []byte, sendChannelSize),
+		Hub:           h.hub,
+		ConnectedAt:   time.Now(),
 	}
 	h.hub.Register(conn)
 	metrics.DefaultMetrics.IncActiveConnections()
@@ -312,6 +322,15 @@ func (h *Handler) readPump(ctx context.Context, conn *Conn, wsConn *websocket.Co
 	defer func() {
 		h.hub.Unregister(conn)
 		metrics.DefaultMetrics.DecActiveConnections()
+		duration := time.Since(conn.ConnectedAt)
+		metrics.DefaultMetrics.RecordConnectionClose(duration)
+		slog.Debug("websocket connection closed",
+			"conn_id", conn.ID,
+			"user_id", conn.UserID,
+			"device_id", conn.DeviceID,
+			"duration_sec", duration.Seconds(),
+			"correlation_id", conn.CorrelationID,
+		)
 		wsConn.Close(websocket.StatusNormalClosure, "read loop exiting")
 	}()
 

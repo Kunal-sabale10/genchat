@@ -31,6 +31,15 @@ type GatewayMetrics struct {
 	DeviceLimitRejections        atomic.Int64
 	PreAuthRateLimitRejections   atomic.Int64
 	LoadSheddingRejections       atomic.Int64
+
+	// Connection Lifetime Metrics
+	ConnectionDurationSeconds atomic.Uint64
+	ConnectionsClosed         atomic.Int64
+}
+
+func (m *GatewayMetrics) RecordConnectionClose(duration time.Duration) {
+	m.ConnectionsClosed.Add(1)
+	m.ConnectionDurationSeconds.Add(uint64(duration.Seconds()))
 }
 
 var DefaultMetrics = &GatewayMetrics{}
@@ -177,6 +186,14 @@ func (m *GatewayMetrics) PrometheusHandler() http.HandlerFunc {
 
 		fmt.Fprintf(w, "# HELP gateway_loadshed_rejections_total Total WebSocket upgrades shed due to system overload\n")
 		fmt.Fprintf(w, "# TYPE gateway_loadshed_rejections_total counter\n")
-		fmt.Fprintf(w, "gateway_loadshed_rejections_total %d\n", m.LoadSheddingRejections.Load())
+		fmt.Fprintf(w, "gateway_loadshed_rejections_total %d\n\n", m.LoadSheddingRejections.Load())
+
+		fmt.Fprintf(w, "# HELP gateway_connection_duration_seconds_total Total duration in seconds across all completed connections\n")
+		fmt.Fprintf(w, "# TYPE gateway_connection_duration_seconds_total counter\n")
+		fmt.Fprintf(w, "gateway_connection_duration_seconds_total %d\n\n", m.ConnectionDurationSeconds.Load())
+
+		fmt.Fprintf(w, "# HELP gateway_connections_closed_total Total WebSocket connections cleanly or abnormally closed\n")
+		fmt.Fprintf(w, "# TYPE gateway_connections_closed_total counter\n")
+		fmt.Fprintf(w, "gateway_connections_closed_total %d\n", m.ConnectionsClosed.Load())
 	}
 }
