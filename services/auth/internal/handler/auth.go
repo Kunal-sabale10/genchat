@@ -24,6 +24,7 @@ import (
 )
 
 type AuthStore interface {
+	Ping(ctx context.Context) error
 	CreateUser(ctx context.Context, displayName string, identityKey []byte) (uuid.UUID, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (*store.User, error)
 	GetUserByIdentityKey(ctx context.Context, key []byte) (*store.User, error)

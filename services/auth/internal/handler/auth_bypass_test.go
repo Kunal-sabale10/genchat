@@ -33,6 +33,10 @@ func newMockAuthStore() *mockAuthStore {
 	}
 }
 
+func (m *mockAuthStore) Ping(ctx context.Context) error {
+	return nil
+}
+
 func (m *mockAuthStore) CreateUser(ctx context.Context, displayName string, identityKey []byte) (uuid.UUID, error) {
 	id := uuid.New()
 	m.users[id] = &store.User{ID: id, DisplayName: displayName, IdentityKey: identityKey}

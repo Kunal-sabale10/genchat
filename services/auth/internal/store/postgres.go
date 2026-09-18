@@ -20,6 +20,11 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
+// Ping verifies PostgreSQL database pool connectivity.
+func (s *PostgresStore) Ping(ctx context.Context) error {
+	return s.pool.Ping(ctx)
+}
+
 type User struct {
 	ID          uuid.UUID
 	DisplayName string
