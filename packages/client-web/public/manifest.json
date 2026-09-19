@@ -1,0 +1,26 @@
+﻿{
+  "short_name": "GenChat",
+  "name": "GenChat — Quantum-Safe Messenger",
+  "description": "End-to-end encrypted messaging powered by post-quantum cryptography (PQXDH & MLS).",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "192x192 512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/chat",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "theme_color": "#0f172a",
+  "background_color": "#020617",
+  "categories": ["social", "security", "communication"],
+  "shortcuts": [
+    {
+      "name": "Chats",
+      "url": "/chat",
+      "description": "Open encrypted chats"
+    }
+  ]
+}
