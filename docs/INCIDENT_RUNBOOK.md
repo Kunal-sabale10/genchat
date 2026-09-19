@@ -1,4 +1,4 @@
-﻿# GenChat Production Incident Response Runbook
+# GenChat Production Incident Response Runbook
 
 Version: 1.1.0  
 Owner: Platform Reliability Engineering  
@@ -17,7 +17,24 @@ Escalation Policy: PagerDuty / SRE Tier-1
 
 ---
 
-## 2. On-Call Runbooks by Failure Mode
+## 2. On-Call Roster & Telemetry Dashboards
+
+### 2.1 Escalation Contacts (Launch Week)
+* **Primary On-Call (SRE Tier-1)**: `sre-oncall@genchat.app` / PagerDuty Schedule: `PAG-GENCHAT-L1` / Phone: `+1-555-019-2831`
+* **Secondary Escalation (Platform Lead)**: `lead-eng@genchat.app` / PagerDuty: `PAG-GENCHAT-ESCALATE`
+* **Security Incident Commander**: `security-lead@genchat.app` / Signal: `+1-555-019-9942`
+* **Database Administrator (DBA)**: `data-infra@genchat.app`
+
+### 2.2 Live Operational Dashboards
+* **Edge Gateway Cluster Overview**: `https://grafana.genchat.app/d/gw-cluster/edge-gateway-telemetry`
+* **Redis Cluster Presence & Memory**: `https://grafana.genchat.app/d/redis-presence/redis-directory-metrics`
+* **ScyllaDB Ring Latency & Compaction**: `https://grafana.genchat.app/d/scylla-ring/scylladb-cluster-overview`
+* **PostgreSQL Connection Pool & Queries**: `https://grafana.genchat.app/d/postgres-auth/auth-db-pool-telemetry`
+* **Media / MinIO Throughput & Error Rate**: `https://grafana.genchat.app/d/minio-media/media-storage-health`
+
+---
+
+## 3. On-Call Runbooks by Failure Mode
 
 ### 2.1 Scenario A: Gateway 503 Spikes & Connection Ceiling Saturation
 
@@ -119,8 +136,23 @@ Escalation Policy: PagerDuty / SRE Tier-1
 
 ---
 
-## 3. Post-Mortem and Incident Closure
+## 4. Post-Mortem and Incident Closure
 
 1. Update status page to Operational.
 2. Conduct post-incident retrospective within 72 hours.
 3. Archive telemetry dashboards and audit logs for forensic review.
+
+---
+
+## 5. Pre-Launch Operational Dry-Run Drill
+
+Before opening the platform to external users, the launch on-call engineer must complete and sign off on this 5-step operational drill:
+
+| Step | Drill | Verification Procedure | Pass Criteria |
+|---|---|---|---|
+| **1** | **Service Health & Readiness** | Run `node scripts/dry_run_incident_runbook.mjs` | All services report `ready` and database connections healthy |
+| **2** | **Gateway Load Shedding Check** | Query `/readyz` on gateway with Redis down or saturated | Returns HTTP 503 with informative failure state |
+| **3** | **Database Schema Verification** | Run `node scripts/check_db_health.mjs` | Postgres (18 tables), Redis (PONG), ScyllaDB (`genchat` keyspace) |
+| **4** | **Key Backup Recovery Drill** | Run `node scripts/verify_backup_integrity.mjs` | Zero-knowledge backup successfully created, verified, and purged |
+| **5** | **Alert Escalation Notification** | Trigger mock test alert in PagerDuty schedule `PAG-GENCHAT-L1` | On-call engineer acknowledges alert within 5 minutes |
+
