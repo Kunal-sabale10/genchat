@@ -1,0 +1,73 @@
+﻿# GenChat Production Caddyfile
+# Automatic HTTPS via Let's Encrypt / ZeroSSL with modern TLS 1.3 & HTTP/2
+
+{
+    email {$ACME_EMAIL:admin@genchat.app}
+    admin off
+}
+
+{$GENCHAT_DOMAIN:genchat.app} {
+    # Modern security headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(self), microphone=(self), geolocation=()"
+    }
+
+    # Gateway WebSocket with Upgrade Support
+    handle /ws* {
+        reverse_proxy gateway:8081 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # Auth & PreKey API
+    handle /chat.v1.* {
+        reverse_proxy auth:8080 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+    handle /auth/* {
+        reverse_proxy auth:8080 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # Media Upload / Download Presigned API
+    handle /media/* {
+        reverse_proxy media:8082 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+        }
+    }
+    handle /v1/media/* {
+        reverse_proxy media:8082 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+        }
+    }
+
+    # Static Web Client (PWA SPA)
+    handle {
+        root * /usr/share/caddy
+        try_files {path} /index.html
+        file_server
+    }
+
+    # Logging
+    log {
+        output stdout
+        format json
+    }
+}
