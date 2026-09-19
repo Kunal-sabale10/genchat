@@ -1,21 +1,14 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo, Suspense } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import { GatewayClient, GatewayEnvelope } from '@/lib/gateway-client'
 import { MediaClient, AttachmentMetadata } from '@/lib/media-client'
 import { MediaCryptoService } from '@/lib/media-crypto'
 import { E2eeService } from '@/lib/e2ee-ratchet'
 import { localDb, StoredMessage, StoredConversation, SearchSnippetResult } from '@/lib/local-storage-db'
-import { CallModal } from '@/components/CallModal'
-import { CameraModal } from '@/components/CameraModal'
-import { ImageViewerModal } from '@/components/ImageViewerModal'
 import { FileAttachmentCard } from '@/components/FileAttachmentCard'
 import { AttachmentStaging } from '@/components/AttachmentStaging'
 import { ActionChips } from '@/components/ActionChips'
-import { SummaryModal } from '@/components/SummaryModal'
-import { GroupMembersModal } from '@/components/GroupMembersModal'
 import { DisappearingTimerBadge } from '@/components/DisappearingTimerBadge'
-import { EphemeralSettingsModal } from '@/components/EphemeralSettingsModal'
-import { SafetyNumberModal } from '@/components/SafetyNumberModal'
 import { VoiceNotePlayer } from '@/components/VoiceNotePlayer'
 import { VoiceRecorderBar } from '@/components/VoiceRecorderBar'
 import { ReactionPicker } from '@/components/ReactionPicker'
@@ -27,12 +20,21 @@ import { VoiceRecordingResult } from '@/lib/voice-recorder'
 import { SafetyNumberManager, TrustRecord } from '@/lib/safety-numbers'
 import { WebRtcManager, fetchDynamicIceServers } from '@/lib/webrtc-manager'
 import { GroupWebRtcManager } from '@/lib/group-webrtc-manager'
-import { GroupCallModal } from '@/components/GroupCallModal'
 import { ActiveCallBanner } from '@/components/ActiveCallBanner'
-import { DeleteMessageModal } from '@/components/DeleteMessageModal'
 import { UserAvatar } from '@/components/UserAvatar'
-import { ProfileModal } from '@/components/ProfileModal'
 import { AuthService } from '@/lib/grpc-client'
+
+// Dynamically lazy-loaded modal dialogs to eliminate chunk bloat on initial page load
+const CallModal = React.lazy(() => import('@/components/CallModal').then(m => ({ default: m.CallModal })))
+const CameraModal = React.lazy(() => import('@/components/CameraModal').then(m => ({ default: m.CameraModal })))
+const ImageViewerModal = React.lazy(() => import('@/components/ImageViewerModal').then(m => ({ default: m.ImageViewerModal })))
+const SummaryModal = React.lazy(() => import('@/components/SummaryModal').then(m => ({ default: m.SummaryModal })))
+const GroupMembersModal = React.lazy(() => import('@/components/GroupMembersModal').then(m => ({ default: m.GroupMembersModal })))
+const EphemeralSettingsModal = React.lazy(() => import('@/components/EphemeralSettingsModal').then(m => ({ default: m.EphemeralSettingsModal })))
+const SafetyNumberModal = React.lazy(() => import('@/components/SafetyNumberModal').then(m => ({ default: m.SafetyNumberModal })))
+const GroupCallModal = React.lazy(() => import('@/components/GroupCallModal').then(m => ({ default: m.GroupCallModal })))
+const DeleteMessageModal = React.lazy(() => import('@/components/DeleteMessageModal').then(m => ({ default: m.DeleteMessageModal })))
+const ProfileModal = React.lazy(() => import('@/components/ProfileModal').then(m => ({ default: m.ProfileModal })))
 import { PushClient } from '@/lib/push-client'
 import { PreKeyManager } from '@/lib/prekey-manager'
 import { LocalEncryptedCache } from '@/lib/local-cache'
@@ -3189,18 +3191,22 @@ export default function ChatPage() {
       )}
 
       {/* --- Safety Number / Key Verification Modal --- */}
-      <SafetyNumberModal
-        isOpen={showSafetyModal}
-        onClose={() => setShowSafetyModal(false)}
-        currentUserId={user?.userId || ''}
-        peerId={safetyPeerId}
-        peerName={activeConversation?.name}
-        safetyNumber={safetyNumber}
-        onVerificationChange={(verified) => {
-          setIsSafetyVerified(verified)
-          setVerifiedPeerIds(SafetyNumberManager.getVerifiedPeerIds())
-        }}
-      />
+      {showSafetyModal && (
+        <Suspense fallback={null}>
+          <SafetyNumberModal
+            isOpen={showSafetyModal}
+            onClose={() => setShowSafetyModal(false)}
+            currentUserId={user?.userId || ''}
+            peerId={safetyPeerId}
+            peerName={activeConversation?.name}
+            safetyNumber={safetyNumber}
+            onVerificationChange={(verified) => {
+              setIsSafetyVerified(verified)
+              setVerifiedPeerIds(SafetyNumberManager.getVerifiedPeerIds())
+            }}
+          />
+        </Suspense>
+      )}
 
       {/* --- Create Encrypted Group Chat Modal --- */}
       {showNewChanModal && (
@@ -3450,132 +3456,149 @@ export default function ChatPage() {
         </div>
       )}
 
-      {/* WebRTC Video / Voice Calling Modal & Minimized Widget */}
-      {callState !== 'idle' && (
-        <CallModal
-          callState={callState}
-          callType={callType}
-          peerId={activeCallPeerId}
-          localStream={localStream}
-          remoteStream={remoteStream}
-          isMuted={isCallMuted}
-          isVideoDisabled={isCallVideoDisabled}
-          isMinimized={isCallMinimized}
-          onAccept={handleAcceptCall}
-          onReject={handleRejectCall}
-          onHangup={handleEndCall}
-          onToggleMute={handleToggleCallMute}
-          onToggleVideo={handleToggleCallVideo}
-          onToggleMinimize={() => setIsCallMinimized((prev) => !prev)}
-        />
-      )}
+      {/* Dynamic Lazy-Loaded Modals with Suspense */}
+      <Suspense fallback={null}>
+        {/* WebRTC Video / Voice Calling Modal & Minimized Widget */}
+        {callState !== 'idle' && (
+          <CallModal
+            callState={callState}
+            callType={callType}
+            peerId={activeCallPeerId}
+            localStream={localStream}
+            remoteStream={remoteStream}
+            isMuted={isCallMuted}
+            isVideoDisabled={isCallVideoDisabled}
+            isMinimized={isCallMinimized}
+            onAccept={handleAcceptCall}
+            onReject={handleRejectCall}
+            onHangup={handleEndCall}
+            onToggleMute={handleToggleCallMute}
+            onToggleVideo={handleToggleCallVideo}
+            onToggleMinimize={() => setIsCallMinimized((prev) => !prev)}
+          />
+        )}
 
-      {/* Multi-Party WebRTC Group Voice / Video Calling Grid Modal */}
-      <GroupCallModal
-        isOpen={isGroupCallActive}
-        channelName={activeConversation?.name || 'group'}
-        callType={groupCallType}
-        localStream={groupLocalStream}
-        remoteStreams={groupRemoteStreams}
-        currentUserId={user?.userId || ''}
-        activeSpeakerId={groupActiveSpeakerId}
-        isMuted={isGroupCallMuted}
-        isVideoDisabled={isGroupCallVideoDisabled}
-        isScreenSharing={isGroupCallScreenSharing}
-        isMinimized={isGroupCallMinimized}
-        onToggleMute={handleToggleGroupMute}
-        onToggleVideo={handleToggleGroupVideo}
-        onToggleScreenShare={handleToggleGroupScreenShare}
-        onToggleMinimize={() => setIsGroupCallMinimized((prev) => !prev)}
-        onLeaveCall={handleLeaveGroupCall}
-      />
+        {/* Multi-Party WebRTC Group Voice / Video Calling Grid Modal */}
+        {isGroupCallActive && (
+          <GroupCallModal
+            isOpen={isGroupCallActive}
+            channelName={activeConversation?.name || 'group'}
+            callType={groupCallType}
+            localStream={groupLocalStream}
+            remoteStreams={groupRemoteStreams}
+            currentUserId={user?.userId || ''}
+            activeSpeakerId={groupActiveSpeakerId}
+            isMuted={isGroupCallMuted}
+            isVideoDisabled={isGroupCallVideoDisabled}
+            isScreenSharing={isGroupCallScreenSharing}
+            isMinimized={isGroupCallMinimized}
+            onToggleMute={handleToggleGroupMute}
+            onToggleVideo={handleToggleGroupVideo}
+            onToggleScreenShare={handleToggleGroupScreenShare}
+            onToggleMinimize={() => setIsGroupCallMinimized((prev) => !prev)}
+            onLeaveCall={handleLeaveGroupCall}
+          />
+        )}
 
-      {/* Live Camera Snapshot Modal */}
-      <CameraModal
-        isOpen={showCameraModal}
-        onClose={() => setShowCameraModal(false)}
-        onCapture={handleCameraCapture}
-      />
+        {/* Live Camera Snapshot Modal */}
+        {showCameraModal && (
+          <CameraModal
+            isOpen={showCameraModal}
+            onClose={() => setShowCameraModal(false)}
+            onCapture={handleCameraCapture}
+          />
+        )}
 
-      {/* Full-Screen Decrypted Image Lightbox */}
-      <ImageViewerModal
-        isOpen={Boolean(viewerImage)}
-        onClose={() => setViewerImage(null)}
-        imageUrl={viewerImage?.url || ''}
-        fileName={viewerImage?.fileName}
-        fileSize={viewerImage?.fileSize}
-      />
+        {/* Full-Screen Decrypted Image Lightbox */}
+        {Boolean(viewerImage) && (
+          <ImageViewerModal
+            isOpen={Boolean(viewerImage)}
+            onClose={() => setViewerImage(null)}
+            imageUrl={viewerImage?.url || ''}
+            fileName={viewerImage?.fileName}
+            fileSize={viewerImage?.fileSize}
+          />
+        )}
 
-      {/* Dynamic MLS Group Members & Info Modal */}
-      <GroupMembersModal
-        isOpen={isGroupModalOpen}
-        onClose={() => setIsGroupModalOpen(false)}
-        channelId={activeChannelId}
-        channelName={activeConversation?.name || 'Group'}
-        currentUserId={user?.userId || ''}
-        accessToken={sessionStorage.getItem('genchat_token') || ''}
-        wsSend={(frame) => gatewayRef.current?.sendRaw(frame)}
-        onLeftGroup={() => {
-          setActiveChannelId('')
-          setIsGroupModalOpen(false)
-        }}
-      />
+        {/* Dynamic MLS Group Members & Info Modal */}
+        {isGroupModalOpen && (
+          <GroupMembersModal
+            isOpen={isGroupModalOpen}
+            onClose={() => setIsGroupModalOpen(false)}
+            channelId={activeChannelId}
+            channelName={activeConversation?.name || 'Group'}
+            currentUserId={user?.userId || ''}
+            accessToken={sessionStorage.getItem('genchat_token') || ''}
+            wsSend={(frame) => gatewayRef.current?.sendRaw(frame)}
+            onLeftGroup={() => {
+              setActiveChannelId('')
+              setIsGroupModalOpen(false)
+            }}
+          />
+        )}
 
-      {/* Zero-Knowledge Conversation Summarizer Modal */}
-      <SummaryModal
-        isOpen={isSummaryModalOpen}
-        onClose={() => setIsSummaryModalOpen(false)}
-        channelName={activeConversation?.name || 'Chat'}
-        messages={currentMessages
-          .filter(m => Boolean(m.text))
-          .map(m => ({ text: m.text!, sender: m.senderId === user?.userId ? 'You' : m.senderId }))}
-      />
+        {/* Zero-Knowledge Conversation Summarizer Modal */}
+        {isSummaryModalOpen && (
+          <SummaryModal
+            isOpen={isSummaryModalOpen}
+            onClose={() => setIsSummaryModalOpen(false)}
+            channelName={activeConversation?.name || 'Chat'}
+            messages={currentMessages
+              .filter(m => Boolean(m.text))
+              .map(m => ({ text: m.text!, sender: m.senderId === user?.userId ? 'You' : m.senderId }))}
+          />
+        )}
 
-      {/* Disappearing / Ephemeral Messages Modal */}
-      <EphemeralSettingsModal
-        isOpen={isEphemeralModalOpen}
-        currentTtlSec={currentChannelTtl}
-        channelName={activeConversation?.name || 'Conversation'}
-        onClose={() => setIsEphemeralModalOpen(false)}
-        onSave={handleSaveEphemeralTtl}
-      />
+        {/* Disappearing / Ephemeral Messages Modal */}
+        {isEphemeralModalOpen && (
+          <EphemeralSettingsModal
+            isOpen={isEphemeralModalOpen}
+            currentTtlSec={currentChannelTtl}
+            channelName={activeConversation?.name || 'Conversation'}
+            onClose={() => setIsEphemeralModalOpen(false)}
+            onSave={handleSaveEphemeralTtl}
+          />
+        )}
 
-      {/* Message Revocation & Deletion Modal */}
-      <DeleteMessageModal
-        isOpen={Boolean(deleteTargetMessage)}
-        onClose={() => setDeleteTargetMessage(null)}
-        onConfirm={handleConfirmDelete}
-        isSender={deleteTargetMessage?.senderId === user?.userId}
-        messageSnippet={
-          deleteTargetMessage?.text ||
-          (deleteTargetMessage?.attachment?.isVoiceNote
-            ? '🎙️ Voice message'
-            : deleteTargetMessage?.attachment?.fileName || 'Attachment')
-        }
-      />
-
-      {/* User Profile & Custom Avatar Modal */}
-      {user && (
-        <ProfileModal
-          isOpen={isProfileModalOpen}
-          onClose={() => setIsProfileModalOpen(false)}
-          currentUserId={user.userId}
-          currentDeviceId={user.deviceId}
-          currentDisplayName={user.displayName}
-          currentAvatarUrl={user.avatarUrl}
-          accessToken={accessToken}
-          onProfileUpdated={(updates) => {
-            updateUser(updates)
-            if (accessToken) {
-              AuthService.listUsers(accessToken)
-                .then((res) => {
-                  if (res.users) setAvailableUsers(res.users)
-                })
-                .catch(() => {})
+        {/* Message Revocation & Deletion Modal */}
+        {Boolean(deleteTargetMessage) && (
+          <DeleteMessageModal
+            isOpen={Boolean(deleteTargetMessage)}
+            onClose={() => setDeleteTargetMessage(null)}
+            onConfirm={handleConfirmDelete}
+            isSender={deleteTargetMessage?.senderId === user?.userId}
+            messageSnippet={
+              deleteTargetMessage?.text ||
+              (deleteTargetMessage?.attachment?.isVoiceNote
+                ? '🎙️ Voice message'
+                : deleteTargetMessage?.attachment?.fileName || 'Attachment')
             }
-          }}
-        />
-      )}
+          />
+        )}
+
+        {/* User Profile & Custom Avatar Modal */}
+        {user && isProfileModalOpen && (
+          <ProfileModal
+            isOpen={isProfileModalOpen}
+            onClose={() => setIsProfileModalOpen(false)}
+            currentUserId={user.userId}
+            currentDeviceId={user.deviceId}
+            currentDisplayName={user.displayName}
+            currentAvatarUrl={user.avatarUrl}
+            accessToken={accessToken}
+            onProfileUpdated={(updates) => {
+              updateUser(updates)
+              if (accessToken) {
+                AuthService.listUsers(accessToken)
+                  .then((res) => {
+                    if (res.users) setAvailableUsers(res.users)
+                  })
+                  .catch(() => {})
+              }
+            }}
+          />
+        )}
+      </Suspense>
     </div>
   )
 }
