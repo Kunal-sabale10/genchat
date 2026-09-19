@@ -3,9 +3,9 @@ services:
     image: postgres:17-alpine
     ports: ["5432:5432"]
     environment:
-      POSTGRES_DB: genchat
-      POSTGRES_USER: genchat
-      POSTGRES_PASSWORD: dev_password
+      POSTGRES_DB: ${POSTGRES_DB:-genchat}
+      POSTGRES_USER: ${POSTGRES_USER:-genchat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_password}
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ../schema/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -81,19 +81,15 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - POSTGRES_URL=postgres://genchat:dev_password@postgres:5432/genchat?sslmode=disable
-      - JWT_SECRET=dev-secret-change-in-production
+      - POSTGRES_URL=postgres://${POSTGRES_USER:-genchat}:${POSTGRES_PASSWORD:-dev_password}@postgres:5432/${POSTGRES_DB:-genchat}?sslmode=disable
+      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-in-production}
       # Must match the origin the browser actually loads the app from.
-      # packages/client-web's Vite dev server runs on :3000 by default
-      # (see packages/client-web/vite.config.ts) — if you change that port,
-      # update this to match or every WebAuthn ceremony will fail with an
-      # origin mismatch.
-      - WEBAUTHN_RP_ID=localhost
-      - WEBAUTHN_RP_ORIGIN=http://localhost:5134
-      - TURN_SHARED_SECRET=dev_turn_shared_secret_32b_change_in_prod
-      - TURN_REALM=genchat.local
-      - TURN_URLS=turn:localhost:3478?transport=udp,turn:localhost:3478?transport=tcp
-      - ALLOWED_ORIGINS=http://localhost:5134,http://localhost:3000,http://localhost:5173
+      - WEBAUTHN_RP_ID=${WEBAUTHN_RP_ID:-localhost}
+      - WEBAUTHN_RP_ORIGIN=${WEBAUTHN_RP_ORIGIN:-http://localhost:5134}
+      - TURN_SHARED_SECRET=${TURN_SHARED_SECRET:-dev_turn_shared_secret_32b_change_in_prod}
+      - TURN_REALM=${TURN_REALM:-genchat.local}
+      - TURN_URLS=${TURN_URLS:-turn:localhost:3478?transport=udp,turn:localhost:3478?transport=tcp}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:5134,http://localhost:3000,http://localhost:5173}
     depends_on:
       postgres:
         condition: service_healthy
@@ -112,22 +108,22 @@ services:
     ports:
       - "8081:8081"
     environment:
-      - JWT_SECRET=dev-secret-change-in-production
+      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-in-production}
       - REDIS_ADDR=redis:6379
       - LEDGER_ADDR=ledger:50052
       - AUTH_ADDR=auth:50051
       # Local dev only — do not set this in any deployed environment. It
       # disables the WebSocket Origin/CSRF check.
-      - WS_ALLOW_ANY_ORIGIN=true
-      - PREAUTH_RATE_PER_MINUTE=10000
-      - PREAUTH_BURST=1000
-      - WS_RATE_PER_MINUTE=12000
-      - WS_RATE_BURST=1000
-      - WS_FRESH_RATE_PER_MINUTE=12000
-      - WS_FRESH_BURST=1000
-      - DEVICE_CAP_POLICY=evict_oldest
-      - MAX_HEAP_MB=1536
-      - GOMEMLIMIT=1800MiB
+      - WS_ALLOW_ANY_ORIGIN=${WS_ALLOW_ANY_ORIGIN:-true}
+      - PREAUTH_RATE_PER_MINUTE=${PREAUTH_RATE_PER_MINUTE:-10000}
+      - PREAUTH_BURST=${PREAUTH_BURST:-1000}
+      - WS_RATE_PER_MINUTE=${WS_RATE_PER_MINUTE:-12000}
+      - WS_RATE_BURST=${WS_RATE_BURST:-1000}
+      - WS_FRESH_RATE_PER_MINUTE=${WS_FRESH_RATE_PER_MINUTE:-12000}
+      - WS_FRESH_BURST=${WS_FRESH_BURST:-1000}
+      - DEVICE_CAP_POLICY=${DEVICE_CAP_POLICY:-evict_oldest}
+      - MAX_HEAP_MB=${MAX_HEAP_MB:-1536}
+      - GOMEMLIMIT=${GOMEMLIMIT:-1800MiB}
     depends_on:
       redis:
         condition: service_healthy
@@ -170,8 +166,8 @@ services:
       - "9000:9000"
       - "9001:9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin_secret
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin_secret}
     command: server /data --console-address ":9001"
     volumes:
       - miniodata:/data
@@ -192,7 +188,7 @@ services:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-      mc alias set local http://minio:9000 minioadmin minioadmin_secret &&
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin_secret} &&
       mc mb --ignore-existing local/genchat-media
       "
     restart: "no"
@@ -211,11 +207,11 @@ services:
       # address the browser can reach -- 'minio:9000' (the Docker-network
       # hostname) is NOT reachable from the host machine's browser, only
       # from other containers. Use the host-published port instead.
-      - MINIO_ENDPOINT=localhost:9000
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin_secret
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-localhost:9000}
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin_secret}
       - PORT=8082
-      - ALLOWED_ORIGINS=http://localhost:5134,http://localhost:3000,http://localhost:5173
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:5134,http://localhost:3000,http://localhost:5173}
     depends_on:
       minio-init:
         condition: service_completed_successfully
@@ -236,10 +232,10 @@ services:
       - -n
       - --log-file=stdout
       - --fingerprint
-      - --realm=genchat.local
+      - --realm=${TURN_REALM:-genchat.local}
       - --use-auth-secret
       - --static-auth-secret
-      - dev_turn_shared_secret_32b_change_in_prod
+      - ${TURN_SHARED_SECRET:-dev_turn_shared_secret_32b_change_in_prod}
       - --min-port=49152
       - --max-port=49160
     restart: unless-stopped
