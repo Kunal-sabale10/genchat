@@ -14,14 +14,26 @@ export interface AuthUser {
 export interface AuthContextValue {
   user: AuthUser | null
   accessToken: string | null
+  token: string | null
+  isAuthenticated: boolean
   isLoading: boolean
   crypto: GenChatCrypto | null
   storage: SecureKeyStorage
-  login: (accessToken: string, refreshToken: string, userId: string, deviceId: string, displayName?: string, avatarUrl?: string, identityKey?: string) => void
+  login: (
+    accessToken: string,
+    refreshToken?: string,
+    userId?: string,
+    deviceId?: string,
+    displayName?: string,
+    avatarUrl?: string,
+    identityKey?: string
+  ) => void
   logout: () => void
   refreshAccessToken: () => Promise<void>
   updateUser: (updates: { displayName?: string; avatarUrl?: string; identityKey?: string }) => void
 }
+
+export type AuthContextType = AuthContextValue
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
@@ -46,14 +58,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // WebSocket is now managed by ChatPage's GatewayClient — no dual connection
 
-  const login = useCallback((token: string, refreshToken: string, userId: string, deviceId: string, displayName?: string, avatarUrl?: string, identityKey?: string) => {
-    const authUser: AuthUser = { userId, deviceId, displayName, avatarUrl, identityKey }
-    setUser(authUser)
-    setAccessToken(token)
-    sessionStorage.setItem('genchat_user', JSON.stringify(authUser))
-    sessionStorage.setItem('genchat_access_token', token)
-    sessionStorage.setItem('genchat_refresh_token', refreshToken)
-  }, [])
+  const login = useCallback(
+    (
+      token: string,
+      refreshToken: string = '',
+      userId: string = 'user_' + Math.random().toString(36).substring(2, 9),
+      deviceId: string = 'device_web_primary',
+      displayName?: string,
+      avatarUrl?: string,
+      identityKey?: string
+    ) => {
+      const authUser: AuthUser = { userId, deviceId, displayName, avatarUrl, identityKey }
+      setUser(authUser)
+      setAccessToken(token)
+      sessionStorage.setItem('genchat_user', JSON.stringify(authUser))
+      sessionStorage.setItem('genchat_access_token', token)
+      if (refreshToken) {
+        sessionStorage.setItem('genchat_refresh_token', refreshToken)
+      }
+    },
+    []
+  )
 
   const updateUser = useCallback((updates: { displayName?: string; avatarUrl?: string; identityKey?: string }) => {
     setUser(prev => {
@@ -110,11 +135,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       })
   }, [accessToken])
 
+  const isAuthenticated = Boolean(user && accessToken)
+  const token = accessToken
+
   return (
     <AuthContext.Provider
       value={{
         user,
         accessToken,
+        token,
+        isAuthenticated,
         isLoading,
         crypto: cryptoCore,
         storage: keyStorage,
