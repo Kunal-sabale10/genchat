@@ -55,6 +55,7 @@ type PushFrame struct {
 	ServerTime       int64  `json:"server_time"`
 	EphemeralTTLSec  int64  `json:"ephemeral_ttl_sec,omitempty"`
 	ReplyToMessageID string `json:"reply_to_message_id,omitempty"`
+	ClientMsgID      string `json:"client_msg_id,omitempty"`
 }
 
 // ReactionInboundFrame is sent by a client to add or remove an emoji reaction.
@@ -646,6 +647,7 @@ func (r *Router) handleSendMessage(ctx context.Context, conn *ws.Conn, data []by
 		ServerTime:       time.Now().Unix(),
 		EphemeralTTLSec:  frame.EphemeralTTLSec,
 		ReplyToMessageID: frame.ReplyToMessageID,
+		ClientMsgID:      frame.ClientMsgID,
 	})
 
 	if strings.HasPrefix(frame.ChannelID, "chan_") {

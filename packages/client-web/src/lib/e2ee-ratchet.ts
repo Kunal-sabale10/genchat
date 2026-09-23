@@ -165,32 +165,55 @@ export class E2eeService {
     if (accessToken) this.authToken = accessToken
 
     const storageKey = `genchat_pqxdh_identity_${userId}`
+    let bundleToReturn: WasmIdentityBundle | null = null
     try {
       const stored = localStorage.getItem(storageKey)
       if (stored) {
-        this.identityBundle = JSON.parse(stored) as WasmIdentityBundle
-        return this.identityBundle
+        bundleToReturn = JSON.parse(stored) as WasmIdentityBundle
+        this.identityBundle = bundleToReturn
       }
     } catch {
       // LocalStorage access error fallback
     }
 
-    // Generate fresh PQXDH keys (Identity, SPK, ML-KEM-768 Pre-Key, and 30 OTKs)
-    const { identity_bundle, public_bundle } = await WasmCrypto.generatePqxdhKeys(30)
-    this.identityBundle = identity_bundle
+    if (!bundleToReturn) {
+      // Generate fresh PQXDH keys (Identity, SPK, ML-KEM-768 Pre-Key, and 30 OTKs)
+      const { identity_bundle, public_bundle } = await WasmCrypto.generatePqxdhKeys(30)
+      this.identityBundle = identity_bundle
+      bundleToReturn = identity_bundle
 
-    try {
-      localStorage.setItem(storageKey, JSON.stringify(identity_bundle))
-    } catch (err) {
-      console.warn('[E2eeService] Failed to persist identity bundle to localStorage:', err)
+      try {
+        localStorage.setItem(storageKey, JSON.stringify(identity_bundle))
+      } catch (err) {
+        console.warn('[E2eeService] Failed to persist identity bundle to localStorage:', err)
+      }
+
+      // Publish PreKeyBundle to backend if auth token is available
+      if (this.authToken) {
+        await this.publishPreKeyBundle(public_bundle, deviceId, this.authToken)
+      }
+    } else if (this.authToken) {
+      // Verify whether server actually has prekeys for this device; if missing or 0, publish fresh bundle
+      try {
+        const countRes = await fetch(`/chat.v1.KeyService/GetKeyCount?deviceId=${encodeURIComponent(deviceId)}`, {
+          headers: { Authorization: `Bearer ${this.authToken}` },
+        })
+        const countData = countRes.ok ? await countRes.json() : null
+        if (!countRes.ok || Number(countData?.oneTimeKeyCount ?? 0) === 0) {
+          const { identity_bundle, public_bundle } = await WasmCrypto.generatePqxdhKeys(30)
+          this.identityBundle = identity_bundle
+          bundleToReturn = identity_bundle
+          try {
+            localStorage.setItem(storageKey, JSON.stringify(identity_bundle))
+          } catch {}
+          await this.publishPreKeyBundle(public_bundle, deviceId, this.authToken)
+        }
+      } catch {
+        // silent fallback
+      }
     }
 
-    // Publish PreKeyBundle to backend if auth token is available
-    if (this.authToken) {
-      await this.publishPreKeyBundle(public_bundle, deviceId, this.authToken)
-    }
-
-    return identity_bundle
+    return bundleToReturn
   }
 
   /**

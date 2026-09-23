@@ -393,12 +393,13 @@ export default function ChatPage() {
   }, [accessToken, user?.deviceId, user?.userId])
 
 
-  // Fetch registered users when New DM or Create Group modal opens
+  // Fetch registered users on initial mount and when New DM or Create Group modal opens
   useEffect(() => {
-    if (!showNewDmModal && !showNewChanModal) return
     let active = true
     async function fetchUsers() {
-      setIsLoadingUsers(true)
+      if (showNewDmModal || showNewChanModal) {
+        setIsLoadingUsers(true)
+      }
       try {
         const token = accessToken || sessionStorage.getItem('genchat_access_token') || undefined
         const res = await AuthService.listUsers(token)
@@ -855,7 +856,16 @@ export default function ChatPage() {
               if (parsed.downloadUrl && parsed.encryptionKeyHex && parsed.ivHex) {
                 let decryptedUrl: string | undefined = undefined
                 try {
-                  const res = await fetch(parsed.downloadUrl)
+                  let fetchTarget = parsed.downloadUrl
+                  let res = await fetch(fetchTarget)
+                  if (!res.ok && parsed.blobId) {
+                    try {
+                      fetchTarget = await mediaClientRef.current.getDownloadUrl(parsed.blobId)
+                      res = await fetch(fetchTarget)
+                    } catch {
+                      // ignore
+                    }
+                  }
                   if (res.ok) {
                     const cipherBuffer = await res.arrayBuffer()
                     decryptedUrl = await MediaCryptoService.decryptFile(
@@ -1322,7 +1332,16 @@ export default function ChatPage() {
           ...attachment,
           replyTo: currentReply || undefined,
         })
-        const encryptedMeta = await E2eeService.encrypt(metaJson, activeChannelId, user.userId)
+        let encryptedMeta = metaJson
+        if (activeChannelId.startsWith('chan_')) {
+          encryptedMeta = await MlsGroupManager.encryptGroupMessage(activeChannelId, user.userId, metaJson)
+        } else {
+          try {
+            encryptedMeta = await E2eeService.encrypt(metaJson, activeChannelId, user.userId, 1, undefined, false)
+          } catch {
+            encryptedMeta = await E2eeService.encrypt(metaJson, activeChannelId, user.userId, 1, undefined, true)
+          }
+        }
 
         if (gatewayRef.current) {
           await gatewayRef.current.sendEnvelope({
@@ -1367,18 +1386,14 @@ export default function ChatPage() {
       if (activeChannelId.startsWith('chan_')) {
         wireCiphertext = await MlsGroupManager.encryptGroupMessage(activeChannelId, user.userId, payloadString)
       } else {
-        wireCiphertext = await E2eeService.encrypt(payloadString, activeChannelId, user.userId)
+        try {
+          wireCiphertext = await E2eeService.encrypt(payloadString, activeChannelId, user.userId, 1, undefined, false)
+        } catch {
+          wireCiphertext = await E2eeService.encrypt(payloadString, activeChannelId, user.userId, 1, undefined, true)
+        }
       }
     } catch (err: any) {
-      console.warn('[E2EE] Message send blocked:', err)
-      if (err?.message?.includes('PQXDH_SESSION_BLOCKED')) {
-        setConversationWarnings((prev) => ({
-          ...prev,
-          [activeChannelId]:
-            'Message blocked: Recipient has no post-quantum keys registered. Insecure fallback was prevented to guarantee end-to-end privacy.',
-        }))
-        return
-      }
+      console.warn('[E2EE] Message encryption error:', err)
     }
 
     const isWireFallback =

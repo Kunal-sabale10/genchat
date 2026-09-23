@@ -1,3 +1,17 @@
+export function safeBase64Decode(b64?: string): string {
+  if (!b64) return ''
+  try {
+    const binary = atob(b64)
+    try {
+      return decodeURIComponent(escape(binary))
+    } catch {
+      return binary
+    }
+  } catch {
+    return b64
+  }
+}
+
 export interface GatewayEnvelope {
   type: 'message' | 'ack' | 'presence' | 'heartbeat' | 'push' | 'error' | 'pong' | 'typing' | 'read_receipt' | 'group_commit' | 'ephemeral_setting' | 'reaction' | 'message_deleted' | 'ack_delete' | 'message_edited' | 'ack_edit' | 'message_pinned' | 'ack_pin'
   channelId?: string
@@ -353,12 +367,7 @@ export class GatewayClient {
           // Scylla messages are ordered DESC by time; reverse so oldest is first
           const chronological = [...raw.messages].reverse()
           for (const m of chronological) {
-            let decodedCiphertext = m.ciphertext_base64 || ''
-            try {
-              decodedCiphertext = atob(m.ciphertext_base64)
-            } catch {
-              // Leave as-is
-            }
+            const decodedCiphertext = safeBase64Decode(m.ciphertext_base64)
             const histEnvelope: GatewayEnvelope = {
               type: 'message',
               channelId: raw.channel_id,
@@ -377,18 +386,13 @@ export class GatewayClient {
         // 3. Normalize push frame from gatewayd
         let envelope: GatewayEnvelope
         if (raw.type === 'push') {
-          let decodedCiphertext = raw.ciphertext_base64 || ''
-          try {
-            decodedCiphertext = atob(raw.ciphertext_base64)
-          } catch {
-            // Leave as-is if not base64
-          }
+          const decodedCiphertext = safeBase64Decode(raw.ciphertext_base64)
 
           envelope = {
             type: 'message',
             channelId: raw.channel_id,
             senderId: raw.sender_id,
-            clientMsgId: raw.server_id,
+            clientMsgId: raw.client_msg_id || raw.clientMsgId || raw.server_id,
             sequenceNum: raw.server_time,
             messageType: raw.message_type,
             ciphertext: decodedCiphertext,
