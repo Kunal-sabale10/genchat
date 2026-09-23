@@ -190,3 +190,44 @@ export class WsTransport {
 
 // Singleton — one transport per browser tab
 export const wsTransport = new WsTransport()
+
+/**
+ * WebSocketTransport — transport wrapper implementing the interface required by client-db / phase-3
+ */
+export class WebSocketTransport {
+  private socket: WebSocket | null = null
+
+  connect(onMessage?: (data: unknown) => void) {
+    const wsUrl =
+      (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_WS_URL) ||
+      (typeof location !== 'undefined'
+        ? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
+        : 'ws://localhost:8080/ws')
+    this.socket = new WebSocket(wsUrl)
+    if (onMessage) {
+      this.socket.onmessage = (event) => {
+        try {
+          onMessage(JSON.parse(event.data))
+        } catch {
+          onMessage(event.data)
+        }
+      }
+    }
+  }
+
+  send(payload: unknown): Promise<GatewayAck> {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+      this.socket.send(typeof payload === 'string' ? payload : JSON.stringify(payload))
+    }
+    return Promise.resolve({
+      client_msg_id: (payload as any)?.client_msg_id || '',
+      message_id: (payload as any)?.message_id || '',
+      sequence_num: 0,
+    })
+  }
+
+  disconnect() {
+    this.socket?.close()
+    this.socket = null
+  }
+}
