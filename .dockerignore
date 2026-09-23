@@ -2,6 +2,7 @@
 .gitignore
 **/node_modules
 **/dist
+!packages/client-web/dist
 **/target
 **/*.log
 **/*.pem
