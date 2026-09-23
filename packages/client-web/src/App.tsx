@@ -1,6 +1,7 @@
 import React, { Suspense } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from '@/lib/auth-context'
+import { DatabaseProvider } from '@/lib/database-context'
 
 const RegisterPage = React.lazy(() => import('@/pages/RegisterPage'))
 const LoginPage = React.lazy(() => import('@/pages/LoginPage'))
@@ -14,14 +15,15 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   return (
-    <Suspense
-      fallback={
-        <div className="flex h-screen w-screen items-center justify-center bg-background text-muted-foreground text-sm">
-          Loading GenChat...
-        </div>
-      }
-    >
-      <Routes>
+    <DatabaseProvider>
+      <Suspense
+        fallback={
+          <div className="flex h-screen w-screen items-center justify-center bg-background text-muted-foreground text-sm">
+            Loading GenChat...
+          </div>
+        }
+      >
+        <Routes>
         <Route path="/auth/register" element={<RegisterPage />} />
         <Route path="/auth/login" element={<LoginPage />} />
         <Route
@@ -35,5 +37,6 @@ export default function App() {
         <Route path="*" element={<Navigate to="/auth/register" replace />} />
       </Routes>
     </Suspense>
+    </DatabaseProvider>
   )
 }

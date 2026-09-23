@@ -23,6 +23,7 @@ import { GroupWebRtcManager } from '@/lib/group-webrtc-manager'
 import { ActiveCallBanner } from '@/components/ActiveCallBanner'
 import { UserAvatar } from '@/components/UserAvatar'
 import { AuthService } from '@/lib/grpc-client'
+import { useDatabase } from '@/lib/database-context'
 
 // Dynamically lazy-loaded modal dialogs to eliminate chunk bloat on initial page load
 const CallModal = React.lazy(() => import('@/components/CallModal').then(m => ({ default: m.CallModal })))
@@ -130,6 +131,7 @@ function formatTtlLabel(sec: number): string {
 
 export default function ChatPage() {
   const { user, accessToken, logout, updateUser } = useAuth()
+  const { persistInboundMessage, persistOutboundMessage, getLocalMessages } = useDatabase()
   
   const [conversations, setConversations] = useState<ConversationItem[]>([])
   const [activeChannelId, setActiveChannelId] = useState<string>('')
@@ -331,9 +333,28 @@ export default function ChatPage() {
         setReplyingTo(null)
         setEditingMessage(null)
         const cachedMsgs = await LocalEncryptedCache.loadMessages(activeChannelId)
-        if (cachedMsgs && cachedMsgs.length > 0) {
+        const dbMsgs = await getLocalMessages(activeChannelId).catch(() => [])
+        const allCached = [...(cachedMsgs || [])]
+        if (dbMsgs && dbMsgs.length > 0) {
+          const existingIds = new Set(allCached.map((m) => m.id))
+          dbMsgs.forEach((m: any) => {
+            if (!existingIds.has(m.id)) {
+              allCached.push({
+                id: m.id,
+                clientMsgId: m.clientMsgId || m.id,
+                channelId: m.channelId,
+                senderId: m.senderId,
+                text: m.text,
+                status: m.status || 'delivered',
+                timestamp: m.createdAt ? new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                isEncrypted: true,
+              } as any)
+            }
+          })
+        }
+        if (allCached.length > 0) {
           const now = Date.now()
-          const valid = cachedMsgs.filter((m) => !m.expiresAt || m.expiresAt > now)
+          const valid = allCached.filter((m) => !m.expiresAt || m.expiresAt > now)
           setMessages((prev) => {
             const ids = new Set(valid.map((m) => m.id))
             const existingNotInCache = prev.filter((m) => (!m.expiresAt || m.expiresAt > now) && !ids.has(m.id))
@@ -946,6 +967,15 @@ export default function ChatPage() {
           }
         }
 
+        persistInboundMessage({
+          id: newMsg.id,
+          channelId: effectiveChannelId,
+          senderId: newMsg.senderId,
+          text: newMsg.text || '',
+          sequenceNum: typeof env.sequenceNum === 'number' ? env.sequenceNum : undefined,
+          status: (newMsg.status as any) || 'delivered',
+          createdAt: new Date(),
+        }).catch(() => {})
 
         setMessages((prev) => {
           const exists = prev.some(
@@ -1322,6 +1352,14 @@ export default function ChatPage() {
 
         setMessages((prev) => [...prev, optimisticMsg])
         localDb.saveMessage({ ...optimisticMsg, createdAt: Date.now() })
+        persistOutboundMessage({
+          id: optimisticMsg.id,
+          channelId: activeChannelId,
+          senderId: user.userId,
+          text: optimisticMsg.text || '[Attachment]',
+          clientMsgId: optimisticMsg.clientMsgId || optimisticMsg.id,
+          status: 'pending',
+        }).catch(() => {})
 
         // Clear staging & input
         setStagedFile(null)
@@ -1419,6 +1457,14 @@ export default function ChatPage() {
 
     setMessages((prev) => [...prev, optimisticMsg])
     localDb.saveMessage({ ...optimisticMsg, createdAt: Date.now() })
+    persistOutboundMessage({
+      id: optimisticMsg.id,
+      channelId: activeChannelId,
+      senderId: user.userId,
+      text: optimisticMsg.text || '',
+      clientMsgId: optimisticMsg.clientMsgId || optimisticMsg.id,
+      status: 'pending',
+    }).catch(() => {})
 
     try {
       if (gatewayRef.current) {

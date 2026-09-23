@@ -29,7 +29,7 @@ export class InboundSyncReconciler {
   private queue: InboundEncryptedPayload[] = [];
   private isProcessing = false;
   private batchIntervalMs: number;
-  private batchTimer: NodeJS.Timeout | null = null;
+  private batchTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(db: LocalDatabase, crypto: CryptoDecryptor, batchIntervalMs: number = 25) {
     this.db = db;

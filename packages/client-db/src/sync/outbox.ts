@@ -116,3 +116,5 @@ export class OptimisticOutbox {
     }
   }
 }
+
+export { OptimisticOutbox as OutboxManager };
