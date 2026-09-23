@@ -317,6 +317,11 @@ func main() {
 			return
 		}
 
+		if r.URL.Query().Get("redirect") == "true" || strings.Contains(r.Header.Get("Accept"), "image/") {
+			http.Redirect(w, r, res.URL, http.StatusTemporaryRedirect)
+			return
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"object_key":   res.ObjectKey,
@@ -324,6 +329,28 @@ func main() {
 			"download_url": res.URL,
 			"expires_at":   res.ExpiresAt,
 		})
+	}))
+
+	http.HandleFunc("/media/view", cors(func(w http.ResponseWriter, r *http.Request) {
+		objectKey := r.URL.Query().Get("object_key")
+		if objectKey == "" {
+			objectKey = r.URL.Query().Get("key")
+		}
+		if objectKey == "" {
+			objectKey = r.URL.Query().Get("blob_id")
+		}
+		if objectKey == "" {
+			writeErrorJSON(w, r, "missing object_key parameter", http.StatusBadRequest, nil)
+			return
+		}
+
+		res, err := store.GenerateDownloadURL(r.Context(), objectKey)
+		if err != nil {
+			writeErrorJSON(w, r, "failed to generate download authorization", http.StatusBadRequest, err)
+			return
+		}
+
+		http.Redirect(w, r, res.URL, http.StatusTemporaryRedirect)
 	}))
 
 	port := os.Getenv("PORT")

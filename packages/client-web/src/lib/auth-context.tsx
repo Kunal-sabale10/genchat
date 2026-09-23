@@ -78,21 +78,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [logout])
 
-  // Refresh profile if displayName, avatarUrl, or identityKey is not populated yet
+  // Always sync latest profile (displayName, avatarUrl, identityKey) from server on auth/mount
   useEffect(() => {
-    if (!accessToken || !user) return
-    if (!user.displayName && !user.avatarUrl || !user.identityKey) {
-      AuthService.getProfile(accessToken)
-        .then(profile => {
-          if (profile) {
-            updateUser({ displayName: profile.displayName, avatarUrl: profile.avatarUrl, identityKey: profile.identityKey })
-          }
-        })
-        .catch(() => {
-          // ignore silent network fallback
-        })
-    }
-  }, [accessToken, user, updateUser])
+    if (!accessToken) return
+    AuthService.getProfile(accessToken)
+      .then((profile) => {
+        if (profile) {
+          updateUser({
+            displayName: profile.displayName || user?.displayName,
+            avatarUrl: profile.avatarUrl !== undefined ? profile.avatarUrl : user?.avatarUrl,
+            identityKey: profile.identityKey || user?.identityKey,
+          })
+        }
+      })
+      .catch(() => {
+        // silent network fallback
+      })
+  }, [accessToken])
 
   return (
     <AuthContext.Provider value={{ user, accessToken, isLoading, login, logout, refreshAccessToken, updateUser }}>

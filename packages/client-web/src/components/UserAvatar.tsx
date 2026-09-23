@@ -63,11 +63,54 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
   onClick,
 }) => {
   const [imgError, setImgError] = useState(false)
+  const [resolvedUrl, setResolvedUrl] = useState<string | undefined>(undefined)
 
-  // Reset img error if avatar URL changes
+  // Compute effective URL (handles raw object keys, /media/view wrappers)
+  const effectiveUrl = useMemo(() => {
+    if (!avatarUrl || !avatarUrl.trim()) return undefined
+    const trimmed = avatarUrl.trim()
+    if (trimmed.startsWith('attachments/')) {
+      return `/media/view?object_key=${encodeURIComponent(trimmed)}`
+    }
+    return trimmed
+  }, [avatarUrl])
+
   useEffect(() => {
     setImgError(false)
-  }, [avatarUrl])
+    setResolvedUrl(effectiveUrl)
+  }, [effectiveUrl])
+
+  const handleImgError = async () => {
+    if (!effectiveUrl) {
+      setImgError(true)
+      return
+    }
+
+    // Try extracting object_key if it was an expired MinIO URL or media URL
+    let objectKey: string | null = null
+    try {
+      if (effectiveUrl.includes('object_key=')) {
+        const u = new URL(effectiveUrl, window.location.origin)
+        objectKey = u.searchParams.get('object_key')
+      } else if (effectiveUrl.includes('/genchat-media/attachments/')) {
+        const parts = effectiveUrl.split('/genchat-media/')
+        if (parts[1]) {
+          objectKey = parts[1].split('?')[0]
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    if (objectKey && !resolvedUrl?.includes('/media/view?')) {
+      // Switch to permanent redirect endpoint
+      setResolvedUrl(`/media/view?object_key=${encodeURIComponent(objectKey)}`)
+      setImgError(false)
+      return
+    }
+
+    setImgError(true)
+  }
 
   const initials = useMemo(() => getInitials(name), [name])
   const gradient = useMemo(() => {
@@ -80,6 +123,8 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
 
   const isClickable = Boolean(onClick)
 
+  const currentSrc = resolvedUrl || effectiveUrl
+
   return (
     <div
       onClick={onClick}
@@ -87,11 +132,11 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
         isClickable ? 'cursor-pointer hover:opacity-90 transition-opacity' : ''
       } ${className}`}
     >
-      {avatarUrl && !imgError ? (
+      {currentSrc && !imgError ? (
         <img
-          src={avatarUrl}
+          src={currentSrc}
           alt={name || 'Avatar'}
-          onError={() => setImgError(true)}
+          onError={handleImgError}
           className="w-full h-full object-cover rounded-full shadow-sm"
         />
       ) : (

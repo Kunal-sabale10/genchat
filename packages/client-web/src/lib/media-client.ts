@@ -157,11 +157,9 @@ export class MediaClient {
       throw new Error(`MinIO avatar upload failed (${uploadRes.status}): ${uploadRes.statusText}`);
     }
 
-    let downloadUrl = presigned.download_url;
-    if (!downloadUrl && blobId) {
-      downloadUrl = await this.getDownloadUrl(blobId);
+    if (blobId) {
+      return `/media/view?object_key=${encodeURIComponent(blobId)}`;
     }
-
-    return downloadUrl || presigned.upload_url.split('?')[0];
+    return presigned.download_url || presigned.upload_url.split('?')[0];
   }
 }
