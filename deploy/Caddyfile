@@ -1,4 +1,4 @@
-﻿# GenChat Production Caddyfile
+# GenChat Production Caddyfile
 # Automatic HTTPS via Let's Encrypt / ZeroSSL with modern TLS 1.3 & HTTP/2
 
 {
@@ -36,6 +36,46 @@
         }
     }
     handle /auth/* {
+        reverse_proxy auth:8080 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+    handle /api/* {
+        reverse_proxy auth:8080 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+    handle /sessions* {
+        reverse_proxy auth:8080 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+    handle /features* {
+        reverse_proxy auth:8080 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+    handle /users/* {
+        reverse_proxy auth:8080 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+    handle /dev-token* {
         reverse_proxy auth:8080 {
             header_up Host {host}
             header_up X-Real-IP {remote_host}
