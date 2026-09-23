@@ -19,7 +19,9 @@
       "@genchat/client-crypto": ["../client-crypto/src/index.ts"],
       "@genchat/client-crypto/*": ["../client-crypto/src/*"],
       "@genchat/client-db": ["../client-db/src/index.ts"],
-      "@genchat/client-db/*": ["../client-db/src/*"]
+      "@genchat/client-db/*": ["../client-db/src/*"],
+      "@nozbe/watermelondb": ["../client-db/node_modules/@nozbe/watermelondb"],
+      "@nozbe/watermelondb/*": ["../client-db/node_modules/@nozbe/watermelondb/*"]
     }
   },
   "include": ["src"]

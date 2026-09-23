@@ -81,3 +81,6 @@ export class LocalDatabase {
     await Promise.all(operations);
   }
 }
+
+export const database = new LocalDatabase();
+export default database;

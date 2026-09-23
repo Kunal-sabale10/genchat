@@ -9,6 +9,7 @@ export default defineConfig({
       '@': path.resolve(import.meta.dirname, './src'),
       '@genchat/client-crypto': path.resolve(import.meta.dirname, '../client-crypto/src'),
       '@genchat/client-db': path.resolve(import.meta.dirname, '../client-db/src'),
+      '@nozbe/watermelondb': path.resolve(import.meta.dirname, '../client-db/node_modules/@nozbe/watermelondb'),
     },
   },
   server: {
