@@ -14,7 +14,11 @@
     "noEmit": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@genchat/client-crypto": ["../client-crypto/src/index.ts"],
+      "@genchat/client-crypto/*": ["../client-crypto/src/*"],
+      "@genchat/client-db": ["../client-db/src/index.ts"],
+      "@genchat/client-db/*": ["../client-db/src/*"]
     }
   },
   "include": ["src"]

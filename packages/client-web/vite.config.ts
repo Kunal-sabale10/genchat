@@ -7,6 +7,8 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(import.meta.dirname, './src'),
+      '@genchat/client-crypto': path.resolve(import.meta.dirname, '../client-crypto/src'),
+      '@genchat/client-db': path.resolve(import.meta.dirname, '../client-db/src'),
     },
   },
   server: {

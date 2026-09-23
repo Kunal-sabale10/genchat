@@ -1,5 +1,7 @@
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react'
 import { AuthService } from './grpc-client'
+import type { GenChatCrypto, SecureKeyStorage } from '@genchat/client-crypto'
+import { getCryptoCore, getKeyStorage } from './crypto-core'
 
 export interface AuthUser {
   userId: string
@@ -13,6 +15,8 @@ export interface AuthContextValue {
   user: AuthUser | null
   accessToken: string | null
   isLoading: boolean
+  crypto: GenChatCrypto | null
+  storage: SecureKeyStorage
   login: (accessToken: string, refreshToken: string, userId: string, deviceId: string, displayName?: string, avatarUrl?: string, identityKey?: string) => void
   logout: () => void
   refreshAccessToken: () => Promise<void>
@@ -30,6 +34,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => sessionStorage.getItem('genchat_access_token')
   )
   const [isLoading, setIsLoading] = useState(false)
+  const [cryptoCore, setCryptoCore] = useState<GenChatCrypto | null>(null)
+  const keyStorage = getKeyStorage()
+
+  // Initialize WASM crypto core on mount
+  useEffect(() => {
+    getCryptoCore()
+      .then((c) => setCryptoCore(c))
+      .catch((err) => console.warn('[AuthContext] WASM crypto initialization pending:', err))
+  }, [])
 
   // WebSocket is now managed by ChatPage's GatewayClient — no dual connection
 
@@ -57,7 +70,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sessionStorage.removeItem('genchat_user')
     sessionStorage.removeItem('genchat_access_token')
     sessionStorage.removeItem('genchat_refresh_token')
-  }, [])
+    keyStorage.wipeAllKeys().catch(() => {})
+  }, [keyStorage])
 
   const refreshAccessToken = useCallback(async () => {
     const refreshToken = sessionStorage.getItem('genchat_refresh_token')
@@ -97,7 +111,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [accessToken])
 
   return (
-    <AuthContext.Provider value={{ user, accessToken, isLoading, login, logout, refreshAccessToken, updateUser }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        accessToken,
+        isLoading,
+        crypto: cryptoCore,
+        storage: keyStorage,
+        login,
+        logout,
+        refreshAccessToken,
+        updateUser,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   )

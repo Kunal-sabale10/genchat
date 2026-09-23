@@ -5,6 +5,53 @@ const MASTER_KEY_TAG = "genchat_master_storage_key";
 const IDENTITY_STORE = "identity_keys";
 const SESSIONS_STORE = "ratchet_sessions";
 
+function bytesToBase64(bytes: Uint8Array): string {
+  const gBuffer = (globalThis as any).Buffer;
+  if (typeof gBuffer !== "undefined") {
+    return gBuffer.from(bytes).toString("base64");
+  }
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const gBuffer = (globalThis as any).Buffer;
+  if (typeof gBuffer !== "undefined") {
+    return new Uint8Array(gBuffer.from(b64, "base64"));
+  }
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  const gBuffer = (globalThis as any).Buffer;
+  if (typeof gBuffer !== "undefined") {
+    return gBuffer.from(bytes).toString("hex");
+  }
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const gBuffer = (globalThis as any).Buffer;
+  if (typeof gBuffer !== "undefined") {
+    return new Uint8Array(gBuffer.from(hex, "hex"));
+  }
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+  }
+  return bytes;
+}
+
 export class SecureKeyStorage {
   private masterKey: CryptoKey | null = null;
   private inMemoryFallback: Map<string, any> = new Map();
@@ -15,9 +62,12 @@ export class SecureKeyStorage {
     }
     // Node.js support
     try {
-      const { webcrypto } = require("crypto");
-      if (webcrypto && webcrypto.subtle) {
-        return webcrypto.subtle;
+      const gRequire = (globalThis as any).require;
+      if (typeof gRequire === "function") {
+        const { webcrypto } = gRequire("crypto");
+        if (webcrypto && webcrypto.subtle) {
+          return webcrypto.subtle;
+        }
       }
     } catch {
       // ignore
@@ -59,16 +109,19 @@ export class SecureKeyStorage {
     if (typeof window !== "undefined" && window.crypto) {
       window.crypto.getRandomValues(iv);
     } else {
-      const { randomBytes } = require("crypto");
-      iv.set(randomBytes(12));
+      const gRequire = (globalThis as any).require;
+      if (typeof gRequire === "function") {
+        const { randomBytes } = gRequire("crypto");
+        iv.set(randomBytes(12));
+      }
     }
 
     const encoded = new TextEncoder().encode(data);
-    const ctBuffer = await subtle.encrypt({ name: "AES-GCM", iv }, key, encoded);
+    const ctBuffer = await subtle.encrypt({ name: "AES-GCM", iv }, key, encoded as unknown as BufferSource);
 
     return {
-      ciphertext: Buffer.from(ctBuffer).toString("base64"),
-      iv: Buffer.from(iv).toString("hex"),
+      ciphertext: bytesToBase64(new Uint8Array(ctBuffer)),
+      iv: bytesToHex(iv),
     };
   }
 
@@ -79,10 +132,10 @@ export class SecureKeyStorage {
     const subtle = this.getSubtleCrypto();
     const key = await this.getMasterKey();
 
-    const iv = Buffer.from(encrypted.iv, "hex");
-    const ct = Buffer.from(encrypted.ciphertext, "base64");
+    const iv = hexToBytes(encrypted.iv);
+    const ct = base64ToBytes(encrypted.ciphertext);
 
-    const ptBuffer = await subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+    const ptBuffer = await subtle.decrypt({ name: "AES-GCM", iv: iv as unknown as BufferSource }, key, ct as unknown as BufferSource);
     return new TextDecoder().decode(ptBuffer);
   }
 

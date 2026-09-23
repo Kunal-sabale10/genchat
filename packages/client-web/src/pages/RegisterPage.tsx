@@ -36,19 +36,12 @@ export default function RegisterPage() {
       const createOpts = publicKeyOptions.publicKey ? { publicKey: publicKeyOptions.publicKey } : { publicKey: publicKeyOptions }
       const credential = await webauthnCreate(createOpts)
 
-      // Step 3: Key Generation Ceremony (ML-KEM-768 + X25519 + Ed25519)
+      // Step 3: Post-Quantum Key Generation Ceremony (ML-KEM-768 + X25519 + Ed25519)
       setStep('keygen')
-
-      // In production, this would use the initialized GenChatCrypto Wasm instance.
-      // For now, we create a placeholder that will be wired up when Wasm is loaded.
-      const identityKeyBytes = new Uint8Array(32)
-      try {
-        const { performKeyCeremony: ceremony } = await import('@/lib/key-ceremony')
-        throw new Error('Wasm not yet wired')
-      } catch {
-        globalThis.crypto.getRandomValues(identityKeyBytes)
-        console.warn('[KeyCeremony] Wasm not available, using random identity key for dev')
-      }
+      const { getCryptoCore } = await import('@/lib/crypto-core')
+      const { performKeyCeremony } = await import('@/lib/key-ceremony')
+      const cryptoCore = await getCryptoCore()
+      const { identityKeyBytes, publicBundle } = await performKeyCeremony(cryptoCore)
       const identityKeyHex = Array.from(identityKeyBytes).map(b => b.toString(16).padStart(2, '0')).join('')
 
       // Step 4: Finish registration with authd
@@ -59,9 +52,33 @@ export default function RegisterPage() {
         deviceLabel: `${navigator.userAgent.split(' ')[0]} Browser`,
       })
 
-      // Step 5: Store auth tokens and navigate
+      // Step 5: Upload initial PreKey bundle to KeyService for incoming E2EE sessions
+      try {
+        const { KeyService } = await import('@/lib/grpc-client')
+        await KeyService.uploadPreKeyBundle({
+          deviceId: finishRes.deviceId,
+          signedPreKey: {
+            keyId: publicBundle.signed_pre_key_id,
+            publicKey: publicBundle.signed_pre_key_public_hex,
+            signature: publicBundle.signed_pre_key_signature_hex,
+          },
+          pqPreKey: {
+            keyId: publicBundle.pq_pre_key_id,
+            publicKey: publicBundle.pq_pre_key_public_hex,
+            signature: publicBundle.pq_pre_key_signature_hex,
+          },
+          oneTimePreKeys: publicBundle.one_time_pre_keys.map((otk) => ({
+            keyId: otk.key_id,
+            publicKey: otk.public_key_hex,
+          })),
+        }, finishRes.accessToken)
+      } catch (keyUploadErr) {
+        console.warn('[RegisterPage] Prekey bundle initial upload warning:', keyUploadErr)
+      }
+
+      // Step 6: Store auth tokens and navigate
       setStep('done')
-      login(finishRes.accessToken, finishRes.refreshToken, finishRes.userId, finishRes.deviceId)
+      login(finishRes.accessToken, finishRes.refreshToken, finishRes.userId, finishRes.deviceId, displayName.trim(), undefined, identityKeyHex)
       navigate('/chat')
     } catch (err) {
       setStep('error')
