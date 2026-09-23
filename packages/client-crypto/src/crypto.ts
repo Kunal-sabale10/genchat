@@ -118,3 +118,11 @@ export class GenChatCrypto {
   }
 }
 
+export async function initWasm(moduleOrPath?: any): Promise<void> {
+  if (typeof window !== "undefined" && (window as any).__genchat_wasm_init) {
+    await (window as any).__genchat_wasm_init(moduleOrPath);
+  }
+}
+
+export default initWasm;
+
