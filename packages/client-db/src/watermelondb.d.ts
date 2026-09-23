@@ -8,10 +8,13 @@ declare module '@nozbe/watermelondb' {
     batch(...operations: any[]): Promise<any>;
   }
   export class Model {
+    constructor(collection?: any, raw?: any);
     id: string;
     _raw: any;
     table: string;
     database: any;
+    collection: any;
+    static _prepareCreate: any;
     update(recordUpdater: (record: any) => void): Promise<any>;
   }
 }
