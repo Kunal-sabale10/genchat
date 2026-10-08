@@ -40,6 +40,13 @@ interface ActiveSession {
   pendingInitMessage?: WasmPqxdhInitMessage
 }
 
+interface PersistedSessionData {
+  sharedSecretHex: string
+  peerIdentityKeyHex: string
+  canonicalContextId: string
+  pendingInitMessage?: WasmPqxdhInitMessage
+}
+
 export interface DecryptResult {
   text: string
   isEncrypted: boolean
@@ -89,6 +96,86 @@ export class E2eeService {
   }
 
   /**
+   * Derives a canonical conversation context ID.
+   * For 1:1 direct messages, user IDs are sorted to ensure both peers derive the exact same symmetric key.
+   */
+  public static getCanonicalContextId(conversationId: string, currentUserId: string): string {
+    if (conversationId.startsWith('chan_')) {
+      return conversationId
+    }
+    const peerId = this.extractPeerId(conversationId, currentUserId)
+    if (peerId && currentUserId && peerId !== currentUserId) {
+      return [currentUserId, peerId].sort().join(':')
+    }
+    return conversationId
+  }
+
+  private static getSessionStorageKey(currentUserId: string, peerUserId: string): string {
+    return `genchat_pq_session_${currentUserId}_${peerUserId}`
+  }
+
+  private static async getOrRestoreSession(
+    peerUserId: string,
+    currentUserId: string,
+    conversationId: string
+  ): Promise<ActiveSession | null> {
+    // 1. Check in-memory session cache
+    let session = this.sessionCache.get(peerUserId)
+    if (session) return session
+
+    // 2. Check localStorage for persisted session
+    try {
+      const storageKey = this.getSessionStorageKey(currentUserId, peerUserId)
+      const raw = localStorage.getItem(storageKey)
+      if (raw) {
+        const data: PersistedSessionData = JSON.parse(raw)
+        const contextId = data.canonicalContextId || this.getCanonicalContextId(conversationId, currentUserId)
+        const key = await this.deriveKeyFromSecret(data.sharedSecretHex, contextId)
+        session = {
+          key,
+          sharedSecretHex: data.sharedSecretHex,
+          peerIdentityKeyHex: data.peerIdentityKeyHex,
+          pendingInitMessage: data.pendingInitMessage,
+        }
+        this.sessionCache.set(peerUserId, session)
+        if (data.peerIdentityKeyHex) {
+          this.peerIdentityKeys.set(peerUserId, data.peerIdentityKeyHex)
+        }
+        return session
+      }
+    } catch (err) {
+      console.warn('[E2eeService] Failed to restore persisted session:', err)
+    }
+
+    return null
+  }
+
+  private static saveSession(
+    peerUserId: string,
+    currentUserId: string,
+    conversationId: string,
+    session: ActiveSession
+  ): void {
+    this.sessionCache.set(peerUserId, session)
+    if (session.peerIdentityKeyHex) {
+      this.peerIdentityKeys.set(peerUserId, session.peerIdentityKeyHex)
+    }
+    try {
+      const storageKey = this.getSessionStorageKey(currentUserId, peerUserId)
+      const canonicalContextId = this.getCanonicalContextId(conversationId, currentUserId)
+      const data: PersistedSessionData = {
+        sharedSecretHex: session.sharedSecretHex,
+        peerIdentityKeyHex: session.peerIdentityKeyHex,
+        canonicalContextId,
+        pendingInitMessage: session.pendingInitMessage,
+      }
+      localStorage.setItem(storageKey, JSON.stringify(data))
+    } catch (err) {
+      console.warn('[E2eeService] Failed to persist session:', err)
+    }
+  }
+
+  /**
    * Attempts to establish a genuine PQXDH session with peer with automatic retry on failure.
    * Queues concurrent handshake requests to the same peer.
    */
@@ -115,14 +202,15 @@ export class E2eeService {
           const peerBundle = await this.fetchPreKeyBundle(peerUserId, this.authToken)
           if (peerBundle) {
             const initRes = await WasmCrypto.initiatePqxdhHandshake(this.identityBundle!, peerBundle)
-            const key = await this.deriveKeyFromSecret(initRes.shared_secret_hex, conversationId)
+            const contextId = this.getCanonicalContextId(conversationId, this.currentUserId)
+            const key = await this.deriveKeyFromSecret(initRes.shared_secret_hex, contextId)
             const session: ActiveSession = {
               key,
               sharedSecretHex: initRes.shared_secret_hex,
               peerIdentityKeyHex: peerBundle.identity_key_hex,
               pendingInitMessage: initRes.init_message,
             }
-            this.sessionCache.set(peerUserId, session)
+            this.saveSession(peerUserId, this.currentUserId, conversationId, session)
             return { session, initMessage: initRes.init_message }
           } else {
             lastErr = new Error(`PreKeyBundle not available for user ${peerUserId}`)
@@ -371,7 +459,7 @@ export class E2eeService {
     }
 
     const peerUserId = this.extractPeerId(conversationId, currentUserId)
-    let session = this.sessionCache.get(peerUserId)
+    let session = await this.getOrRestoreSession(peerUserId, currentUserId, conversationId)
     let initMsg: WasmPqxdhInitMessage | undefined = session?.pendingInitMessage
 
     // Establish PQXDH session if not yet negotiated with peer, queuing and retrying if necessary
@@ -471,19 +559,20 @@ export class E2eeService {
 
       const isFallbackEnvelope = envelope.protocol === 'genchat-fallback-v1' || envelope.insecureFallback === true
       const senderId = envelope.senderId || this.extractPeerId(conversationId, currentUserId)
-      let session = this.sessionCache.get(senderId)
+      let session = await this.getOrRestoreSession(senderId, currentUserId, envelope.conversationId || conversationId)
 
-      // If message contains PQXDH InitMessage and we don't have session yet, establish it
+      // If message contains PQXDH InitMessage and we don't have session yet (or incoming handshake), establish it
       if (envelope.initMessage && this.identityBundle) {
         try {
           const secretHex = await WasmCrypto.receivePqxdhHandshake(this.identityBundle, envelope.initMessage)
-          const key = await this.deriveKeyFromSecret(secretHex, envelope.conversationId || conversationId)
+          const contextId = this.getCanonicalContextId(envelope.conversationId || conversationId, currentUserId)
+          const key = await this.deriveKeyFromSecret(secretHex, contextId)
           session = {
             key,
             sharedSecretHex: secretHex,
             peerIdentityKeyHex: envelope.initMessage.sender_identity_key_hex,
           }
-          this.sessionCache.set(senderId, session)
+          this.saveSession(senderId, currentUserId, envelope.conversationId || conversationId, session)
           if (envelope.initMessage.sender_identity_key_hex) {
             this.peerIdentityKeys.set(senderId, envelope.initMessage.sender_identity_key_hex)
           }

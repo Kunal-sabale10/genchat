@@ -41,7 +41,7 @@ export default function RegisterPage() {
       const { getCryptoCore } = await import('@/lib/crypto-core')
       const { performKeyCeremony } = await import('@/lib/key-ceremony')
       const cryptoCore = await getCryptoCore()
-      const { identityKeyBytes, publicBundle } = await performKeyCeremony(cryptoCore)
+      const { identityKeyBytes, publicBundle, identityBundle } = await performKeyCeremony(cryptoCore)
       const identityKeyHex = Array.from(identityKeyBytes).map(b => b.toString(16).padStart(2, '0')).join('')
 
       // Step 4: Finish registration with authd
@@ -51,6 +51,13 @@ export default function RegisterPage() {
         identityKey: identityKeyHex,
         deviceLabel: `${navigator.userAgent.split(' ')[0]} Browser`,
       })
+
+      // Store identity bundle in localStorage so E2eeService uses the exact registered identity
+      try {
+        localStorage.setItem(`genchat_pqxdh_identity_${finishRes.userId}`, JSON.stringify(identityBundle))
+      } catch (err) {
+        console.warn('[RegisterPage] Failed to save identity bundle to localStorage:', err)
+      }
 
       // Step 5: Upload initial PreKey bundle to KeyService for incoming E2EE sessions
       try {

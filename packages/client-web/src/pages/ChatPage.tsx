@@ -355,10 +355,21 @@ export default function ChatPage() {
         if (allCached.length > 0) {
           const now = Date.now()
           const valid = allCached.filter((m) => !m.expiresAt || m.expiresAt > now)
+          const decryptedList = await Promise.all(
+            valid.map(async (m: any) => {
+              if (m.text && typeof m.text === 'string' && m.text.startsWith('{"protocol":"genchat-')) {
+                const dec = await E2eeService.decrypt(m.text, activeChannelId, user?.userId || '')
+                if (dec.isEncrypted && dec.text) {
+                  return { ...m, text: dec.text, isEncrypted: true }
+                }
+              }
+              return m
+            })
+          )
           setMessages((prev) => {
-            const ids = new Set(valid.map((m) => m.id))
+            const ids = new Set(decryptedList.map((m) => m.id))
             const existingNotInCache = prev.filter((m) => (!m.expiresAt || m.expiresAt > now) && !ids.has(m.id))
-            return [...valid, ...existingNotInCache].map((m: any) => ({
+            return [...decryptedList, ...existingNotInCache].map((m: any) => ({
               ...m,
               isEncrypted: true,
             }))
@@ -878,6 +889,12 @@ export default function ChatPage() {
           if (displayText && displayText.startsWith('{')) {
             try {
               const parsed = JSON.parse(displayText)
+              if (parsed.protocol && (parsed.protocol === 'genchat-pq-v1' || parsed.protocol === 'genchat-fallback-v1')) {
+                // If it is still an undecrypted protocol envelope, mask the raw JSON string
+                if (!isEncrypted) {
+                  displayText = '🔒 [Encrypted Message — Session synchronization pending]'
+                }
+              }
               if (parsed.replyTo) {
                 replyTo = parsed.replyTo
               }

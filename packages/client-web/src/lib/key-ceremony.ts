@@ -14,6 +14,8 @@ export interface KeyCeremonyResult {
   identityKeyBytes: Uint8Array
   /** Full public PreKey bundle (to be uploaded via UploadPreKeys RPC) */
   publicBundle: PublicPreKeyBundle
+  /** Full secret IdentityKeyBundle for local E2EE ratchet sessions */
+  identityBundle: IdentityKeyBundle
 }
 
 /**
@@ -35,7 +37,7 @@ export async function performKeyCeremony(
   // 3. Extract the 32-byte Ed25519 public identity key for the server
   const identityKeyBytes = hexToBytes(identityBundle.identity_key_ed25519_pub_hex)
 
-  return { identityKeyBytes, publicBundle }
+  return { identityKeyBytes, publicBundle, identityBundle }
 }
 
 /** Convert a hex string to Uint8Array */
