@@ -864,6 +864,13 @@ export default function ChatPage() {
                 [effectiveChannelId]:
                   'Warning: Insecure fallback encryption was used on recent message(s). Conversation is not protected by Post-Quantum keys.',
               }))
+            } else {
+              setConversationWarnings((prev) => {
+                if (!prev[effectiveChannelId]) return prev
+                const next = { ...prev }
+                delete next[effectiveChannelId]
+                return next
+              })
             }
           }
 
@@ -1437,6 +1444,21 @@ export default function ChatPage() {
     const isWireFallback =
       wireCiphertext.includes('"protocol":"genchat-fallback-v1"') ||
       wireCiphertext.includes('"insecureFallback":true')
+
+    if (isWireFallback) {
+      setConversationWarnings((prev) => ({
+        ...prev,
+        [activeChannelId]:
+          'Warning: Insecure fallback encryption was used on recent message(s). Conversation is not protected by Post-Quantum keys.',
+      }))
+    } else {
+      setConversationWarnings((prev) => {
+        if (!prev[activeChannelId]) return prev
+        const next = { ...prev }
+        delete next[activeChannelId]
+        return next
+      })
+    }
 
     const optimisticMsg: MessageItem = {
       id: clientMsgId,
@@ -2634,12 +2656,28 @@ export default function ChatPage() {
           {/* Conversation Encryption / Fallback Warning Banner */}
           {conversationWarnings[activeChannelId] && (
             <div className="flex justify-center mb-3">
-              <div className="flex items-center space-x-2.5 rounded-xl bg-amber-500/15 border border-amber-500/40 px-4 py-2 text-xs text-amber-300 shadow-md max-w-xl">
-                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400 animate-pulse" />
-                <div>
-                  <span className="font-semibold">Security Notice:</span>{' '}
-                  <span>{conversationWarnings[activeChannelId]}</span>
+              <div className="flex items-center justify-between space-x-2.5 rounded-xl bg-amber-500/15 border border-amber-500/40 px-4 py-2 text-xs text-amber-300 shadow-md max-w-xl w-full">
+                <div className="flex items-center space-x-2.5">
+                  <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400 animate-pulse" />
+                  <div>
+                    <span className="font-semibold">Security Notice:</span>{' '}
+                    <span>{conversationWarnings[activeChannelId]}</span>
+                  </div>
                 </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setConversationWarnings((prev) => {
+                      const next = { ...prev }
+                      delete next[activeChannelId]
+                      return next
+                    })
+                  }
+                  className="p-1 rounded-md text-amber-400/80 hover:text-amber-200 hover:bg-amber-500/20 transition shrink-0 ml-2"
+                  title="Dismiss notice"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
               </div>
             </div>
           )}

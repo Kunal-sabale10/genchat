@@ -54,22 +54,27 @@ export default function RegisterPage() {
 
       // Step 5: Upload initial PreKey bundle to KeyService for incoming E2EE sessions
       try {
+        const hexToBase64 = (hex: string): string => {
+          if (!hex) return ''
+          const bytes = new Uint8Array(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || [])
+          return btoa(String.fromCharCode(...bytes))
+        }
         const { KeyService } = await import('@/lib/grpc-client')
         await KeyService.uploadPreKeyBundle({
           deviceId: finishRes.deviceId,
           signedPreKey: {
             keyId: publicBundle.signed_pre_key_id,
-            publicKey: publicBundle.signed_pre_key_public_hex,
-            signature: publicBundle.signed_pre_key_signature_hex,
+            publicKey: hexToBase64(publicBundle.signed_pre_key_public_hex),
+            signature: hexToBase64(publicBundle.signed_pre_key_signature_hex),
           },
           pqPreKey: {
             keyId: publicBundle.pq_pre_key_id,
-            publicKey: publicBundle.pq_pre_key_public_hex,
-            signature: publicBundle.pq_pre_key_signature_hex,
+            publicKey: hexToBase64(publicBundle.pq_pre_key_public_hex),
+            signature: hexToBase64(publicBundle.pq_pre_key_signature_hex),
           },
           oneTimePreKeys: publicBundle.one_time_pre_keys.map((otk) => ({
             keyId: otk.key_id,
-            publicKey: otk.public_key_hex,
+            publicKey: hexToBase64(otk.public_key_hex),
           })),
         }, finishRes.accessToken)
       } catch (keyUploadErr) {

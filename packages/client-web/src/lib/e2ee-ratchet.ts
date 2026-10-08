@@ -335,11 +335,15 @@ export class E2eeService {
   }
 
   public static extractPeerId(conversationId: string, currentUserId: string): string {
-    if (conversationId.includes(':')) {
-      const parts = conversationId.split(':')
-      return parts.find((p) => p !== currentUserId) || parts[0]
+    let cleanId = conversationId
+    if (cleanId.startsWith('dm:')) {
+      cleanId = cleanId.slice(3)
     }
-    return conversationId
+    if (cleanId.includes(':')) {
+      const parts = cleanId.split(':').filter((p) => p && p !== 'dm')
+      return parts.find((p) => p !== currentUserId) || parts[0] || cleanId
+    }
+    return cleanId
   }
 
   public static getPublicIdentityKey(): string {
