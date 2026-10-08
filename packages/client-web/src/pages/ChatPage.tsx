@@ -359,8 +359,10 @@ export default function ChatPage() {
             valid.map(async (m: any) => {
               if (m.text && typeof m.text === 'string' && m.text.startsWith('{"protocol":"genchat-')) {
                 const dec = await E2eeService.decrypt(m.text, activeChannelId, user?.userId || '')
-                if (dec.isEncrypted && dec.text) {
+                if (dec.isEncrypted && dec.text && !dec.text.startsWith('{"protocol":"genchat-')) {
                   return { ...m, text: dec.text, isEncrypted: true }
+                } else {
+                  return { ...m, text: '🔒 [Encrypted Message — Session synchronization pending]', isEncrypted: false }
                 }
               }
               return m
@@ -417,10 +419,24 @@ export default function ChatPage() {
   // --- 3. Anti-exhaustion OTK prekey replenishment & MLS KeyPackage publishing ---
   useEffect(() => {
     const token = accessToken || sessionStorage.getItem('genchat_access_token')
-    if (token && user?.deviceId && user?.userId) {
-      PreKeyManager.checkAndReplenish(token, user.deviceId)
-      MlsGroupManager.publishKeyPackage(user.userId, user.deviceId, token)
-      E2eeService.initUserKeys(user.userId, user.deviceId, token)
+    if (!token) return
+
+    let devId = user?.deviceId
+    if (!devId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(devId)) {
+      try {
+        const parts = token.split('.')
+        if (parts.length === 3) {
+          const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))
+          if (payload.device_id) devId = payload.device_id
+        }
+      } catch {}
+    }
+
+    const uId = user?.userId
+    if (token && devId && uId) {
+      PreKeyManager.checkAndReplenish(token, devId)
+      MlsGroupManager.publishKeyPackage(uId, devId, token)
+      E2eeService.initUserKeys(uId, devId, token)
     }
   }, [accessToken, user?.deviceId, user?.userId])
 
@@ -890,10 +906,8 @@ export default function ChatPage() {
             try {
               const parsed = JSON.parse(displayText)
               if (parsed.protocol && (parsed.protocol === 'genchat-pq-v1' || parsed.protocol === 'genchat-fallback-v1')) {
-                // If it is still an undecrypted protocol envelope, mask the raw JSON string
-                if (!isEncrypted) {
-                  displayText = '🔒 [Encrypted Message — Session synchronization pending]'
-                }
+                // If it is still a protocol envelope, it was not decrypted into inner plaintext
+                displayText = '🔒 [Encrypted Message — Session synchronization pending]'
               }
               if (parsed.replyTo) {
                 replyTo = parsed.replyTo
@@ -1008,11 +1022,20 @@ export default function ChatPage() {
               m.id === newMsg.id
           )
           if (exists) {
-            return prev.map((m) =>
-              (newMsg.clientMsgId && m.clientMsgId === newMsg.clientMsgId) || m.id === newMsg.id
-                ? { ...m, ...newMsg, status: m.status === 'read' ? 'read' : newMsg.status }
-                : m
-            )
+            return prev.map((m) => {
+              if ((newMsg.clientMsgId && m.clientMsgId === newMsg.clientMsgId) || m.id === newMsg.id) {
+                const isExistingClear = Boolean(m.text && !m.text.startsWith('{"protocol":"genchat-') && !m.text.startsWith('🔒'))
+                const isNewMsgMasked = Boolean(newMsg.text && (newMsg.text.startsWith('{"protocol":"genchat-') || newMsg.text.startsWith('🔒')))
+                const finalText = (isExistingClear && isNewMsgMasked) ? m.text : (newMsg.text || m.text)
+                return {
+                  ...m,
+                  ...newMsg,
+                  text: finalText,
+                  status: m.status === 'read' ? 'read' : newMsg.status,
+                }
+              }
+              return m
+            })
           }
           return [...prev, newMsg]
         })
@@ -2903,8 +2926,19 @@ export default function ChatPage() {
                         </div>
                       </div>
                     )}
-                    {m.text && <p className="leading-relaxed break-words">{m.text}</p>}
-                    {m.text && <ActionChips text={m.text} />}
+                    {m.text && (
+                      m.text.startsWith('{"protocol":"genchat-') ? (
+                        <div className="flex items-center space-x-2 text-slate-400 italic text-xs py-1">
+                          <Key className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
+                          <span>🔒 Encrypted Message (Session synchronization pending)</span>
+                        </div>
+                      ) : (
+                        <>
+                          <p className="leading-relaxed break-words">{m.text}</p>
+                          <ActionChips text={m.text} />
+                        </>
+                      )
+                    )}
 
                     {m.attachment && (
                       <div className="space-y-2">

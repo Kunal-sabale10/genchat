@@ -239,6 +239,27 @@ export class E2eeService {
     }
   }
 
+  private static extractDeviceIdFromToken(token?: string): string {
+    const t =
+      token ||
+      this.authToken ||
+      (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('genchat_access_token') : null)
+    if (!t) return ''
+    try {
+      const parts = t.split('.')
+      if (parts.length === 3) {
+        const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))
+        if (
+          payload.device_id &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(payload.device_id)
+        ) {
+          return payload.device_id
+        }
+      }
+    } catch {}
+    return ''
+  }
+
   /**
    * Initialize or retrieve local PQXDH identity keys for the user.
    * Generates new post-quantum pre-keys and uploads bundle to auth service if not present.
@@ -248,9 +269,15 @@ export class E2eeService {
     deviceId: string,
     accessToken?: string
   ): Promise<WasmIdentityBundle> {
-    this.currentUserId = userId
-    this.currentDeviceId = deviceId
     if (accessToken) this.authToken = accessToken
+    const tokenDevId = this.extractDeviceIdFromToken(accessToken)
+    const effectiveDeviceId =
+      deviceId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(deviceId)
+        ? deviceId
+        : tokenDevId || deviceId
+
+    this.currentUserId = userId
+    this.currentDeviceId = effectiveDeviceId
 
     const storageKey = `genchat_pqxdh_identity_${userId}`
     let bundleToReturn: WasmIdentityBundle | null = null
@@ -277,13 +304,13 @@ export class E2eeService {
       }
 
       // Publish PreKeyBundle to backend if auth token is available
-      if (this.authToken) {
-        await this.publishPreKeyBundle(public_bundle, deviceId, this.authToken)
+      if (this.authToken && effectiveDeviceId) {
+        await this.publishPreKeyBundle(public_bundle, effectiveDeviceId, this.authToken)
       }
-    } else if (this.authToken) {
+    } else if (this.authToken && effectiveDeviceId) {
       // Verify whether server actually has prekeys for this device; if missing or 0, publish fresh bundle
       try {
-        const countRes = await fetch(`/chat.v1.KeyService/GetKeyCount?deviceId=${encodeURIComponent(deviceId)}`, {
+        const countRes = await fetch(`/chat.v1.KeyService/GetKeyCount?deviceId=${encodeURIComponent(effectiveDeviceId)}`, {
           headers: { Authorization: `Bearer ${this.authToken}` },
         })
         const countData = countRes.ok ? await countRes.json() : null
@@ -294,7 +321,7 @@ export class E2eeService {
           try {
             localStorage.setItem(storageKey, JSON.stringify(identity_bundle))
           } catch {}
-          await this.publishPreKeyBundle(public_bundle, deviceId, this.authToken)
+          await this.publishPreKeyBundle(public_bundle, effectiveDeviceId, this.authToken)
         }
       } catch {
         // silent fallback
@@ -559,7 +586,12 @@ export class E2eeService {
 
       const isFallbackEnvelope = envelope.protocol === 'genchat-fallback-v1' || envelope.insecureFallback === true
       const senderId = envelope.senderId || this.extractPeerId(conversationId, currentUserId)
-      let session = await this.getOrRestoreSession(senderId, currentUserId, envelope.conversationId || conversationId)
+      const peerId =
+        senderId && currentUserId && senderId === currentUserId
+          ? envelope.recipientId || this.extractPeerId(conversationId, currentUserId)
+          : senderId
+
+      let session = await this.getOrRestoreSession(peerId, currentUserId, envelope.conversationId || conversationId)
 
       // If message contains PQXDH InitMessage and we don't have session yet (or incoming handshake), establish it
       if (envelope.initMessage && this.identityBundle) {
@@ -572,9 +604,9 @@ export class E2eeService {
             sharedSecretHex: secretHex,
             peerIdentityKeyHex: envelope.initMessage.sender_identity_key_hex,
           }
-          this.saveSession(senderId, currentUserId, envelope.conversationId || conversationId, session)
+          this.saveSession(peerId, currentUserId, envelope.conversationId || conversationId, session)
           if (envelope.initMessage.sender_identity_key_hex) {
-            this.peerIdentityKeys.set(senderId, envelope.initMessage.sender_identity_key_hex)
+            this.peerIdentityKeys.set(peerId, envelope.initMessage.sender_identity_key_hex)
           }
         } catch (err) {
           console.warn('[E2eeService] Failed to process incoming PQXDH handshake:', err)
@@ -607,7 +639,7 @@ export class E2eeService {
             `[E2eeService] Refusing to decrypt 'genchat-pq-v1' envelope from ${senderId}: No active cryptographic session or InitMessage.`
           )
           return {
-            text: rawCiphertext,
+            text: '🔒 [Encrypted Message — Session synchronization pending]',
             isEncrypted: false,
             warning: 'Failed to decrypt PQXDH message: No active cryptographic session.',
           }
@@ -635,7 +667,7 @@ export class E2eeService {
         fingerprint: envelope.senderFingerprint,
       }
     } catch (err) {
-      return { text: rawCiphertext, isEncrypted: false }
+      return { text: '🔒 [Encrypted Message — Session synchronization pending]', isEncrypted: false }
     }
   }
 

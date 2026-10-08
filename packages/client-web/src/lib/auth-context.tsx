@@ -35,12 +35,54 @@ export interface AuthContextValue {
 
 export type AuthContextType = AuthContextValue
 
+function parseJwtClaims(token: string | null): { userId?: string; deviceId?: string } {
+  if (!token) return {}
+  try {
+    const parts = token.split('.')
+    if (parts.length === 3) {
+      const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+      const payload = JSON.parse(atob(b64))
+      return {
+        userId: payload.sub,
+        deviceId: payload.device_id,
+      }
+    }
+  } catch {}
+  return {}
+}
+
+const isValidUUID = (id?: string) =>
+  Boolean(id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
+
 const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(() => {
     const stored = sessionStorage.getItem('genchat_user')
-    return stored ? JSON.parse(stored) : null
+    const token = sessionStorage.getItem('genchat_access_token')
+    const claims = parseJwtClaims(token)
+    if (stored) {
+      try {
+        const parsed: AuthUser = JSON.parse(stored)
+        if (!isValidUUID(parsed.deviceId) && claims.deviceId) {
+          parsed.deviceId = claims.deviceId
+        }
+        if (!isValidUUID(parsed.userId) && claims.userId) {
+          parsed.userId = claims.userId
+        }
+        sessionStorage.setItem('genchat_user', JSON.stringify(parsed))
+        return parsed
+      } catch {}
+    }
+    if (claims.userId && claims.deviceId) {
+      const recovered: AuthUser = {
+        userId: claims.userId,
+        deviceId: claims.deviceId,
+      }
+      sessionStorage.setItem('genchat_user', JSON.stringify(recovered))
+      return recovered
+    }
+    return null
   })
   const [accessToken, setAccessToken] = useState<string | null>(
     () => sessionStorage.getItem('genchat_access_token')
@@ -62,13 +104,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     (
       token: string,
       refreshToken: string = '',
-      userId: string = 'user_' + Math.random().toString(36).substring(2, 9),
-      deviceId: string = 'device_web_primary',
+      userId?: string,
+      deviceId?: string,
       displayName?: string,
       avatarUrl?: string,
       identityKey?: string
     ) => {
-      const authUser: AuthUser = { userId, deviceId, displayName, avatarUrl, identityKey }
+      const claims = parseJwtClaims(token)
+      const effectiveUserId = (isValidUUID(userId) ? userId : claims.userId) || userId || 'user_' + Math.random().toString(36).substring(2, 9)
+      const effectiveDeviceId = (isValidUUID(deviceId) ? deviceId : claims.deviceId) || deviceId || 'device_web_primary'
+
+      const authUser: AuthUser = {
+        userId: effectiveUserId,
+        deviceId: effectiveDeviceId,
+        displayName,
+        avatarUrl,
+        identityKey,
+      }
       setUser(authUser)
       setAccessToken(token)
       sessionStorage.setItem('genchat_user', JSON.stringify(authUser))

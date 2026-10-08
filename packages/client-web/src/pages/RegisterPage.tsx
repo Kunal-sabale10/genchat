@@ -67,8 +67,10 @@ export default function RegisterPage() {
           return btoa(String.fromCharCode(...bytes))
         }
         const { KeyService } = await import('@/lib/grpc-client')
-        await KeyService.uploadPreKeyBundle({
+        await (KeyService as any).uploadPreKeyBundle({
           deviceId: finishRes.deviceId,
+          identityKey: hexToBase64(publicBundle.identity_key_hex),
+          identityKeyX25519: hexToBase64(publicBundle.identity_key_x25519_hex),
           signedPreKey: {
             keyId: publicBundle.signed_pre_key_id,
             publicKey: hexToBase64(publicBundle.signed_pre_key_public_hex),
