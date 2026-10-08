@@ -95,15 +95,42 @@ export class E2eeService {
     this.authToken = token
   }
 
+  public static resolveUserId(userId?: string): string {
+    if (userId) return userId
+    if (this.currentUserId) return this.currentUserId
+    if (typeof sessionStorage !== 'undefined') {
+      try {
+        const u = sessionStorage.getItem('genchat_user')
+        if (u) {
+          const parsed = JSON.parse(u)
+          if (parsed.userId) return parsed.userId
+        }
+        const t = sessionStorage.getItem('genchat_access_token')
+        if (t) {
+          const parts = t.split('.')
+          if (parts.length === 3) {
+            const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))
+            if (payload.sub) return payload.sub
+          }
+        }
+      } catch {}
+    }
+    return ''
+  }
+
   /**
    * Derives a canonical conversation context ID.
    * For 1:1 direct messages, user IDs are sorted to ensure both peers derive the exact same symmetric key.
    */
-  public static getCanonicalContextId(conversationId: string, currentUserId: string): string {
-    if (conversationId.startsWith('chan_')) {
+  public static getCanonicalContextId(
+    conversationId: string,
+    currentUserId: string,
+    explicitPeerId?: string
+  ): string {
+    if (conversationId && conversationId.startsWith('chan_')) {
       return conversationId
     }
-    const peerId = this.extractPeerId(conversationId, currentUserId)
+    const peerId = explicitPeerId || this.extractPeerId(conversationId, currentUserId)
     if (peerId && currentUserId && peerId !== currentUserId) {
       return [currentUserId, peerId].sort().join(':')
     }
@@ -111,7 +138,8 @@ export class E2eeService {
   }
 
   private static getSessionStorageKey(currentUserId: string, peerUserId: string): string {
-    return `genchat_pq_session_${currentUserId}_${peerUserId}`
+    const uId = this.resolveUserId(currentUserId)
+    return `genchat_pq_session_${uId}_${peerUserId}`
   }
 
   private static async getOrRestoreSession(
@@ -119,17 +147,24 @@ export class E2eeService {
     currentUserId: string,
     conversationId: string
   ): Promise<ActiveSession | null> {
+    if (!peerUserId) return null
     // 1. Check in-memory session cache
     let session = this.sessionCache.get(peerUserId)
     if (session) return session
 
+    const effectiveUserId = this.resolveUserId(currentUserId)
     // 2. Check localStorage for persisted session
     try {
-      const storageKey = this.getSessionStorageKey(currentUserId, peerUserId)
+      const storageKey = this.getSessionStorageKey(effectiveUserId, peerUserId)
       const raw = localStorage.getItem(storageKey)
       if (raw) {
         const data: PersistedSessionData = JSON.parse(raw)
-        const contextId = data.canonicalContextId || this.getCanonicalContextId(conversationId, currentUserId)
+        const expectedContextId = this.getCanonicalContextId(conversationId, effectiveUserId, peerUserId)
+        const contextId =
+          data.canonicalContextId &&
+          (data.canonicalContextId.includes(':') || data.canonicalContextId.startsWith('chan_'))
+            ? data.canonicalContextId
+            : expectedContextId
         const key = await this.deriveKeyFromSecret(data.sharedSecretHex, contextId)
         session = {
           key,
@@ -156,13 +191,14 @@ export class E2eeService {
     conversationId: string,
     session: ActiveSession
   ): void {
+    const effectiveUserId = this.resolveUserId(currentUserId)
     this.sessionCache.set(peerUserId, session)
     if (session.peerIdentityKeyHex) {
       this.peerIdentityKeys.set(peerUserId, session.peerIdentityKeyHex)
     }
     try {
-      const storageKey = this.getSessionStorageKey(currentUserId, peerUserId)
-      const canonicalContextId = this.getCanonicalContextId(conversationId, currentUserId)
+      const storageKey = this.getSessionStorageKey(effectiveUserId, peerUserId)
+      const canonicalContextId = this.getCanonicalContextId(conversationId, effectiveUserId, peerUserId)
       const data: PersistedSessionData = {
         sharedSecretHex: session.sharedSecretHex,
         peerIdentityKeyHex: session.peerIdentityKeyHex,
@@ -172,6 +208,11 @@ export class E2eeService {
       localStorage.setItem(storageKey, JSON.stringify(data))
     } catch (err) {
       console.warn('[E2eeService] Failed to persist session:', err)
+    }
+
+    // Broadcast session update event so UI can re-decrypt any pending frames immediately
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('genchat:session_ready', { detail: { peerUserId } }))
     }
   }
 
@@ -202,7 +243,7 @@ export class E2eeService {
           const peerBundle = await this.fetchPreKeyBundle(peerUserId, this.authToken)
           if (peerBundle) {
             const initRes = await WasmCrypto.initiatePqxdhHandshake(this.identityBundle!, peerBundle)
-            const contextId = this.getCanonicalContextId(conversationId, this.currentUserId)
+            const contextId = this.getCanonicalContextId(conversationId, this.currentUserId, peerUserId)
             const key = await this.deriveKeyFromSecret(initRes.shared_secret_hex, contextId)
             const session: ActiveSession = {
               key,
@@ -481,16 +522,33 @@ export class E2eeService {
     allowInsecureFallback: boolean = false
   ): Promise<string> {
     if (token) this.authToken = token
-    if (!this.identityBundle && currentUserId) {
-      await this.initUserKeys(currentUserId, this.currentDeviceId || 'dev_client', this.authToken)
+    const effectiveUserId = this.resolveUserId(currentUserId)
+    if (effectiveUserId && !this.currentUserId) {
+      this.currentUserId = effectiveUserId
     }
 
-    const peerUserId = this.extractPeerId(conversationId, currentUserId)
-    let session = await this.getOrRestoreSession(peerUserId, currentUserId, conversationId)
+    if (!this.identityBundle && effectiveUserId) {
+      const effectiveDeviceId =
+        this.currentDeviceId ||
+        this.extractDeviceIdFromToken(token) ||
+        (() => {
+          try {
+            const stored = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('genchat_user') : null
+            return stored ? JSON.parse(stored).deviceId : ''
+          } catch {
+            return ''
+          }
+        })() ||
+        'dev_client'
+      await this.initUserKeys(effectiveUserId, effectiveDeviceId, this.authToken)
+    }
+
+    const peerUserId = this.extractPeerId(conversationId, effectiveUserId)
+    let session = await this.getOrRestoreSession(peerUserId, effectiveUserId, conversationId)
     let initMsg: WasmPqxdhInitMessage | undefined = session?.pendingInitMessage
 
     // Establish PQXDH session if not yet negotiated with peer, queuing and retrying if necessary
-    if (!session && this.identityBundle && peerUserId !== currentUserId) {
+    if (!session && this.identityBundle && peerUserId !== effectiveUserId) {
       const result = await this.establishSessionWithRetry(peerUserId, conversationId)
       if (result) {
         session = result.session
@@ -499,7 +557,7 @@ export class E2eeService {
     }
 
     // BLOCK SENDING: Refuse to silently ship weak publicly-derivable crypto
-    if (!session && peerUserId !== currentUserId && !allowInsecureFallback) {
+    if (!session && peerUserId !== effectiveUserId && !allowInsecureFallback) {
       throw new Error(
         `PQXDH_SESSION_BLOCKED: Post-Quantum session with ${peerUserId} is not yet established. Handshake retries failed or peer pre-keys unavailable.`
       )
@@ -515,7 +573,7 @@ export class E2eeService {
         `[E2eeService] WARNING: Using INSECURE FALLBACK key derivation for message to ${peerUserId} (conversation ${conversationId}). Message is NOT post-quantum protected!`
       )
       const enc = new TextEncoder()
-      const fallbackIkm = enc.encode(`genchat_fallback_${conversationId}_${currentUserId}`)
+      const fallbackIkm = enc.encode(`genchat_fallback_${conversationId}_${effectiveUserId}`)
       const baseKey = await crypto.subtle.importKey('raw', fallbackIkm, { name: 'HKDF' }, false, ['deriveKey'])
       keyToUse = await crypto.subtle.deriveKey(
         {
@@ -540,14 +598,14 @@ export class E2eeService {
       .join('')
     const ciphertextBase64 = btoa(String.fromCharCode(...new Uint8Array(encryptedBuffer)))
     const myIdKey = this.getPublicIdentityKey()
-    const senderFingerprint = myIdKey ? myIdKey.slice(0, 16) : await this.getFingerprint(currentUserId)
+    const senderFingerprint = myIdKey ? myIdKey.slice(0, 16) : await this.getFingerprint(effectiveUserId)
 
     // Fallback envelopes are tagged with 'genchat-fallback-v1' and insecureFallback: true
     const envelope: EncryptedEnvelope = {
       protocol: isFallback ? 'genchat-fallback-v1' : 'genchat-pq-v1',
       conversationId,
       sequenceNum,
-      senderId: currentUserId,
+      senderId: effectiveUserId,
       recipientId: peerUserId,
       initMessage: initMsg,
       ivHex,
@@ -573,6 +631,37 @@ export class E2eeService {
     }
 
     if (token) this.authToken = token
+    const effectiveUserId = this.resolveUserId(currentUserId)
+    if (effectiveUserId && !this.currentUserId) {
+      this.currentUserId = effectiveUserId
+    }
+
+    // Ensure user identity bundle is loaded into memory
+    if (!this.identityBundle && effectiveUserId) {
+      const storageKey = `genchat_pqxdh_identity_${effectiveUserId}`
+      try {
+        const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(storageKey) : null
+        if (stored) {
+          this.identityBundle = JSON.parse(stored) as WasmIdentityBundle
+        }
+      } catch {}
+
+      if (!this.identityBundle) {
+        const effectiveDeviceId =
+          this.currentDeviceId ||
+          this.extractDeviceIdFromToken(token) ||
+          (() => {
+            try {
+              const stored = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('genchat_user') : null
+              return stored ? JSON.parse(stored).deviceId : ''
+            } catch {
+              return ''
+            }
+          })() ||
+          'dev_client'
+        await this.initUserKeys(effectiveUserId, effectiveDeviceId, this.authToken)
+      }
+    }
 
     try {
       const envelope: EncryptedEnvelope = JSON.parse(rawCiphertext)
@@ -585,26 +674,26 @@ export class E2eeService {
       }
 
       const isFallbackEnvelope = envelope.protocol === 'genchat-fallback-v1' || envelope.insecureFallback === true
-      const senderId = envelope.senderId || this.extractPeerId(conversationId, currentUserId)
+      const senderId = envelope.senderId || this.extractPeerId(conversationId, effectiveUserId)
       const peerId =
-        senderId && currentUserId && senderId === currentUserId
-          ? envelope.recipientId || this.extractPeerId(conversationId, currentUserId)
+        senderId && effectiveUserId && senderId === effectiveUserId
+          ? envelope.recipientId || this.extractPeerId(conversationId, effectiveUserId)
           : senderId
 
-      let session = await this.getOrRestoreSession(peerId, currentUserId, envelope.conversationId || conversationId)
+      let session = await this.getOrRestoreSession(peerId, effectiveUserId, envelope.conversationId || conversationId)
 
-      // If message contains PQXDH InitMessage and we don't have session yet (or incoming handshake), establish it
-      if (envelope.initMessage && this.identityBundle) {
+      // If message is from peer and contains PQXDH InitMessage, establish / update session
+      if (senderId !== effectiveUserId && (!session || envelope.initMessage) && envelope.initMessage && this.identityBundle) {
         try {
           const secretHex = await WasmCrypto.receivePqxdhHandshake(this.identityBundle, envelope.initMessage)
-          const contextId = this.getCanonicalContextId(envelope.conversationId || conversationId, currentUserId)
+          const contextId = this.getCanonicalContextId(envelope.conversationId || conversationId, effectiveUserId, peerId)
           const key = await this.deriveKeyFromSecret(secretHex, contextId)
           session = {
             key,
             sharedSecretHex: secretHex,
             peerIdentityKeyHex: envelope.initMessage.sender_identity_key_hex,
           }
-          this.saveSession(peerId, currentUserId, envelope.conversationId || conversationId, session)
+          this.saveSession(peerId, effectiveUserId, envelope.conversationId || conversationId, session)
           if (envelope.initMessage.sender_identity_key_hex) {
             this.peerIdentityKeys.set(peerId, envelope.initMessage.sender_identity_key_hex)
           }
@@ -654,7 +743,31 @@ export class E2eeService {
         ctBytes[i] = binaryString.charCodeAt(i)
       }
 
-      const decryptedBuffer = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, keyToUse, ctBytes)
+      let decryptedBuffer: ArrayBuffer
+      try {
+        decryptedBuffer = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, keyToUse, ctBytes)
+      } catch (decryptErr) {
+        // If first decrypt attempt failed and there is an initMessage from peer, try processing handshake afresh
+        if (senderId !== effectiveUserId && envelope.initMessage && this.identityBundle) {
+          try {
+            const secretHex = await WasmCrypto.receivePqxdhHandshake(this.identityBundle, envelope.initMessage)
+            const contextId = this.getCanonicalContextId(envelope.conversationId || conversationId, effectiveUserId, peerId)
+            const freshKey = await this.deriveKeyFromSecret(secretHex, contextId)
+            decryptedBuffer = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, freshKey, ctBytes)
+            session = {
+              key: freshKey,
+              sharedSecretHex: secretHex,
+              peerIdentityKeyHex: envelope.initMessage.sender_identity_key_hex,
+            }
+            this.saveSession(peerId, effectiveUserId, envelope.conversationId || conversationId, session)
+          } catch {
+            throw decryptErr
+          }
+        } else {
+          throw decryptErr
+        }
+      }
+
       const decryptedText = new TextDecoder().decode(decryptedBuffer)
 
       return {
@@ -667,6 +780,7 @@ export class E2eeService {
         fingerprint: envelope.senderFingerprint,
       }
     } catch (err) {
+      console.warn('[E2eeService] Decryption failed for envelope:', err)
       return { text: '🔒 [Encrypted Message — Session synchronization pending]', isEncrypted: false }
     }
   }

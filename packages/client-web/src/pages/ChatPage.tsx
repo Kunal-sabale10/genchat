@@ -87,6 +87,7 @@ interface MessageItem {
   channelId: string
   senderId: string
   text?: string
+  rawCiphertext?: string
   attachment?: AttachmentMetadata & { decryptedUrl?: string }
   status: 'pending' | 'sent' | 'delivered' | 'read'
   timestamp: string
@@ -355,14 +356,37 @@ export default function ChatPage() {
         if (allCached.length > 0) {
           const now = Date.now()
           const valid = allCached.filter((m) => !m.expiresAt || m.expiresAt > now)
+          const myUserId =
+            userIdRef.current ||
+            user?.userId ||
+            (() => {
+              try {
+                const u = sessionStorage.getItem('genchat_user')
+                return u ? JSON.parse(u).userId : ''
+              } catch {
+                return ''
+              }
+            })()
+
+          if (myUserId) {
+            const token = accessToken || sessionStorage.getItem('genchat_access_token') || undefined
+            await E2eeService.initUserKeys(myUserId, user?.deviceId || 'dev_client', token).catch(() => {})
+          }
+
           const decryptedList = await Promise.all(
             valid.map(async (m: any) => {
-              if (m.text && typeof m.text === 'string' && m.text.startsWith('{"protocol":"genchat-')) {
-                const dec = await E2eeService.decrypt(m.text, activeChannelId, user?.userId || '')
+              const ct = m.rawCiphertext || m.text
+              if (ct && typeof ct === 'string' && ct.startsWith('{"protocol":"genchat-')) {
+                const dec = await E2eeService.decrypt(ct, activeChannelId, myUserId)
                 if (dec.isEncrypted && dec.text && !dec.text.startsWith('{"protocol":"genchat-')) {
-                  return { ...m, text: dec.text, isEncrypted: true }
+                  return { ...m, text: dec.text, rawCiphertext: ct, isEncrypted: true }
                 } else {
-                  return { ...m, text: '🔒 [Encrypted Message — Session synchronization pending]', isEncrypted: false }
+                  return {
+                    ...m,
+                    text: '🔒 [Encrypted Message — Session synchronization pending]',
+                    rawCiphertext: ct,
+                    isEncrypted: false,
+                  }
                 }
               }
               return m
@@ -371,16 +395,13 @@ export default function ChatPage() {
           setMessages((prev) => {
             const ids = new Set(decryptedList.map((m) => m.id))
             const existingNotInCache = prev.filter((m) => (!m.expiresAt || m.expiresAt > now) && !ids.has(m.id))
-            return [...decryptedList, ...existingNotInCache].map((m: any) => ({
-              ...m,
-              isEncrypted: true,
-            }))
+            return [...decryptedList, ...existingNotInCache]
           })
         }
       }
     }
     loadLocalCache()
-  }, [activeChannelId])
+  }, [activeChannelId, user?.userId])
 
   // --- 2. Synchronize remote channels from ChannelService ---
   useEffect(() => {
@@ -436,9 +457,72 @@ export default function ChatPage() {
     if (token && devId && uId) {
       PreKeyManager.checkAndReplenish(token, devId)
       MlsGroupManager.publishKeyPackage(uId, devId, token)
-      E2eeService.initUserKeys(uId, devId, token)
+      E2eeService.initUserKeys(uId, devId, token).then(() => {
+        if (typeof window !== 'undefined' && activeChannelId) {
+          window.dispatchEvent(new CustomEvent('genchat:session_ready', { detail: { peerUserId: activeChannelId } }))
+        }
+      })
     }
-  }, [accessToken, user?.deviceId, user?.userId])
+  }, [accessToken, user?.deviceId, user?.userId, activeChannelId])
+
+  // --- 3b. Auto-retry / re-decrypt pending messages upon session establishment ---
+  useEffect(() => {
+    const handleSessionReady = async (e: Event) => {
+      const myUserId =
+        userIdRef.current ||
+        user?.userId ||
+        (() => {
+          try {
+            const u = sessionStorage.getItem('genchat_user')
+            return u ? JSON.parse(u).userId : ''
+          } catch {
+            return ''
+          }
+        })()
+      if (!myUserId) return
+
+      setMessages((prev) => {
+        const needsRetry = prev.some(
+          (m) =>
+            m.rawCiphertext &&
+            (m.text?.startsWith('🔒') || m.text?.startsWith('{"protocol":"genchat-'))
+        )
+        if (!needsRetry) return prev
+
+        ;(async () => {
+          const updated = await Promise.all(
+            prev.map(async (m) => {
+              const ct = m.rawCiphertext
+              if (
+                ct &&
+                (m.text?.startsWith('🔒') || m.text?.startsWith('{"protocol":"genchat-'))
+              ) {
+                const targetChannel = m.channelId || activeChannelId
+                const dec = await E2eeService.decrypt(ct, targetChannel, myUserId)
+                if (dec.isEncrypted && dec.text && !dec.text.startsWith('{"protocol":"genchat-')) {
+                  return {
+                    ...m,
+                    text: dec.text,
+                    isEncrypted: true,
+                    isInsecureFallback: Boolean(dec.isInsecureFallback),
+                    securityWarning: dec.warning,
+                    senderFingerprint: dec.fingerprint,
+                  }
+                }
+              }
+              return m
+            })
+          )
+          setMessages(updated)
+        })()
+
+        return prev
+      })
+    }
+
+    window.addEventListener('genchat:session_ready', handleSessionReady)
+    return () => window.removeEventListener('genchat:session_ready', handleSessionReady)
+  }, [activeChannelId, user?.userId])
 
 
   // Fetch registered users on initial mount and when New DM or Create Group modal opens
@@ -959,6 +1043,7 @@ export default function ChatPage() {
           channelId: effectiveChannelId,
           senderId: env.senderId || 'peer',
           text: displayText,
+          rawCiphertext: env.ciphertext,
           attachment,
           replyTo,
           reactions: {},
@@ -1031,6 +1116,7 @@ export default function ChatPage() {
                   ...m,
                   ...newMsg,
                   text: finalText,
+                  rawCiphertext: newMsg.rawCiphertext || m.rawCiphertext,
                   status: m.status === 'read' ? 'read' : newMsg.status,
                 }
               }
@@ -1506,6 +1592,7 @@ export default function ChatPage() {
       channelId: activeChannelId,
       senderId: user.userId,
       text: textToSend,
+      rawCiphertext: wireCiphertext,
       replyTo: currentReply || undefined,
       reactions: {},
       status: 'pending',
